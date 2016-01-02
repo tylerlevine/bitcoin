@@ -402,6 +402,8 @@ std::string HelpMessage(HelpMessageMode mode)
         CURRENCY_UNIT, FormatMoney(DEFAULT_FALLBACK_FEE)));
     strUsage += HelpMessageOpt("-mintxfee=<amt>", strprintf(_("Fees (in %s/kB) smaller than this are considered zero fee for transaction creation (default: %s)"),
             CURRENCY_UNIT, FormatMoney(DEFAULT_TRANSACTION_MINFEE)));
+    strUsage += HelpMessageOpt("-usehd", strprintf(_("Use hierarchical deterministic key derivation (HD wallets) (default: %d)"), DEFAULT_USE_HD_WALLET));
+    strUsage += HelpMessageOpt("-hdseed", _("Use the given 256bit (64 char hex) as HD master seed (default: <generate random seed>)"));
     strUsage += HelpMessageOpt("-paytxfee=<amt>", strprintf(_("Fee (in %s/kB) to add to transactions you send (default: %s)"),
         CURRENCY_UNIT, FormatMoney(payTxFee.GetFeePerK())));
     strUsage += HelpMessageOpt("-rescan", _("Rescan the block chain for missing wallet transactions on startup"));
@@ -1525,6 +1527,46 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
         {
             // Create new keyUser and set as default key
             RandAddSeedPerfmon();
+
+            if (GetBoolArg("-usehd", DEFAULT_USE_HD_WALLET))
+            {
+                // create a new seed / chain
+                // default keypath is m/c'/k'
+                // results in m/0'/0' for the first external key
+                // results in m/1'/0' for the first internal key
+                // results in m/0'/1' for the second external key
+
+                CHDChain chain;
+                chain.keypathTemplate = "m/c'";
+                
+                CKey key;
+                key.MakeNewKey(true); //generate a seed
+                CKeyingMaterial seed = CKeyingMaterial(32);
+                seed.assign(key.begin(), key.end());
+
+                if (GetArg("-hdseed", "").size() == 64)
+                {
+                    std::vector<unsigned char> hdseed = ParseHex(GetArg("-hdseed", ""));
+                    seed.assign(hdseed.begin(), hdseed.end());
+                }
+                else if(GetArg("-hdseed", "").size() != 0)
+                {
+                    strErrors << _("-hdseed needs to be 256bit (64 hex chars)") << "\n";
+                    LogPrintf("%s", strErrors.str());
+                    return InitError(strErrors.str());
+                }
+
+                CExtKey masterKey;
+                masterKey.SetMaster(&seed[0], seed.size());
+
+                CExtPubKey masterPubKey = masterKey.Neuter();
+                chain.chainID = masterPubKey.pubkey.GetHash();
+
+                //persist the chain and the master seed
+                pwalletMain->AddMasterSeed(chain.chainID, seed);
+                pwalletMain->AddHDChain(chain);
+                pwalletMain->SetActiveHDChainID(chain.chainID);
+            }
 
             CPubKey newDefaultKey;
             if (pwalletMain->GetKeyFromPool(newDefaultKey)) {
