@@ -81,7 +81,6 @@ static const unsigned int DEFAULT_MISBEHAVING_BANTIME = 60 * 60 * 24;  // Defaul
 unsigned int ReceiveFloodSize();
 unsigned int SendBufferSize();
 
-void AddOneShot(const std::string& strDest);
 CNode* FindNode(const CNetAddr& ip);
 CNode* FindNode(const CSubNet& subNet);
 CNode* FindNode(const std::string& addrName);
@@ -129,6 +128,7 @@ public:
     void GetBanned(banmap_t &banmap);
     void SetBanned(const banmap_t &banmap);
 
+    void AddOneShot(const std::string& strDest);
 private:
     struct ListenSocket {
         SOCKET socket;
@@ -163,6 +163,8 @@ private:
     bool setBannedIsDirty;
     bool fAddressesInitialized;
     CAddrMan addrman;
+    std::deque<std::string> vOneShots;
+    CCriticalSection cs_vOneShots;
 };
 extern std::shared_ptr<CConnman> g_connman;
 
