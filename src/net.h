@@ -81,11 +81,6 @@ static const unsigned int DEFAULT_MISBEHAVING_BANTIME = 60 * 60 * 24;  // Defaul
 unsigned int ReceiveFloodSize();
 unsigned int SendBufferSize();
 
-CNode* FindNode(const CNetAddr& ip);
-CNode* FindNode(const CSubNet& subNet);
-CNode* FindNode(const std::string& addrName);
-CNode* FindNode(const CService& ip);
-
 class CNodeStats;
 class CConnman
 {
@@ -104,6 +99,11 @@ public:
     void Stop();
     bool BindListenPort(const CService &bindAddr, std::string& strError, bool fWhitelisted = false);
     bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOutbound = NULL, const char *strDest = NULL, bool fOneShot = false);
+
+    bool ForEachNode(std::function<bool(CNode* pnode)> func);
+    bool ForEachNode(std::function<bool(const CNode* pnode)> func) const;
+    bool ForEachNodeThen(std::function<bool(CNode* pnode)> pre, std::function<void()> post);
+    bool ForEachNodeThen(std::function<bool(const CNode* pnode)> pre, std::function<void()> post) const;
 
     // Addrman functions
     size_t GetAddressCount() const;
@@ -165,6 +165,12 @@ private:
     void ThreadSocketHandler();
     void ThreadDNSAddressSeed();
 
+    CNode* FindNode(const CNetAddr& ip);
+    CNode* FindNode(const CSubNet& subNet);
+    CNode* FindNode(const std::string& addrName);
+    CNode* FindNode(const CService& addr);
+
+    bool AttemptToEvictConnection(bool fPreferNewConnection);
     CNode* ConnectNode(CAddress addrConnect, const char *pszDest);
     void DeleteNode(CNode* pnode);
     //!check is the banlist has unwritten changes
@@ -187,6 +193,8 @@ private:
     CCriticalSection cs_vOneShots;
     std::vector<std::string> vAddedNodes;
     CCriticalSection cs_vAddedNodes;
+    std::vector<CNode*> vNodes;
+    mutable CCriticalSection cs_vNodes;
 };
 extern std::shared_ptr<CConnman> g_connman;
 
@@ -264,8 +272,6 @@ extern uint64_t nLocalHostNonce;
 /** Maximum number of connections to simultaneously allow (aka connection slots) */
 extern int nMaxConnections;
 
-extern std::vector<CNode*> vNodes;
-extern CCriticalSection cs_vNodes;
 extern limitedmap<uint256, int64_t> mapAlreadyAskedFor;
 
 extern NodeId nLastNodeId;
@@ -785,8 +791,6 @@ public:
 
 
 
-class CTransaction;
-void RelayTransaction(const CTransaction& tx);
 
 
 /** Return a timestamp in the future (in microseconds) for exponentially distributed events. */
