@@ -82,9 +82,6 @@ std::vector<CNode*> vNodes;
 CCriticalSection cs_vNodes;
 limitedmap<uint256, int64_t> mapAlreadyAskedFor(MAX_INV_SZ);
 
-std::vector<std::string> vAddedNodes;
-CCriticalSection cs_vAddedNodes;
-
 NodeId nLastNodeId = 0;
 CCriticalSection cs_nLastNodeId;
 
@@ -2116,6 +2113,36 @@ void CConnman::AddNewAddresses(const std::vector<CAddress>& vAddr, const CAddres
 std::vector<CAddress> CConnman::GetAddresses()
 {
     return addrman.GetAddr();
+}
+
+bool CConnman::AddNode(const std::string& strNode)
+{
+    LOCK(cs_vAddedNodes);
+    for(std::vector<std::string>::const_iterator it = vAddedNodes.begin(); it != vAddedNodes.end(); ++it) {
+        if (strNode == *it)
+            return false;
+    }
+
+    vAddedNodes.push_back(strNode);
+    return true;
+}
+
+bool CConnman::RemoveAddedNode(const std::string& strNode)
+{
+    LOCK(cs_vAddedNodes);
+    for(std::vector<std::string>::iterator it = vAddedNodes.begin(); it != vAddedNodes.end(); ++it) {
+        if (strNode == *it) {
+            vAddedNodes.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+void CConnman::GetAddedNodes(std::list<std::string>& laddedNodes)
+{
+    LOCK(cs_vAddedNodes);
+    laddedNodes.assign(vAddedNodes.begin(), vAddedNodes.end());
 }
 
 void RelayTransaction(const CTransaction& tx)
