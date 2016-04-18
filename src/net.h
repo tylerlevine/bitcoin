@@ -81,6 +81,8 @@ static const unsigned int DEFAULT_MISBEHAVING_BANTIME = 60 * 60 * 24;  // Defaul
 unsigned int ReceiveFloodSize();
 unsigned int SendBufferSize();
 
+typedef int NodeId;
+
 class CNodeStats;
 class CConnman
 {
@@ -176,6 +178,9 @@ private:
     bool AttemptToEvictConnection(bool fPreferNewConnection);
     CNode* ConnectNode(CAddress addrConnect, const char *pszDest);
     void DeleteNode(CNode* pnode);
+
+    NodeId GetNewNodeId();
+
     //!check is the banlist has unwritten changes
     bool BannedSetIsDirty();
     //!set the "dirty" flag for the banlist
@@ -203,6 +208,7 @@ private:
     CCriticalSection cs_vAddedNodes;
     std::vector<CNode*> vNodes;
     mutable CCriticalSection cs_vNodes;
+    std::atomic<NodeId> nLastNodeId;
 };
 extern std::shared_ptr<CConnman> g_connman;
 
@@ -212,8 +218,6 @@ bool BindListenPort(const CService &bindAddr, std::string& strError, bool fWhite
 bool StartNode(CConnman& connman, boost::thread_group& threadGroup, CScheduler& scheduler, std::string& strNodeError);
 bool StopNode(CConnman& connman);
 void SocketSendData(CNode *pnode);
-
-typedef int NodeId;
 
 struct CombinerAll
 {
@@ -281,9 +285,6 @@ extern uint64_t nLocalHostNonce;
 extern int nMaxConnections;
 
 extern limitedmap<uint256, int64_t> mapAlreadyAskedFor;
-
-extern NodeId nLastNodeId;
-extern CCriticalSection cs_nLastNodeId;
 
 /** Subversion as sent to the P2P network in `version` messages */
 extern std::string strSubVersion;
@@ -474,7 +475,7 @@ public:
     CAmount lastSentFeeFilter;
     int64_t nextSendTimeFeeFilter;
 
-    CNode(SOCKET hSocketIn, const CAddress &addrIn, const std::string &addrNameIn = "", bool fInboundIn = false);
+    CNode(NodeId id, SOCKET hSocketIn, const CAddress &addrIn, const std::string &addrNameIn = "", bool fInboundIn = false);
     ~CNode();
 
 private:
