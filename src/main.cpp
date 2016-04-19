@@ -4618,7 +4618,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
     }
 
 
-    if (!(nLocalServices & NODE_BLOOM) &&
+    if (!(connman.GetLocalServices() & NODE_BLOOM) &&
               (strCommand == NetMsgType::FILTERLOAD ||
                strCommand == NetMsgType::FILTERADD ||
                strCommand == NetMsgType::FILTERCLEAR))
@@ -4714,7 +4714,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             // Advertise our address
             if (fListen && !IsInitialBlockDownload())
             {
-                CAddress addr = GetLocalAddress(&pfrom->addr);
+                CAddress addr = GetLocalAddress(&pfrom->addr, connman.GetLocalServices());
                 if (addr.IsRoutable())
                 {
                     LogPrintf("ProcessMessages: advertising address %s\n", addr.ToString());
@@ -5710,7 +5710,7 @@ bool SendMessages(CNode* pto, CConnman& connman)
         // Address refresh broadcast
         int64_t nNow = GetTimeMicros();
         if (!IsInitialBlockDownload() && pto->nNextLocalAddrSend < nNow) {
-            AdvertiseLocal(pto);
+            AdvertiseLocal(pto, connman.GetLocalServices());
             pto->nNextLocalAddrSend = PoissonNextSend(nNow, AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL);
         }
 
