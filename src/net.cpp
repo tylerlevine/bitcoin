@@ -80,7 +80,6 @@ std::string strSubVersion;
 limitedmap<uint256, int64_t> mapAlreadyAskedFor(MAX_INV_SZ);
 
 static CSemaphore *semOutbound = NULL;
-boost::condition_variable messageHandlerCondition;
 
 // Signals for message handling
 static CNodeSignals g_signals;
@@ -659,8 +658,9 @@ void CNode::copyStats(CNodeStats &stats)
 #undef X
 
 // requires LOCK(cs_vRecvMsg)
-bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
+bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes, bool& complete)
 {
+    complete = false;
     while (nBytes > 0) {
 
         // get current incomplete message, or create a new one
@@ -699,7 +699,7 @@ bool CNode::ReceiveMsgBytes(const char *pch, unsigned int nBytes)
             i->second += msg.hdr.nMessageSize + CMessageHeader::HEADER_SIZE;
 
             msg.nTime = GetTimeMicros();
-            messageHandlerCondition.notify_one();
+            complete = true;
         }
     }
 
@@ -1214,8 +1214,11 @@ void CConnman::ThreadSocketHandler()
                         int nBytes = recv(pnode->hSocket, pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
                         if (nBytes > 0)
                         {
-                            if (!pnode->ReceiveMsgBytes(pchBuf, nBytes))
+                            bool notify = false;
+                            if (!pnode->ReceiveMsgBytes(pchBuf, nBytes, notify))
                                 pnode->CloseSocketDisconnect();
+                            if(notify)
+                                messageHandlerCondition.notify_one();
                             pnode->nLastRecv = GetTime();
                             pnode->nRecvBytes += nBytes;
                             pnode->RecordBytesRecv(nBytes);
