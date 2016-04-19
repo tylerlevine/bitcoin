@@ -259,6 +259,7 @@ private:
     std::atomic<NodeId> nLastNodeId;
     boost::condition_variable messageHandlerCondition;
     uint64_t nLocalServices;
+    CSemaphore *semOutbound;
 };
 extern std::shared_ptr<CConnman> g_connman;
 
