@@ -52,6 +52,8 @@ static const unsigned int MAX_ADDR_TO_SEND = 1000;
 static const unsigned int MAX_PROTOCOL_MESSAGE_LENGTH = 2 * 1024 * 1024;
 /** Maximum length of strSubVer in `version` message */
 static const unsigned int MAX_SUBVERSION_LENGTH = 256;
+/** Maximum number of outgoing nodes */
+static const int MAX_OUTBOUND_CONNECTIONS = 8;
 /** -listen default */
 static const bool DEFAULT_LISTEN = true;
 /** -upnp default */
@@ -94,7 +96,7 @@ public:
 
     CConnman();
     ~CConnman();
-    bool Start(boost::thread_group& threadGroup, CScheduler& scheduler, uint64_t nLocalServices, std::string& strNodeError);
+    bool Start(boost::thread_group& threadGroup, CScheduler& scheduler, uint64_t nLocalServices, int nMaxConnectionsIn, int nMaxOutboundIn, std::string& strNodeError);
     void Stop();
     bool BindListenPort(const CService &bindAddr, std::string& strError, bool fWhitelisted = false);
     bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOutbound = NULL, const char *strDest = NULL, bool fOneShot = false);
@@ -260,13 +262,15 @@ private:
     boost::condition_variable messageHandlerCondition;
     uint64_t nLocalServices;
     CSemaphore *semOutbound;
+    int nMaxConnections;
+    int nMaxOutbound;
 };
 extern std::shared_ptr<CConnman> g_connman;
 
 void MapPort(bool fUseUPnP);
 unsigned short GetListenPort();
 bool BindListenPort(const CService &bindAddr, std::string& strError, bool fWhitelisted = false);
-bool StartNode(CConnman& connman, boost::thread_group& threadGroup, CScheduler& scheduler, uint64_t nLocalServices, std::string& strNodeError);
+bool StartNode(CConnman& connman, boost::thread_group& threadGroup, CScheduler& scheduler, uint64_t nLocalServices, int nMaxConnectionsIn, int nMaxOutboundIn, std::string& strNodeError);
 bool StopNode(CConnman& connman);
 size_t SocketSendData(CNode *pnode);
 
@@ -329,9 +333,6 @@ CAddress GetLocalAddress(const CNetAddr *paddrPeer, uint64_t nLocalServices);
 extern bool fDiscover;
 extern bool fListen;
 extern bool fRelayTxes;
-
-/** Maximum number of connections to simultaneously allow (aka connection slots) */
-extern int nMaxConnections;
 
 extern limitedmap<uint256, int64_t> mapAlreadyAskedFor;
 
