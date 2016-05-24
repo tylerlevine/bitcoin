@@ -301,12 +301,6 @@ CNodeState *State(NodeId pnode) {
     return &it->second;
 }
 
-int GetHeight()
-{
-    LOCK(cs_main);
-    return chainActive.Height();
-}
-
 void UpdatePreferredDownload(CNode* node, CNodeState* state)
 {
     nPreferredDownload -= state->fPreferredDownload;
@@ -571,7 +565,6 @@ bool GetNodeStateStats(NodeId nodeid, CNodeStateStats &stats) {
 
 void RegisterNodeSignals(CNodeSignals& nodeSignals)
 {
-    nodeSignals.GetHeight.connect(&GetHeight);
     nodeSignals.ProcessMessages.connect(&ProcessMessages);
     nodeSignals.SendMessages.connect(&SendMessages);
     nodeSignals.InitializeNode.connect(&InitializeNode);
@@ -580,7 +573,6 @@ void RegisterNodeSignals(CNodeSignals& nodeSignals)
 
 void UnregisterNodeSignals(CNodeSignals& nodeSignals)
 {
-    nodeSignals.GetHeight.disconnect(&GetHeight);
     nodeSignals.ProcessMessages.disconnect(&ProcessMessages);
     nodeSignals.SendMessages.disconnect(&SendMessages);
     nodeSignals.InitializeNode.disconnect(&InitializeNode);
@@ -2988,6 +2980,7 @@ bool ActivateBestChain(CValidationState &state, const CChainParams& chainparams,
                 if (fCheckpointsEnabled)
                     nBlockEstimate = Checkpoints::GetTotalBlocksEstimate(chainparams.Checkpoints());
                 if(connman) {
+                    connman->SetBestHeight(nNewHeight);
                     connman->ForEachNode([nNewHeight, nBlockEstimate, &vHashes](CNode* pnode) {
                         if (nNewHeight > (pnode->nStartingHeight != -1 ? pnode->nStartingHeight - 2000 : nBlockEstimate)) {
                             BOOST_REVERSE_FOREACH(const uint256& hash, vHashes) {

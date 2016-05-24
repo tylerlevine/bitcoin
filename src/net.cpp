@@ -364,7 +364,7 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest)
         addrman.Attempt(addrConnect);
 
         // Add node
-        CNode* pnode = new CNode(GetNewNodeId(), nLocalServices, hSocket, addrConnect, pszDest ? pszDest : "", false);
+        CNode* pnode = new CNode(GetNewNodeId(), nLocalServices, GetBestHeight(), hSocket, addrConnect, pszDest ? pszDest : "", false);
         GetNodeSignals().InitializeNode(pnode->GetId(), pnode);
         pnode->AddRef();
 
@@ -422,17 +422,15 @@ void CNode::CloseSocketDisconnect()
 
 void CNode::PushVersion()
 {
-    int nBestHeight = GetNodeSignals().GetHeight().get_value_or(0);
-
     int64_t nTime = (fInbound ? GetAdjustedTime() : GetTime());
     CAddress addrYou = (addr.IsRoutable() && !IsProxy(addr) ? addr : CAddress(CService("0.0.0.0",0)));
     CAddress addrMe = GetLocalAddress(&addr, nLocalServices);
     if (fLogIPs)
-        LogPrint("net", "send version message: version %d, blocks=%d, us=%s, them=%s, peer=%d\n", PROTOCOL_VERSION, nBestHeight, addrMe.ToString(), addrYou.ToString(), id);
+        LogPrint("net", "send version message: version %d, blocks=%d, us=%s, them=%s, peer=%d\n", PROTOCOL_VERSION, nMyStartingHeight, addrMe.ToString(), addrYou.ToString(), id);
     else
-        LogPrint("net", "send version message: version %d, blocks=%d, us=%s, peer=%d\n", PROTOCOL_VERSION, nBestHeight, addrMe.ToString(), id);
+        LogPrint("net", "send version message: version %d, blocks=%d, us=%s, peer=%d\n", PROTOCOL_VERSION, nMyStartingHeight, addrMe.ToString(), id);
     PushMessage(NetMsgType::VERSION, PROTOCOL_VERSION, nLocalServices, nTime, addrYou, addrMe,
-                nLocalHostNonce, strSubVersion, nBestHeight, ::fRelayTxes);
+                nLocalHostNonce, strSubVersion, nMyStartingHeight, ::fRelayTxes);
 }
 
 
@@ -995,7 +993,7 @@ void CConnman::AcceptConnection(const ListenSocket& hListenSocket) {
         }
     }
 
-    CNode* pnode = new CNode(GetNewNodeId(), nLocalServices, hSocket, addr, "", true);
+    CNode* pnode = new CNode(GetNewNodeId(), nLocalServices, GetBestHeight(), hSocket, addr, "", true);
     GetNodeSignals().InitializeNode(pnode->GetId(), pnode);
     pnode->AddRef();
     pnode->fWhitelisted = whitelisted;
@@ -1929,13 +1927,14 @@ CConnman::CConnman()
     semOutbound = NULL;
     nMaxConnections = 0;
     nMaxOutbound = 0;
+    nBestHeight = 0;
 }
 
-bool StartNode(CConnman& connman, boost::thread_group& threadGroup, CScheduler& scheduler, uint64_t nLocalServices, int nMaxConnectionsIn, int nMaxOutboundIn, std::string& strNodeError)
+bool StartNode(CConnman& connman, boost::thread_group& threadGroup, CScheduler& scheduler, uint64_t nLocalServices, int nMaxConnectionsIn, int nMaxOutboundIn, int nBestHeightIn, std::string& strNodeError)
 {
     Discover(threadGroup);
 
-    bool ret = connman.Start(threadGroup, scheduler, nLocalServices, nMaxConnectionsIn, nMaxOutboundIn, strNodeError);
+    bool ret = connman.Start(threadGroup, scheduler, nLocalServices, nMaxConnectionsIn, nMaxOutboundIn, nBestHeightIn, strNodeError);
 
     return ret;
 }
@@ -1945,7 +1944,7 @@ NodeId CConnman::GetNewNodeId()
     return nLastNodeId.fetch_add(1, std::memory_order_relaxed);
 }
 
-bool CConnman::Start(boost::thread_group& threadGroup, CScheduler& scheduler, uint64_t nLocalServicesIn, int nMaxConnectionsIn, int nMaxOutboundIn, std::string& strNodeError)
+bool CConnman::Start(boost::thread_group& threadGroup, CScheduler& scheduler, uint64_t nLocalServicesIn, int nMaxConnectionsIn, int nMaxOutboundIn, int nBestHeightIn, std::string& strNodeError)
 {
     nTotalBytesRecv = 0;
     nTotalBytesSent = 0;
@@ -1960,6 +1959,8 @@ bool CConnman::Start(boost::thread_group& threadGroup, CScheduler& scheduler, ui
 
     nSendBufferMaxSize = 1000*GetArg("-maxsendbuffer", DEFAULT_MAXSENDBUFFER);
     nReceiveFloodSize = 1000*GetArg("-maxreceivebuffer", DEFAULT_MAXRECEIVEBUFFER);
+
+    SetBestHeight(nBestHeightIn);
 
     uiInterface.InitMessage(_("Loading addresses..."));
     // Load addresses from peers.dat
@@ -2001,7 +2002,7 @@ bool CConnman::Start(boost::thread_group& threadGroup, CScheduler& scheduler, ui
     }
 
     if (pnodeLocalHost == NULL) {
-        pnodeLocalHost = new CNode(GetNewNodeId(), nLocalServices, INVALID_SOCKET, CAddress(CService("127.0.0.1", 0), nLocalServices));
+        pnodeLocalHost = new CNode(GetNewNodeId(), nLocalServices, GetBestHeight(), INVALID_SOCKET, CAddress(CService("127.0.0.1", 0), nLocalServices));
         GetNodeSignals().InitializeNode(pnodeLocalHost->GetId(), pnodeLocalHost);
     }
 
@@ -2337,6 +2338,16 @@ uint64_t CConnman::GetLocalServices() const
     return nLocalServices;
 }
 
+void CConnman::SetBestHeight(int height)
+{
+    nBestHeight.store(height, std::memory_order_release);
+}
+
+int CConnman::GetBestHeight() const
+{
+    return nBestHeight.load(std::memory_order_acquire);
+}
+
 void CNode::Fuzz(int nChance)
 {
     if (!fSuccessfullyConnected) return; // Don't fuzz initial handshake
@@ -2375,7 +2386,7 @@ void CNode::Fuzz(int nChance)
 unsigned int CConnman::GetReceiveFloodSize() const { return nReceiveFloodSize; }
 unsigned int CConnman::GetSendBufferSize() const{ return nSendBufferMaxSize; }
 
-CNode::CNode(NodeId idIn, uint64_t nLocalServicesIn, SOCKET hSocketIn, const CAddress& addrIn, const std::string& addrNameIn, bool fInboundIn) :
+CNode::CNode(NodeId idIn, uint64_t nLocalServicesIn, int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress& addrIn, const std::string& addrNameIn, bool fInboundIn) :
     ssSend(SER_NETWORK, INIT_PROTO_VERSION),
     addrKnown(5000, 0.001),
     filterInventoryKnown(50000, 0.000001)
@@ -2428,6 +2439,7 @@ CNode::CNode(NodeId idIn, uint64_t nLocalServicesIn, SOCKET hSocketIn, const CAd
     nLocalServices = nLocalServicesIn;
 
     GetRandBytes((unsigned char*)&nLocalHostNonce, sizeof(nLocalHostNonce));
+    nMyStartingHeight = nMyStartingHeightIn;
 
     BOOST_FOREACH(const std::string &msg, getAllNetMessageTypes())
         mapRecvBytesPerMsgCmd[msg] = 0;
