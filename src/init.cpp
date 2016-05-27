@@ -1430,8 +1430,15 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     MapPort(GetBoolArg("-upnp", DEFAULT_UPNP));
 
     std::string strNodeError;
-    int nMaxOutbound = std::min(MAX_OUTBOUND_CONNECTIONS, nMaxConnections);
-    if(!connman.Start(threadGroup, scheduler, nLocalServices, nMaxConnections, nMaxOutbound, chainActive.Height(), &uiInterface, strNodeError))
+
+    CConnman::Options connOptions;
+    connOptions.nLocalServices = nLocalServices;
+    connOptions.nMaxConnections = nMaxConnections;
+    connOptions.nMaxOutbound = std::min(MAX_OUTBOUND_CONNECTIONS, nMaxConnections);
+    connOptions.nBestHeight = chainActive.Height();
+    connOptions.interface = &uiInterface;
+
+    if(!connman.Start(threadGroup, scheduler, strNodeError, std::move(connOptions)))
         return InitError(strNodeError);
 
     // Monitor the chain, and alert if we get blocks much quicker or slower than expected
