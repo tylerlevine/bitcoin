@@ -102,6 +102,8 @@ public:
         int nMaxConnections = 0;
         int nMaxOutbound = 0;
         int nBestHeight = 0;
+        unsigned int nSendBufferMaxSize = 0;
+        unsigned int nReceiveFloodSize = 0;
         CClientUIInterface* interface = nullptr;
     };
 
