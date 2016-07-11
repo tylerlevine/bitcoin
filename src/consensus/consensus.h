@@ -31,9 +31,22 @@ static const int64_t MAX_BLOCK_SIGOPS_COST = 80000;
 /** Coinbase transaction outputs can only be spent after this number of new blocks (network rule) */
 static const int COINBASE_MATURITY = 100;
 
+/**
+ * Consensus validations (levels: Script, Header, Transaction and Block):
+ * Check_ is for functions that check a level for some particular
+ *  provided data or none (for most basic checks).
+ * Verify_ means all data provided was enough for this level and its
+ * "consensus-verified" in a particular chain.
+ */
+namespace Consensus {
+} // namespace Consensus
+
 /** Transaction validation functions */
 
-/** Context-independent validity checks */
+/**
+ * Context-independent CTransaction validity checks.
+ * Nobody should spend an extra cycle on a transaction that doesn't pass this.
+ */
 bool CheckTransaction(const CTransaction& tx, CValidationState& state);
 
 namespace Consensus {
