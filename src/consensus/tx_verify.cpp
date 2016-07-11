@@ -4,9 +4,9 @@
 
 #include "consensus.h"
 
-#include "primitives/transaction.h"
-#include "script/interpreter.h"
-#include "script/sigcache.h"
+#include "interpreter.h"
+#include "sigcache.h"
+#include "transaction.h"
 #include "validation.h"
 
 // TODO remove the following dependencies

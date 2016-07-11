@@ -7,9 +7,9 @@
 
 #include "base58.h"
 #include "consensus/consensus.h"
+#include "consensus/serialize.h"
 #include "consensus/validation.h"
 #include "protocol.h"
-#include "serialize.h"
 #include "sync.h"
 #include "util.h"
 #include "utiltime.h"

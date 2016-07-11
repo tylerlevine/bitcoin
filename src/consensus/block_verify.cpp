@@ -4,8 +4,8 @@
 
 #include "consensus.h"
 
+#include "block.h"
 #include "merkle.h"
-#include "primitives/block.h"
 #include "tinyformat.h"
 #include "validation.h"
 #include "version.h"
