@@ -7,10 +7,12 @@
 #define BITCOIN_CONSENSUS_CONSENSUS_H
 
 #include "amount.h"
+#include "params.h"
 
 #include <stdint.h>
 #include <vector>
 
+class CBlockHeader;
 class CBlockIndex;
 class CCoinsViewCache;
 class CTransaction;
@@ -62,6 +64,20 @@ bool CheckTxInputsScripts(const CTransaction& tx, CValidationState& state, const
 bool VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, const CBlockIndex* pindexPrev, bool fScriptChecks, bool cacheStore, CAmount& nFees, int64_t& nSigOpsCost);
 
 } // namespace Consensus
+
+/** Header validation functions */
+
+/**
+ * Context-independent validity checks
+ */
+bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true);
+
+/**
+ * Context-dependent validity checks.
+ *  By "context", we mean only the previous block headers, but not the UTXO
+ *  set; UTXO-related validity checks are done in ConnectBlock().
+ */
+bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev, int64_t nAdjustedTime);
 
 /** Auxiliary functions for transaction validation (ideally should not be exposed) */
 
