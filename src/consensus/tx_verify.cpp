@@ -255,7 +255,7 @@ bool Consensus::CheckTxCoinbase(const CTransaction& tx, CValidationState& state,
     return true;
 }
 
-bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, CAmount& nFees)
+bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, CAmount& nFees, int64_t& nSigOpsCost)
 {
     int64_t nLockTimeCutoff = (flags & LOCKTIME_MEDIAN_TIME_PAST)
                               ? nMedianTimePast
@@ -275,6 +275,14 @@ bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const 
     if (!tx.IsCoinBase() && !inputs.HaveInputs(tx))
         return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-missingorspent", false,
                          "inputs unavailable/missing/spent");
+
+    // GetTransactionSigOpCost counts 3 types of sigops:
+    // * legacy (always)
+    // * p2sh (when P2SH enabled in flags and excludes coinbase)
+    // * witness (when witness enabled in flags and excludes coinbase)
+    nSigOpsCost += GetTransactionSigOpCost(tx, inputs, flags);
+    if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
+        return state.DoS(100, false, REJECT_INVALID, "bad-blk-sigops", false, "too many sigops");
 
     if (tx.IsCoinBase())
         return CheckTxCoinbase(tx, state, flags, nHeight);

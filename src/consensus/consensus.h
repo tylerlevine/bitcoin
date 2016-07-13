@@ -51,7 +51,7 @@ bool CheckTxCoinbase(const CTransaction& tx, CValidationState& state, const int6
  * Fully verify a CTransaction.
  * @TODO this is incomplete, among other things, the scripts are not checked yet.
  */
-bool VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, CAmount& nFees);
+bool VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, CAmount& nFees, int64_t& nSigOpsCost);
 
 } // namespace Consensus
 
