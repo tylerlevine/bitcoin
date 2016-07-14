@@ -255,7 +255,7 @@ bool Consensus::CheckTxCoinbase(const CTransaction& tx, CValidationState& state,
     return true;
 }
 
-bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, CAmount& nFees, int64_t& nSigOpsCost)
+bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, const CBlockIndex* pindexPrev, CAmount& nFees, int64_t& nSigOpsCost)
 {
     int64_t nLockTimeCutoff = (flags & LOCKTIME_MEDIAN_TIME_PAST)
                               ? nMedianTimePast
@@ -286,6 +286,19 @@ bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const 
 
     if (tx.IsCoinBase())
         return CheckTxCoinbase(tx, state, flags, nHeight);
+
+    // Check that transaction is BIP68 final
+    // BIP68 lock checks (as opposed to nLockTime checks) must
+    // be in ConnectBlock because they require the UTXO set
+    std::vector<int> prevheights;
+    prevheights.resize(tx.vin.size());
+    for (size_t j = 0; j < tx.vin.size(); j++) {
+        prevheights[j] = inputs.AccessCoins(tx.vin[j].prevout.hash)->nHeight;
+    }
+
+    if (!SequenceLocks(tx, flags, &prevheights, *pindexPrev))
+        return state.DoS(100, false, REJECT_INVALID, "bad-txns-nonfinal", false,
+                         "contains a non-BIP68-final transaction");
 
     if (!CheckTxInputs(tx, state, inputs, nSpendHeight, nFees))
         return false;

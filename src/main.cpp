@@ -2087,7 +2087,6 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : NULL);
 
     std::vector<uint256> vOrphanErase;
-    std::vector<int> prevheights;
     CAmount nFees = 0;
     int nInputs = 0;
     int64_t nSigOpsCost = 0;
@@ -2101,19 +2100,11 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = block.vtx[i];
-        if (!Consensus::VerifyTx(tx, state, flags, nHeight, pindex->GetMedianTimePast(), block.GetBlockTime(), view, nSpendHeight, nFees, nSigOpsCost))
+        if (!Consensus::VerifyTx(tx, state, flags, nHeight, pindex->GetMedianTimePast(), block.GetBlockTime(), view, nSpendHeight, pindex, nFees, nSigOpsCost))
             return error("%s: Consensus::VerifyTx: %s, %s", __func__, tx.GetHash().ToString(), FormatStateMessage(state));
 
         if (!tx.IsCoinBase())
         {
-            // Check that transaction is BIP68 final
-            // BIP68 lock checks (as opposed to nLockTime checks) must
-            // be in ConnectBlock because they require the UTXO set
-            prevheights.resize(tx.vin.size());
-            for (size_t j = 0; j < tx.vin.size(); j++) {
-                prevheights[j] = view.AccessCoins(tx.vin[j].prevout.hash)->nHeight;
-            }
-
             // Which orphan pool entries must we evict?
             for (size_t j = 0; j < tx.vin.size(); j++) {
                 auto itByPrev = mapOrphanTransactionsByPrev.find(tx.vin[j].prevout);
@@ -2123,11 +2114,6 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
                     const uint256& orphanHash = orphanTx.GetHash();
                     vOrphanErase.push_back(orphanHash);
                 }
-            }
-
-            if (!SequenceLocks(tx, flags, &prevheights, *pindex)) {
-                return state.DoS(100, error("%s: contains a non-BIP68-final transaction", __func__),
-                                 REJECT_INVALID, "bad-txns-nonfinal");
             }
 
             std::vector<CScriptCheck> vChecks;
