@@ -14,6 +14,7 @@
 class CBlockIndex;
 class CCoinsViewCache;
 class CTransaction;
+class CUtxoView;
 class CValidationState;
 
 /** The maximum allowed size for a serialized block, in bytes (only for buffer size limits) */
@@ -48,10 +49,17 @@ bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoins
 bool CheckTxCoinbase(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight);
 
 /**
+ * Check whether that all scripts (and signatures) of the inputs of this transaction are valid.
+ * This does not modify the UTXO set.
+ * Preconditions: tx.IsCoinBase() is false.
+ */
+bool CheckTxInputsScripts(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, unsigned int flags, bool cacheStore);
+
+/**
  * Fully verify a CTransaction.
  * @TODO this is incomplete, among other things, the scripts are not checked yet.
  */
-bool VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, const CBlockIndex* pindexPrev, CAmount& nFees, int64_t& nSigOpsCost);
+bool VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, const CBlockIndex* pindexPrev, bool fScriptChecks, bool cacheStore, CAmount& nFees, int64_t& nSigOpsCost);
 
 } // namespace Consensus
 

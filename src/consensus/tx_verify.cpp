@@ -255,7 +255,7 @@ bool Consensus::CheckTxCoinbase(const CTransaction& tx, CValidationState& state,
     return true;
 }
 
-bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, const CBlockIndex* pindexPrev, CAmount& nFees, int64_t& nSigOpsCost)
+bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, const CBlockIndex* pindexPrev, bool fScriptChecks, bool cacheStore, CAmount& nFees, int64_t& nSigOpsCost)
 {
     int64_t nLockTimeCutoff = (flags & LOCKTIME_MEDIAN_TIME_PAST)
                               ? nMedianTimePast
@@ -303,5 +303,8 @@ bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const 
     if (!CheckTxInputs(tx, state, inputs, nSpendHeight, nFees))
         return false;
 
+    if (fScriptChecks && !CheckTxInputsScripts(tx, state, inputs, flags, cacheStore))
+        return false;
+    
     return true;
 }
