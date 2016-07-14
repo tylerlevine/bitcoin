@@ -657,6 +657,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
     uint64_t innerUsage = 0;
 
     CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(pcoins));
+    const int64_t nSpendHeight = GetSpendHeight(mempoolDuplicate);
 
     LOCK(cs);
     list<const CTxMemPoolEntry*> waitingOnDependants;
@@ -737,7 +738,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
             waitingOnDependants.push_back(&(*it));
         else {
             CValidationState state;
-            assert(CheckInputs(tx, state, mempoolDuplicate, false, 0, false, NULL));
+            assert(Consensus::CheckTxInputs(tx, state, mempoolDuplicate, nSpendHeight));
             UpdateCoins(tx, mempoolDuplicate, 1000000);
         }
     }
@@ -751,7 +752,8 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
             stepsSinceLastRemove++;
             assert(stepsSinceLastRemove < waitingOnDependants.size());
         } else {
-            assert(CheckInputs(entry->GetTx(), state, mempoolDuplicate, false, 0, false, NULL));
+            CValidationState state;
+            assert(Consensus::CheckTxInputs(entry->GetTx(), state, mempoolDuplicate, nSpendHeight));
             UpdateCoins(entry->GetTx(), mempoolDuplicate, 1000000);
             stepsSinceLastRemove = 0;
         }
