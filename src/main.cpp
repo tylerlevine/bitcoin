@@ -1007,7 +1007,7 @@ bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const C
         CCoinsView dummy;
         CCoinsViewCache view(&dummy);
 
-        CAmount nValueIn = 0;
+        CAmount nFees = 0;
         LockPoints lp;
         {
         LOCK(pool.cs);
@@ -1035,17 +1035,19 @@ bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const C
             }
         }
 
-        // are the actual inputs available?
+        // This redundant check doesn't trigger the DoS code on purpose; if it did, it would make it easier
+        // for an attacker to attempt to split the network (Consensus::CheckTxInputs also checks this).
         if (!view.HaveInputs(tx))
             return state.Invalid(false, REJECT_DUPLICATE, "bad-txns-inputs-spent");
 
         // Bring the best block into scope
         view.GetBestBlock();
 
-        nValueIn = view.GetValueIn(tx);
-
         // we have all inputs cached now, so switch back to dummy, so we don't need to keep lock on mempool
         view.SetBackend(dummy);
+
+        if (!Consensus::CheckTxInputs(tx, state, view, GetSpendHeight(view), nFees))
+            return error("%s: Consensus::CheckTxInputs: %s, %s", __func__, tx.GetHash().ToString(), FormatStateMessage(state));
 
         // Only accept BIP68 sequence locked transactions that can be mined in the next
         // block; we don't want our mempool filled up with transactions that can't
@@ -1062,8 +1064,6 @@ bool AcceptToMemoryPoolWorker(CTxMemPool& pool, CValidationState& state, const C
 
         int64_t nSigOpsCost = GetTransactionSigOpCost(tx, view, STANDARD_SCRIPT_VERIFY_FLAGS);
 
-        CAmount nValueOut = tx.GetValueOut();
-        CAmount nFees = nValueIn-nValueOut;
         // nModifiedFees includes any fee deltas from PrioritiseTransaction
         CAmount nModifiedFees = nFees;
         double nPriorityDummy = 0;
@@ -1727,9 +1727,6 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
 {
     if (!tx.IsCoinBase())
     {
-        if (!Consensus::CheckTxInputs(tx, state, inputs, GetSpendHeight(inputs)))
-            return false;
-
         if (pvChecks)
             pvChecks->reserve(tx.vin.size());
 
@@ -2099,18 +2096,16 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
     vPos.reserve(block.vtx.size());
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     const int nHeight = pindex == NULL ? 0 : pindex->nHeight + 1;
+    // Explain why GetSpendHeight(view) fails with empty blocks
+    const int64_t nSpendHeight = block.vtx.size() > 1 ? GetSpendHeight(view) : nHeight;
     for (unsigned int i = 0; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = block.vtx[i];
-        if (!Consensus::VerifyTx(tx, state, flags, nHeight, pindex->GetMedianTimePast(), block.GetBlockTime(), view))
+        if (!Consensus::VerifyTx(tx, state, flags, nHeight, pindex->GetMedianTimePast(), block.GetBlockTime(), view, nSpendHeight, nFees))
             return error("%s: Consensus::VerifyTx: %s, %s", __func__, tx.GetHash().ToString(), FormatStateMessage(state));
 
         if (!tx.IsCoinBase())
         {
-            if (!view.HaveInputs(tx))
-                return state.DoS(100, error("ConnectBlock(): inputs missing/spent"),
-                                 REJECT_INVALID, "bad-txns-inputs-missingorspent");
-
             // Check that transaction is BIP68 final
             // BIP68 lock checks (as opposed to nLockTime checks) must
             // be in ConnectBlock because they require the UTXO set
@@ -2147,8 +2142,6 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 
         if (!tx.IsCoinBase())
         {
-            nFees += view.GetValueIn(tx)-tx.GetValueOut();
-
             std::vector<CScriptCheck> vChecks;
             bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
             if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults, nScriptCheckThreads ? &vChecks : NULL))

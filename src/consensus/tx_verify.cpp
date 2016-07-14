@@ -203,15 +203,9 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state)
     return true;
 }
 
-bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, int nSpendHeight)
+bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, int nSpendHeight, CAmount& nFees)
 {
-        // This doesn't trigger the DoS code on purpose; if it did, it would make it easier
-        // for an attacker to attempt to split the network.
-        if (!inputs.HaveInputs(tx))
-            return state.Invalid(false, 0, "", "Inputs unavailable");
-
         CAmount nValueIn = 0;
-        CAmount nFees = 0;
         for (unsigned int i = 0; i < tx.vin.size(); i++)
         {
             const COutPoint &prevout = tx.vin[i].prevout;
@@ -261,7 +255,7 @@ bool Consensus::CheckTxCoinbase(const CTransaction& tx, CValidationState& state,
     return true;
 }
 
-bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs)
+bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, CAmount& nFees)
 {
     int64_t nLockTimeCutoff = (flags & LOCKTIME_MEDIAN_TIME_PAST)
                               ? nMedianTimePast
@@ -278,8 +272,15 @@ bool Consensus::VerifyTx(const CTransaction& tx, CValidationState& state, const 
             return state.DoS(100, false, REJECT_INVALID, "bad-txns-BIP30");
     }
 
+    if (!tx.IsCoinBase() && !inputs.HaveInputs(tx))
+        return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-missingorspent", false,
+                         "inputs unavailable/missing/spent");
+
     if (tx.IsCoinBase())
         return CheckTxCoinbase(tx, state, flags, nHeight);
+
+    if (!CheckTxInputs(tx, state, inputs, nSpendHeight, nFees))
+        return false;
 
     return true;
 }

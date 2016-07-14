@@ -6,6 +6,8 @@
 #ifndef BITCOIN_CONSENSUS_CONSENSUS_H
 #define BITCOIN_CONSENSUS_CONSENSUS_H
 
+#include "amount.h"
+
 #include <stdint.h>
 #include <vector>
 
@@ -37,7 +39,7 @@ namespace Consensus {
  * This does not modify the UTXO set. This does not check scripts and sigs.
  * Preconditions: tx.IsCoinBase() is false.
  */
-bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, int nSpendHeight);
+bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoinsViewCache& inputs, int nSpendHeight, CAmount& nFees);
 
 /**
  * Checks specific to coinbase transactions.
@@ -49,7 +51,7 @@ bool CheckTxCoinbase(const CTransaction& tx, CValidationState& state, const int6
  * Fully verify a CTransaction.
  * @TODO this is incomplete, among other things, the scripts are not checked yet.
  */
-bool VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs);
+bool VerifyTx(const CTransaction& tx, CValidationState& state, const int64_t flags, const int64_t nHeight, const int64_t nMedianTimePast, const int64_t nBlockTime, const CCoinsViewCache& inputs, const int64_t nSpendHeight, CAmount& nFees);
 
 } // namespace Consensus
 
