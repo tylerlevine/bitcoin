@@ -89,6 +89,12 @@ bool VerifyBlockHeader(const CBlockHeader& block, CValidationState& state, const
 
 } // namespace Consensus
 
+/** Block validation functions */
+
+/** Context-independent validity checks */
+bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true, bool fCheckMerkleRoot = true);
+
+
 /** Auxiliary functions for transaction validation (ideally should not be exposed) */
 
 /**

@@ -3001,69 +3001,6 @@ bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigne
     return true;
 }
 
-bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW, bool fCheckMerkleRoot)
-{
-    // These are checks that are independent of context.
-
-    if (block.fChecked)
-        return true;
-
-    // Check that the header is valid (particularly PoW).  This is mostly
-    // redundant with the call in AcceptBlockHeader.
-    if (!CheckBlockHeader(block, state, consensusParams, fCheckPOW))
-        return false;
-
-    // Check the merkle root.
-    if (fCheckMerkleRoot) {
-        bool mutated;
-        uint256 hashMerkleRoot2 = BlockMerkleRoot(block, &mutated);
-        if (block.hashMerkleRoot != hashMerkleRoot2)
-            return state.DoS(100, false, REJECT_INVALID, "bad-txnmrklroot", true, "hashMerkleRoot mismatch");
-
-        // Check for merkle tree malleability (CVE-2012-2459): repeating sequences
-        // of transactions in a block without affecting the merkle root of a block,
-        // while still invalidating it.
-        if (mutated)
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-duplicate", true, "duplicate transaction");
-    }
-
-    // All potential-corruption validation must be done before we do any
-    // transaction validation, as otherwise we may mark the header as invalid
-    // because we receive the wrong transactions for it.
-    // Note that witness malleability is checked in ContextualCheckBlock, so no
-    // checks that use witness data may be performed here.
-
-    // Size limits
-    if (block.vtx.empty() || block.vtx.size() > MAX_BLOCK_BASE_SIZE || ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) > MAX_BLOCK_BASE_SIZE)
-        return state.DoS(100, false, REJECT_INVALID, "bad-blk-length", false, "size limits failed");
-
-    // First transaction must be coinbase, the rest must not be
-    if (block.vtx.empty() || !block.vtx[0].IsCoinBase())
-        return state.DoS(100, false, REJECT_INVALID, "bad-cb-missing", false, "first tx is not coinbase");
-    for (unsigned int i = 1; i < block.vtx.size(); i++)
-        if (block.vtx[i].IsCoinBase())
-            return state.DoS(100, false, REJECT_INVALID, "bad-cb-multiple", false, "more than one coinbase");
-
-    // Check transactions
-    BOOST_FOREACH(const CTransaction& tx, block.vtx)
-        if (!CheckTransaction(tx, state))
-            return state.Invalid(false, state.GetRejectCode(), state.GetRejectReason(),
-                                 strprintf("Transaction check failed (tx hash %s) %s", tx.GetHash().ToString(), state.GetDebugMessage()));
-
-    unsigned int nSigOps = 0;
-    BOOST_FOREACH(const CTransaction& tx, block.vtx)
-    {
-        nSigOps += GetLegacySigOpCount(tx);
-    }
-    if (nSigOps * WITNESS_SCALE_FACTOR > MAX_BLOCK_SIGOPS_COST)
-        return state.DoS(100, false, REJECT_INVALID, "bad-blk-sigops", false, "out-of-bounds SigOpCount");
-
-    if (fCheckPOW && fCheckMerkleRoot)
-        block.fChecked = true;
-
-    return true;
-}
-
 static bool CheckIndexAgainstCheckpoint(const CBlockIndex* pindexPrev, CValidationState& state, const CChainParams& chainparams, const uint256& hash)
 {
     if (*pindexPrev->phashBlock == chainparams.GetConsensus().hashGenesisBlock)
