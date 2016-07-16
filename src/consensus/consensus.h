@@ -79,6 +79,15 @@ bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const 
  */
 bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev, int64_t nAdjustedTime);
 
+namespace Consensus {
+
+/**
+ * Fully verify a CBlockHeader.
+ */
+bool VerifyBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, int64_t nAdjustedTime, const CBlockIndex* pindexPrev, bool fCheckPOW);
+
+} // namespace Consensus
+
 /** Auxiliary functions for transaction validation (ideally should not be exposed) */
 
 /**
