@@ -19,6 +19,7 @@ class CCoinsViewCache;
 class CTransaction;
 class CUtxoView;
 class CValidationState;
+class VersionBitsCache;
 
 /** The maximum allowed size for a serialized block, in bytes (only for buffer size limits) */
 static const unsigned int MAX_BLOCK_SERIALIZED_SIZE = 4000000;
@@ -106,6 +107,9 @@ bool VerifyBlockHeader(const CBlockHeader& block, CValidationState& state, const
 
 /** Context-independent validity checks */
 bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true, bool fCheckMerkleRoot = true);
+
+/** Context-dependent validity checks */
+bool ContextualCheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev, VersionBitsCache& versionbitscache);
 
 
 /** Auxiliary functions for transaction validation (ideally should not be exposed) */
