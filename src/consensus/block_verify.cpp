@@ -12,6 +12,9 @@
 #include "version.h"
 #include "versionbits.h"
 
+// TODO remove the following dependencies
+#include "chainparams.h"
+
 #include <boost/foreach.hpp>
 
 int GetWitnessCommitmentIndex(const CBlock& block)
