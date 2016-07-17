@@ -167,6 +167,7 @@ libbitcoin_server_a_SOURCES = \
   blockencodings.cpp \
   chain.cpp \
   checkpoints.cpp \
+  consensus/block_verify.cpp \
   consensus/header_verify.cpp \
   consensus/tx_verify.cpp \
   httprpc.cpp \

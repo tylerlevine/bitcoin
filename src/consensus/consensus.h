@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <vector>
 
+class CBlock;
 class CBlockHeader;
 class CBlockIndex;
 class CCoinsViewCache;
@@ -135,5 +136,13 @@ bool EvaluateSequenceLocks(const CBlockIndex& block, std::pair<int, int64_t> loc
  * Consensus critical. Takes as input a list of heights at which tx's inputs (in order) confirmed.
  */
 bool SequenceLocks(const CTransaction &tx, int flags, std::vector<int>* prevHeights, const CBlockIndex& block);
+
+/** Auxiliary functions for block validation (ideally should not be exposed) */
+
+/**
+ * Compute at which vout of the block's coinbase transaction the witness
+ * commitment occurs, or -1 if not found.
+ */
+int GetWitnessCommitmentIndex(const CBlock& block);
 
 #endif // BITCOIN_CONSENSUS_CONSENSUS_H
