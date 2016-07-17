@@ -3522,11 +3522,10 @@ bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& sta
     return true;
 }
 
-bool ContextualCheckBlock(const CBlock& block, CValidationState& state, const CBlockIndex* pindexPrev, VersionBitsCache& versionbitscache)
+bool ContextualCheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev, VersionBitsCache& versionbitscache)
 {
     const int nHeight = pindexPrev == NULL ? 0 : pindexPrev->nHeight + 1;
-    const Consensus::Params& consensusParams = Params().GetConsensus();
-
+ 
     // Start enforcing BIP113 (Median Time Past) using versionbits logic.
     int nLockTimeFlags = 0;
     if (VersionBitsState(pindexPrev, consensusParams, Consensus::DEPLOYMENT_CSV, versionbitscache) == THRESHOLD_ACTIVE) {
@@ -3660,6 +3659,8 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, const CCha
 
     CBlockIndex *pindexDummy = NULL;
     CBlockIndex *&pindex = ppindex ? *ppindex : pindexDummy;
+    // TODO pass Consensus::Params& instead of CChainParams&
+    const Consensus::Params& consensusParams = Params().GetConsensus();
 
     if (!AcceptBlockHeader(block, state, chainparams, &pindex))
         return false;
@@ -3686,7 +3687,8 @@ static bool AcceptBlock(const CBlock& block, CValidationState& state, const CCha
     }
     if (fNewBlock) *fNewBlock = true;
 
-    if ((!CheckBlock(block, state, chainparams.GetConsensus(), GetAdjustedTime())) || !ContextualCheckBlock(block, state, pindex->pprev, versionbitscache)) {
+    if ((!CheckBlock(block, state, consensusParams, GetAdjustedTime())) ||
+        !ContextualCheckBlock(block, state, consensusParams, pindex->pprev, versionbitscache)) {
         if (state.IsInvalid() && !state.CorruptionPossible()) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
             setDirtyBlockIndex.insert(pindex);
@@ -3777,7 +3779,7 @@ bool TestBlockValidity(CValidationState& state, const CChainParams& chainparams,
         return error("%s: Consensus::ContextualCheckBlockHeader: %s", __func__, FormatStateMessage(state));
     if (!CheckBlock(block, state, chainparams.GetConsensus(), fCheckPOW, fCheckMerkleRoot))
         return error("%s: Consensus::CheckBlock: %s", __func__, FormatStateMessage(state));
-    if (!ContextualCheckBlock(block, state, pindexPrev, versionbitscache))
+    if (!ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindexPrev, versionbitscache))
         return error("%s: Consensus::ContextualCheckBlock: %s", __func__, FormatStateMessage(state));
     if (!ConnectBlock(block, state, &indexDummy, viewNew, chainparams, true))
         return false;
