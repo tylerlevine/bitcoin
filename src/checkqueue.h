@@ -48,27 +48,11 @@ constexpr size_t clog2 (size_t x) {
     return (x << 1)>>1 == x ? clog2(x << 1) - 1 : 8*sizeof(size_t);
 }
 
-static_assert(clog2(31) == 5, "clog2 is broken");
-static_assert(clog2(32) == 6, "clog2 is broken");
+    std::array<CCheckQueueWorker<T>, MAX_SCRIPTCHECK_THREADS> worker_local_state;
+    //! The number of workers (including the master) that are idle.
+    boost::lockfree::queue<T*> queue;
 
-template <typename T, size_t J, size_t W>
-class CCheckQueue
-{
-    using CHECK_TYPE = T;
-    static const size_t MAX_JOBS = J;
-    static const size_t MAX_WORKERS = W;
-private:
-    class job_array {
-        std::array<T, MAX_JOBS> data;
-        std::array<padded<std::atomic_flag>, MAX_JOBS> flags;
-        size_t next_free_index = 0;
-    public:
-        void add (std::vector<T>& vChecks) {
-            for (T& check : vChecks)
-                check.swap(data[next_free_index++]);
-        }
-        bool reserve(size_t i) {
-            return !flags[i].test_and_set(std::memory_order_acquire);
+    //! The total number of workers (including the master).
 
         }
         bool eval(size_t i) {
@@ -160,43 +144,9 @@ private:
      *     - Preferentially help 0 (the master) as it joins last
      *
      */
-    class PriorityWorkQueue {
-        job_array& jobs;
-        size_t MAX_ID;
-        size_t id;
-        size_t top;
-        struct OUT_OF_WORK_ERROR{};
-        size_t currently_helping;
-        size_t size;
-        std::array<std::vector<size_t>, MAX_WORKERS> remaining_work;
-        // This is used to emulate pop_front for a vector
-        std::array<size_t, MAX_WORKERS> remaining_work_bottom;
-    public:
-        PriorityWorkQueue(job_array& jobs, size_t id_, size_t MAX_ID_) :
-            jobs(jobs), id(id_), MAX_ID(MAX_ID_)
-        {
-            // We reserve on construction, one extra (potentially)
-            for (int i = 0; i < MAX_ID; ++i)
-                remaining_work[i].reserve(1+(MAX_JOBS/MAX_ID));
-            reset();
-        };
-        // adds entries for execution up to, but not including, index n.
-        // Places entries in the proper bucket
-        void add_up_to_excl(size_t n){
-            for (; top < n; ++top)
-                remaining_work[top % MAX_ID].push_back(top);
-            size +=  top < n ? n - top : 0;
-        };
-        // Completely reset the state
-        void reset() {
-            top = 0;
-            size = 0;
-            currently_helping = (id + 1) % MAX_ID;
-            for (int i = 0; i < MAX_ID; ++i) {
-                remaining_work[i].clear();
-                remaining_work_bottom[i] = 0;
-            }
-        };
+    std::atomic_uint nTodo;
+    std::vector<T*> to_free_list;
+    std::vector<T*> reserved_pool;
 
     
         /* Get one first from out own work stack (take the first one) and then try from neighbors sequentially (from the last one)
@@ -215,158 +165,63 @@ private:
                 return s;
             } else {
 
-                size_t s = remaining_work[id].front();
-                ++remaining_work_bottom[id];
-                --size;
-                return s;
-            }
-           
-        };
-
-        // If we have work to do, do it.
-        // If not, return true. 
-        // This is safe because if it was already claimed then someone else
-        // would report the error if it was a bad check
-        bool try_do_one() {
-            if (empty())
-                return true;
-            size_t i = get_one();
-            return jobs.reserve(i) ? jobs.eval(i) : true;
-        }
-        bool empty() {
-            return size == 0;
-        }
-
-    };
-    
-    /* 
-     * Fields of the CCheckQueue 
-     */
-    job_array jobs;
-    std::atomic<shared_status> status;
-    round_barrier done_round;
-    std::atomic_bool reset;
-    std::atomic_bool idle_gate;
-    // Used to signal Exit for program cleanup, initialized false.
-    std::atomic_uint ids;
-    unsigned int nBatchSize;
-    std::atomic_uint nIdle;
-
-    // Run a lambda update function until compexchg suceeds. Return modified copy for caching.
-    template<typename Callable>
-        shared_status update(Callable modify) {
-            shared_status original;
-            shared_status modified;
-            do {
-                original = status.load();
-                modified = modify(original);
-            } while ( ! status.compare_exchange_weak(original, modified));
-            return modified;
-        };
-    // Force a store of the status to the cleaned state
-    void status_reset() {
-        shared_status s;
-        s.nTodo = 0;
-        s.fAllOk = true;
-        s.masterJoined = false;
-        status.store(s);
-    };
 
     
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false, size_t MAX_ID = 1)
     {
-        // This should be ignored eventually, but needs testing to ensure this works on more platforms
-        static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
-        // Keep master always at 0 id -- maybe we should manually assign id's rather than this way, but this works.
-        size_t ID = fMaster ? 0 : ++ids;
-        assert(ID < MAX_ID);// "Got and invalid ID, wrong nScriptThread somewhere");
-        PriorityWorkQueue work_queue(jobs, ID, MAX_ID);
-
+        static std::atomic_uint cum_t {0};
+        
+        std::ostringstream oss;
+        oss << boost::this_thread::get_id();
+        std::string threadid = oss.str();
+        // fMaster is always at index 0, worker must always get a higher index!
+        if (fMaster){
+            LogPrint("threading", "Worker Thread %s\n", threadid);
+        }
+        else{
+            LogPrint("threading", "Master Thread %s\n", threadid);
+        }
+        bool fOk = true;
+        //std::vector<T>* queue = &worker_local_state[worker_index].queue;
         for(;;) {
-            // Round setup done here
-            shared_status status_cached;
-            std::array<bool, MAX_SCRIPTCHECK_THREADS> done_cache = {false};
-            bool fOk = true;
-            // Technically we could skip this on the first iteration, but not really worth it for added code
-            // We prefer reset to allocating a new one to save allocation.
-            work_queue.reset();
-
-            // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
-            // This frees the master to return with the result before the cleanup occurs.
-            if (ID == 1 || MAX_ID ==1) 
-            {
-                // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
-                // because of premature cleanup
-                while (nIdle +2 != MAX_ID)
-                    boost::this_thread::yield();
-                // Clean
-                jobs.reset();
-                status_reset();
-                // TODO: FIXME: We could just have all the threads wait on their done_round to be reset!
-                done_round.reset();
-                // Release all the threads
-                //
-                // This is a little odd. First, we close the idle gate such that all threads block at the reset waiting place
-                // (we already know they are past here)
-                //
-                // Then, we open the reset gate, releasing all the threads.
-                //
-                idle_gate = false;
-                reset = true;
-            }
-            // Wait for the reset bool unless master (0) or slave master slave (1)
-            if ( ID > 1) {
-                while (!idle_gate)
-                    boost::this_thread::yield();
-                ++nIdle;
-                while (!reset)
-                    boost::this_thread::yield();
-                if(--nIdle == 0){ // Last one out closes the reset gate, and then opens the idle gate.
-                    reset = false;
-                    idle_gate = true;
+            // logically, the do loop starts here
+            // Idle until has some work
+            if (fMaster) {
+                while (queue.empty()){
+                    if (nTodo == 0) {
+                        bool fRet = fAllOk;
+                        // reset the status for new work later
+                        if (fMaster)
+                            fAllOk = true;
+                        // return the current status
+                        return fRet;
+                    }
+                }
+            } else {
+                while (queue.empty()) {
                 }
             }
+            T * check;
+            fOk = fAllOk;
+            
+            while (nTodo) {
+                if (fOk) {
+                    //auto t1 = GetTimeMicros();
+                    //auto t2 = 0;
+                    if (queue.pop(check))
+                    {
+                        //t2 = GetTimeMicros() -t1;
+                        //cum_t += t2;
+                        //LogPrint("threading", "Queue pop took %d  micros,  total: [%q]\n", t2, cum_t   );
+                        fOk = check ? (*check)() : fOk;
+                        --nTodo;
+                    } else {
+                        break;
+                    }
 
-
-            for (;;) {
-
-                status_cached = status.load();
-                // TODO: FIXME: This doesn't seem to actually quit the thread group
-                if (status_cached.fQuit) 
-                    return false;
-                work_queue.add_up_to_excl(status_cached.nTodo); // Add the new work.
-                // We break if masterJoined and there is no work left to do
-                bool noWork =  work_queue.empty();
-                assert(fMaster ? fMaster == status_cached.masterJoined : true); // Master failed to denote presence on join
-
-                if (noWork && fMaster) 
-                {
-
-                    // If We're the master then no work will be added so reaching this point signals
-                    // exit unconditionally. 
-                    // We return the current status. Cleanup is handled elsewhere (RAII-style controller)
-                    //
-                    // Hack to prevent master looking up itself at this point...
-                    done_cache[0] = true;
-
-                    while (!done_round.load_done(MAX_ID, done_cache))
-                        boost::this_thread::yield();
-                    // Allow others to exit now.
-                    status_cached = status.load(); 
-                    bool fRet = status_cached.fAllOk;
-                    done_round.mark_done(ID, done_cache);
-                    return fRet;
-                } 
-                else if (noWork && status_cached.masterJoined)
-                {
-                    // If the master has joined, we won't find more work later
-
-                    // mark ourselves as completed
-                    done_round.mark_done(ID, done_cache);
-                    // We're waiting for the master to terminate at this point
-                    while (!done_round.load_done(MAX_ID, done_cache)) 
-                        boost::this_thread::yield();
+                } else {
+                    fAllOk = false;
                     break;
                 } 
                 else {
@@ -393,13 +248,8 @@ private:
     }
 
 public:
-    //! Create a new check queue -- should be impossible to ever have more than 100k checks
-    CCheckQueue(unsigned int nBatchSizeIn) : reset(false), idle_gate(true), ids(0), nBatchSize(nBatchSizeIn) {
-        // Initialize all the state
-        status_reset();
-        jobs.reset();
-        done_round.reset();
-    }
+    //! Create a new check queue -- should be impossible to ever have more than 25k
+    CCheckQueue(unsigned int nBatchSizeIn) : fAllOk(true), nTodo(0),  queue(25000) {}
 
     //! Worker thread
     void Thread(size_t MAX_ID)
@@ -422,23 +272,45 @@ public:
     //! Add a batch of checks to the queue
     void Add(std::vector<T>& vChecks)
     {
-        jobs.add(vChecks);
-        size_t vs = vChecks.size();
-        // Technically this is over strict as we are the ONLY writer to nTodo,
-        // we could get away with aborting if it fails because it would unconditionally
-        // mean fAllOk was false, therefore we would abort anyways...
-        // But again, failure case is not the hot-path
-        update([vs](shared_status s) {
-                s.nTodo += vs;
-                return s;
-                });
+        //static uint64_t cum_t = 0;
+        //auto t1 = GetTimeMicros();
+        to_free_list.reserve(to_free_list.size() + vChecks.size());
+        BOOST_FOREACH (T& check, vChecks) {
+            T* new_mem;
+            if (reserved_pool.empty()) 
+                new_mem = new T();
+            else {
+                new_mem = reserved_pool.back();
+                reserved_pool.pop_back();
+            }
+                
+            to_free_list.push_back(new_mem); // make sure this will be collected
+            check.swap(*new_mem); // TODO: is this correct?
+            // Guarantee a push
+            while(!queue.bounded_push(new_mem))
+            {
+            }
+        }
+        nTodo += vChecks.size();
+        //auto t2 = GetTimeMicros() - t1;
+        //cum_t += t2;
+        //LogPrint("threading", "Add Call took %d  micros,  total: [%q]\n", t2, cum_t   );
     }
 
     ~CCheckQueue()
     {
-        shared_status s; 
-        s.fQuit = true;
-        status.store(s);
+        unsafe_remove_worker_local_state();
+    }
+    void unsafe_remove_worker_local_state() {
+        // This is very fast now (before was slow)
+        //static int x = 0;
+        //LogPrint("threading", "Deleting the free list\n");
+        //auto t1 = GetTimeMicros();
+        reserved_pool.insert(reserved_pool.end(), to_free_list.begin(), to_free_list.end());
+        to_free_list.clear();
+        //auto t2 = GetTimeMicros() - t1;
+        //x += t2;
+        //LogPrint("threading", "Finished deleting the free list, %d, total:[%d] \n", t3, x);
     }
 
 
