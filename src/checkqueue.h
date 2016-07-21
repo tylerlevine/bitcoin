@@ -71,20 +71,27 @@ private:
             return !flags[i].test_and_set(std::memory_order_acquire);
 
         }
+        void reset_flag(size_t i) {
+    
+            flags[i].clear();
+        };
         bool eval(size_t i) {
             return data[i]();
-        }
+        };
         // FIXME: Need to mutually exclude any and all reset code
         // from the add code
         // Ideas: - get rid of reset by having add clear flags
         //        - Don't even need the destructor
-        void reset() {
-            while (next_free_index--) { // Must be post-fix
-                flags[next_free_index].clear();
-                data[next_free_index].~T(); // <- Is this one needed TODO:
-            }
+        void reset_jobs() {
+            // NOTE: We have this cleanup done "for free"
+            //       - data[i] is destructed by master on swap
+            //       - flags[i] is reset by each thread while waiting to be cleared for duty
+            //while (next_free_index--) { // Must be post-fix
+            //    flags[next_free_index].clear();
+            //    data[next_free_index].~T(); // <- Is this one needed TODO:
+            //}
             next_free_index = 0;
-        }
+        };
         
     };
     /* shared_status is used to communicate across threads critical state.
@@ -110,9 +117,17 @@ private:
         // un-needed atomic-loads. Note that Cache is a reference
         using Cache = std::array<bool, MAX_SCRIPTCHECK_THREADS>&;
     public:
+        round_barrier() {
+            for (auto& i : state)
+                i =true;
+        }
         void mark_done(size_t id, Cache cache) {
             state[id] = true;
             cache[id] = true;
+        };
+
+        void mark_done(size_t id) {
+            state[id] = true;
         };
         bool load_done(size_t upto, Cache cache) {
             bool x = true;
@@ -135,6 +150,9 @@ private:
         void reset() {
             for (auto& t : state)
                 t = false;
+        }
+        bool is_done(size_t i) {
+            return state[i];
         }
     };
     /* PriorityWorkQueue exists to help threads select work 
@@ -197,6 +215,9 @@ private:
                 remaining_work_bottom[i] = 0;
             }
         };
+        size_t get_top() {
+            return top;
+        };
 
     
         /* Get one first from out own work stack (take the first one) and then try from neighbors sequentially (from the last one)
@@ -245,8 +266,6 @@ private:
     job_array jobs;
     std::atomic<shared_status> status;
     round_barrier done_round;
-    std::atomic_bool reset;
-    std::atomic_bool idle_gate;
     // Used to signal Exit for program cleanup, initialized false.
     std::atomic_uint ids;
     unsigned int nBatchSize;
@@ -269,6 +288,7 @@ private:
         s.nTodo = 0;
         s.fAllOk = true;
         s.masterJoined = false;
+        s.fQuit = false;
         status.store(s);
     };
 
@@ -288,53 +308,61 @@ private:
             shared_status status_cached;
             std::array<bool, MAX_SCRIPTCHECK_THREADS> done_cache = {false};
             bool fOk = true;
-            // Technically we could skip this on the first iteration, but not really worth it for added code
-            // We prefer reset to allocating a new one to save allocation.
-            work_queue.reset();
 
             // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
             // This frees the master to return with the result before the cleanup occurs.
             if (ID == 1 || MAX_ID ==1) 
             {
+                size_t top = work_queue.get_top();
+                // We reset all the flags we think we'll use (also warms cache)
+                    LogPrint("threading", "Resetting flags\n");
+                for (int i = ID; i < top; i += MAX_ID)
+                    jobs.reset_flag(i);
+                // Reset master flags too
+                for (int i = 0; i < top; i += MAX_ID)
+                    jobs.reset_flag(i);
+
                 // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
                 // because of premature cleanup
-                while (nIdle +2 != MAX_ID)
+                    LogPrint("threading", "Waiting for all to be idle\n");
+                while (nIdle +2 < MAX_ID)
                     boost::this_thread::yield();
                 // Clean
-                jobs.reset();
                 status_reset();
+                LogPrint("threading", "Reset Status\n");
                 // TODO: FIXME: We could just have all the threads wait on their done_round to be reset!
-                done_round.reset();
                 // Release all the threads
-                //
-                // This is a little odd. First, we close the idle gate such that all threads block at the reset waiting place
-                // (we already know they are past here)
-                //
-                // Then, we open the reset gate, releasing all the threads.
-                //
-                idle_gate = false;
-                reset = true;
+                done_round.reset();
+                LogPrint("threading", "Cleared round\n");
             }
             // Wait for the reset bool unless master (0) or slave master slave (1)
             if ( ID > 1) {
-                while (!idle_gate)
-                    boost::this_thread::yield();
                 ++nIdle;
-                while (!reset)
+                size_t top = work_queue.get_top();
+                // We reset all the flags we think we'll use (also warms cache)
+                for (int i = ID; i < top; i += MAX_ID)
+                    jobs.reset_flag(i);
+                // Wait till the cleanup process marks us not-done
+                LogPrint("threading", "Waiting for round to release on %q\n", ID);
+                while (done_round.is_done(ID))
                     boost::this_thread::yield();
-                if(--nIdle == 0){ // Last one out closes the reset gate, and then opens the idle gate.
-                    reset = false;
-                    idle_gate = true;
-                }
+                --nIdle ;
             }
 
+            // Technically we could skip this on the first iteration, but not really worth it for added code
+            // We prefer reset to allocating a new one to save allocation.
+            // reset last because we need to reset our flags
+            work_queue.reset();
 
             for (;;) {
 
                 status_cached = status.load();
                 // TODO: FIXME: This doesn't seem to actually quit the thread group
-                if (status_cached.fQuit) 
+                if (status_cached.fQuit) {
+                    LogPrint("threading", "WHY NO QUIT\n");
+                    std::terminate();
                     return false;
+                }
                 work_queue.add_up_to_excl(status_cached.nTodo); // Add the new work.
                 // We break if masterJoined and there is no work left to do
                 bool noWork =  work_queue.empty();
@@ -394,13 +422,14 @@ private:
 
 public:
     //! Create a new check queue -- should be impossible to ever have more than 100k checks
-    CCheckQueue(unsigned int nBatchSizeIn) : reset(false), idle_gate(true), ids(0), nBatchSize(nBatchSizeIn) {
+    CCheckQueue(unsigned int nBatchSizeIn) :  ids(0), nBatchSize(nBatchSizeIn) {
         // Initialize all the state
         status_reset();
-        jobs.reset();
-        done_round.reset();
     }
 
+    void reset_jobs() {
+        jobs.reset_jobs();
+    };
     //! Worker thread
     void Thread(size_t MAX_ID)
     {
@@ -465,6 +494,8 @@ public:
         //        bool isIdle = pqueue->IsIdle();
         //      assert(isIdle);
         // }
+        if (pqueue)
+            pqueue->reset_jobs();
     }
 
     bool Wait()
