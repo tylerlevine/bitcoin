@@ -2239,15 +2239,11 @@ bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigne
 static CCheckQueue<CScriptCheck, MAX_SCRIPTCHECKS, MAX_SCRIPTCHECK_THREADS> scriptcheckqueue(128);
 
 
-void ThreadScriptCheck() {
-    RenameThread("bitcoin-scriptch");
-    scriptcheckqueue.Thread();
-}
 
 
-void ThreadScriptCheck(size_t s) {
+void ThreadScriptCheck(size_t MAX_ID) {
     RenameThread("bitcoin-scriptch");
-    scriptcheckqueue.Thread(s);
+    scriptcheckqueue.Thread(MAX_ID);
 }
 
 // Protected by cs_main
