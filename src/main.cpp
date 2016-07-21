@@ -2241,12 +2241,6 @@ void ThreadScriptCheck(size_t MAX_ID) {
     scriptcheckqueue.Thread(MAX_ID);
 }
 
-
-void ThreadScriptCheck(size_t s) {
-    RenameThread("bitcoin-scriptch");
-    scriptcheckqueue.Thread(s);
-}
-
 // Protected by cs_main
 VersionBitsCache versionbitscache;
 
