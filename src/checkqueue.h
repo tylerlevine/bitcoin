@@ -5,17 +5,14 @@
 #ifndef BITCOIN_CHECKQUEUE_H
 #define BITCOIN_CHECKQUEUE_H
 
-#include "consensus/consensus.h"
 #include <algorithm>
 #include <vector>
 #include "utiltime.h"
 #include "random.h"
+#include "util.h"
 
-#include <boost/foreach.hpp>
 #include <boost/thread.hpp>
 
-#include <boost/thread/locks.hpp>
-#include <boost/lockfree/queue.hpp>
 #include <atomic>
 #include <sstream>
 #include <string>
@@ -112,10 +109,10 @@ private:
      * all work and reported any bad checks it might have seen.
      */
     class round_barrier {
-        std::array<std::atomic_bool, MAX_SCRIPTCHECK_THREADS> state;
+        std::array<std::atomic_bool, MAX_WORKERS> state;
         // We pass a cache to round_barrier calls to decrease
         // un-needed atomic-loads. Note that Cache is a reference
-        using Cache = std::array<bool, MAX_SCRIPTCHECK_THREADS>&;
+        using Cache = std::array<bool, MAX_WORKERS>&;
     public:
         round_barrier() {
             for (auto& i : state)
@@ -306,7 +303,7 @@ private:
         for(;;) {
             // Round setup done here
             shared_status status_cached;
-            std::array<bool, MAX_SCRIPTCHECK_THREADS> done_cache = {false};
+            std::array<bool, MAX_WORKERS> done_cache = {false};
             bool fOk = true;
 
             // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
@@ -315,7 +312,6 @@ private:
             {
                 size_t top = work_queue.get_top();
                 // We reset all the flags we think we'll use (also warms cache)
-                    LogPrint("threading", "Resetting flags\n");
                 for (int i = ID; i < top; i += MAX_ID)
                     jobs.reset_flag(i);
                 // Reset master flags too
@@ -324,16 +320,13 @@ private:
 
                 // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
                 // because of premature cleanup
-                    LogPrint("threading", "Waiting for all to be idle\n");
                 while (nIdle +2 < MAX_ID)
                     boost::this_thread::yield();
                 // Clean
                 status_reset();
-                LogPrint("threading", "Reset Status\n");
                 // TODO: FIXME: We could just have all the threads wait on their done_round to be reset!
                 // Release all the threads
                 done_round.reset();
-                LogPrint("threading", "Cleared round\n");
             }
             // Wait for the reset bool unless master (0) or slave master slave (1)
             if ( ID > 1) {
@@ -343,7 +336,6 @@ private:
                 for (int i = ID; i < top; i += MAX_ID)
                     jobs.reset_flag(i);
                 // Wait till the cleanup process marks us not-done
-                LogPrint("threading", "Waiting for round to release on %q\n", ID);
                 while (done_round.is_done(ID))
                     boost::this_thread::yield();
                 --nIdle ;
@@ -359,8 +351,7 @@ private:
                 status_cached = status.load();
                 // TODO: FIXME: This doesn't seem to actually quit the thread group
                 if (status_cached.fQuit) {
-                    LogPrint("threading", "WHY NO QUIT\n");
-                    std::terminate();
+                    LogPrintf("Stopping Worker %q\n", ID);
                     return false;
                 }
                 work_queue.add_up_to_excl(status_cached.nTodo); // Add the new work.
@@ -465,6 +456,10 @@ public:
 
     ~CCheckQueue()
     {
+        quit_queue();
+    }
+    void quit_queue() {
+
         shared_status s; 
         s.fQuit = true;
         status.store(s);

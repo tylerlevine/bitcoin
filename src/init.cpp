@@ -188,6 +188,7 @@ void Shutdown()
     RenameThread("bitcoin-shutoff");
     mempool.AddTransactionsUpdated(1);
 
+    StopCCheckQueue();
     StopHTTPRPC();
     StopREST();
     StopRPC();
