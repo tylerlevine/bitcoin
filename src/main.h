@@ -15,6 +15,7 @@
 #include "coins.h"
 #include "net.h"
 #include "script/script_error.h"
+#include "script/sigcache.h"
 #include "sync.h"
 #include "versionbits.h"
 
@@ -428,6 +429,8 @@ public:
         scriptPubKey(txFromIn.vout[txToIn.vin[nInIn].prevout.n].scriptPubKey), amount(txFromIn.vout[txToIn.vin[nInIn].prevout.n].nValue),
         ptxTo(&txToIn), nIn(nInIn), nFlags(nFlagsIn), cacheStore(cacheIn), error(SCRIPT_ERR_UNKNOWN_ERROR) { }
 
+    bool operator()(bool frozen, std::function<void()>& cleanup);
+    bool operator()(std::function<void()>& cleanup);
     bool operator()();
 
     void swap(CScriptCheck &check) {

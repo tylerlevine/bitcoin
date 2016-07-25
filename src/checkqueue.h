@@ -12,6 +12,7 @@
 #include "util.h"
 
 #include <boost/thread.hpp>
+#include <mutex>
 
 #include <atomic>
 // This should be ignored eventually, but needs testing to ensure this works on more platforms
@@ -83,12 +84,18 @@ private:
          * C++11 guarantees that these are atomic
          * */
         std::array<cache_optimize<std::atomic_flag>, MAX_JOBS> flags;
+        std::array<std::function<void()>, MAX_JOBS> cleanups;
         /** used as the insertion point into the array. */
         size_t next_free_index = 0;
 
     public:
         /** add swaps a vector of checks into the checks array and increments the pointed 
          * only safe to run on master */
+        job_array() 
+        {
+            for(auto& i : cleanups)
+                i = [](){};
+        }
         void add(std::vector<T>& vChecks)
         {
             for (T& check : vChecks)
@@ -99,19 +106,19 @@ private:
          * and returns if it was successful */
         bool reserve(size_t i)
         {
-            return !flags[i].test_and_set(std::memory_order_relaxed);
+            return !flags[i].test_and_set();
         }
 
         /** reset_flag resets a flag with memory_order_relaxed, as we use other atomics for memory consistency*/
         void reset_flag(size_t i)
         {
-            flags[i].clear(std::memory_order_relaxed);
+            flags[i].clear();
         };
 
         /** eval runs a check at specified index */
         bool eval(size_t i)
         {
-            return checks[i]();
+            return checks[i](cleanups[i]);
         };
 
         /** reset_jobs resets the insertion index only, so should only be run on master.
@@ -123,6 +130,14 @@ private:
         void reset_jobs()
         {
             next_free_index = 0;
+        };
+        void job_cleanup(size_t upto)
+        {
+            for (int i = 0; i< upto; ++i) {
+                cleanups[i]();
+                cleanups[i] = [](){};
+            }
+
         };
     };
     /* shared_status is used to communicate across threads critical state.
@@ -342,11 +357,14 @@ private:
      */
     job_array jobs;
     std::atomic<shared_status> status;
+
     round_barrier done_round;
     /** used to assign ids to threads initially */
     std::atomic_uint ids;
     /** used to count how many threads have finished cleanup operations */
     std::atomic_uint nIdle;
+    std::mutex cleanup_mtx;
+
 
     /** Run a lambda update function until compexchg suceeds. Return modified copy for caching.
      *
@@ -369,6 +387,8 @@ private:
     /** Internal function that does bulk of the verification work. */
     bool Loop(const bool fMaster, const size_t RT_N_SCRIPTCHECK_THREADS)
     {
+        // If we are at 1 then CheckQueue should be disabled
+        assert(RT_N_SCRIPTCHECK_THREADS != 1); 
         // Keep master always at 0 id -- maybe we should manually assign id's rather than this way, but this works.
         size_t ID = fMaster ? 0 : ++ids;
         assert(ID < RT_N_SCRIPTCHECK_THREADS); // "Got and invalid ID, wrong nScriptThread somewhere");
@@ -389,7 +409,7 @@ private:
             // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
             // This frees the master to return with the result before the cleanup occurs
             // And allows for the ID == 1 to do the master's cleanup for it
-            if (ID == 1 || RT_N_SCRIPTCHECK_THREADS == 1) {
+            if (ID == 1 ) {
                 // We reset all the flags we think we'll use (also warms cache)
                 for (int i = ID; i < prev_top; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
@@ -402,6 +422,11 @@ private:
                 while (nIdle + 2 < RT_N_SCRIPTCHECK_THREADS)
                     boost::this_thread::yield();
                 // Cleanup
+                {
+                    jobs.job_cleanup(prev_top);
+                    cleanup_mtx.unlock();
+                }
+
 
                 // There is actually no other cleanup we can do without causing some bugs unfortunately (race condition
                 // with external adding)
@@ -498,7 +523,12 @@ public:
     CCheckQueue() : ids(0)
     {
         // Initialize all the state
+        cleanup_mtx.lock();
         status_reset();
+    }
+
+    void wait_until_clean() {
+        cleanup_mtx.lock();
     }
     /** Force a store of the status to the initialized state */
     void status_reset()
@@ -582,6 +612,7 @@ public:
         //      assert(isIdle);
         // }
         if (pqueue) {
+            pqueue->wait_until_clean();
             pqueue->reset_jobs();
         }
     }
