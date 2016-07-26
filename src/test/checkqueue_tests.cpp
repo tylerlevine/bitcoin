@@ -33,7 +33,9 @@ CCheckQueue<X, 100000, 16> queue;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
 {
 
-    decltype(queue)::PriorityWorkQueue work(queue.jobs, 0, 16);
+    CCheckQueue_Helpers::PriorityWorkQueue<decltype(queue)::Proto> work(0, 16);
+
+
     work.add(100);
     assert(!work.empty());
     volatile size_t x = work.get_one();
