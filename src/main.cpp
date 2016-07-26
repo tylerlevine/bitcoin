@@ -2411,7 +2411,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 
     CBlockUndo blockundo;
 
-    CCheckQueueControl<CScriptCheck, MAX_SCRIPTCHECKS, MAX_SCRIPTCHECK_THREADS> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : NULL, nScriptCheckThreads);
+    CCheckQueueControl<decltype(scriptcheckqueue)> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : NULL, nScriptCheckThreads);
 
     std::vector<uint256> vOrphanErase;
     std::vector<int> prevheights;
