@@ -1917,11 +1917,11 @@ bool CScriptCheck::operator()(bool readOnly, std::function<void ()>& cleanup ) {
 }
 bool CScriptCheck::operator()() {
     std::function<void()> a = [](){};
-    return (*this)();//(false, a);
+    return (*this)(false, a);
 }
 
 bool CScriptCheck::operator()(std::function<void()>& cleanup) {
-    return (*this)();//(true, cleanup);
+    return (*this)();
 }
 
 int GetSpendHeight(const CCoinsViewCache& inputs)
