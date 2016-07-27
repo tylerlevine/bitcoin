@@ -135,16 +135,15 @@ class round_barrier
       Cache must be correct, it would unsafe to manually update cache. */
 
 public:
-    using Cache = std::array<bool, Q::MAX_WORKERS>&;
+    using Cache = std::array<bool, Q::MAX_WORKERS>;
     /** Default state is true so that first round looks like a previous round succeeded*/
     round_barrier()
     {
         for (auto& i : state)
             i = true;
-        state[0] = false;
     }
 
-    void mark_done(size_t id, Cache cache)
+    void mark_done(size_t id, Cache& cache)
     {
         state[id] = true;
         cache[id] = true;
@@ -160,7 +159,7 @@ public:
      * @param upto 
      * @param cache
      * @returns if all entries up to upto were true*/
-    bool load_done(size_t upto, Cache cache)
+    bool load_done(size_t upto, Cache& cache)
     {
         bool x = true;
         for (auto i = 0; i < upto; i++) {
@@ -188,7 +187,7 @@ public:
         return state[i];
     }
 
-    bool is_done(size_t i, Cache cache)
+    bool is_done(size_t i, Cache& cache)
     {
         if (cache[i])
             return true;
@@ -230,10 +229,10 @@ class PriorityWorkQueue
     const size_t id;
     /** The number of workers that bitcoind started with, eg, RunTime Number ScriptCheck Threads  */
     const size_t RT_N_SCRIPTCHECK_THREADS;
-    std::array<std::array<size_t, Q::MAX_JOBS/Q::MAX_WORKERS>, Q::MAX_WORKERS> available;
+    std::array<std::array<size_t,1+ Q::MAX_JOBS/Q::MAX_WORKERS>, Q::MAX_WORKERS> available;
     /** The tops and bottoms track the egion that has been inserted into or completed */
-    std::array<typename std::array<size_t, Q::MAX_JOBS/Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> tops;
-    std::array<typename std::array<size_t, Q::MAX_JOBS/Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> bottoms;
+    std::array<typename std::array<size_t,1+ Q::MAX_JOBS/Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> tops;
+    std::array<typename std::array<size_t,1+ Q::MAX_JOBS/Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> bottoms;
     /** Stores the number of elements remaining */
     size_t size;
     /** Stores the total inserted, for cleanup */
@@ -242,15 +241,13 @@ class PriorityWorkQueue
 
 public:
     using queue_type = Q;
-    struct OUT_OF_WORK_ERROR {
-    };
-
+    struct OUT_OF_WORK{};
     PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_)
     {
 
         reset();
     };
-    /** adds entries for execution [total ,n)
+    /** adds entries for execution [total, n)
      * Places entries in the proper bucket
      * Resets the next thread to help if work was added
      */
@@ -259,22 +256,32 @@ public:
         if (n > total) {
             size += n - total;
             // TODO: More neatly
-            for (;total < n; ++total) {
-                auto worker = total%RT_N_SCRIPTCHECK_THREADS;
-                *tops[worker] = total;
-                ++tops[worker];
+            for (; total < n; ++total) {
+                auto worker_select = total%RT_N_SCRIPTCHECK_THREADS;
+                *tops[worker_select] = total;
+                ++tops[worker_select];
             }
         }
     };
     /** Completely reset the state */
     void reset()
     {
-        for (auto ind = 0; ind < RT_N_SCRIPTCHECK_THREADS; ++ind) {
-            tops[ind] = available[ind].begin();
-            bottoms[ind] = available[ind].begin();
+        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i) {
+            tops[i] = available[i].begin();
+            bottoms[i] = available[i].begin();
         }
         size = 0;
         total = 0;
+    };
+    /** as if all elements had been processed via pop */
+    void erase()
+    {
+        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+            if (i == id) 
+                bottoms[i] = tops[i];
+            else
+                tops[i] = bottoms[i];
+        size = 0;
     };
 
     /** accesses the highest id added, needed for external cleanup operations */
@@ -286,23 +293,27 @@ public:
 
     /* Get one first from out own work stack (take the first one) and then try from neighbors sequentially (from the last one)
     */
-    size_t get_one()
+    size_t pop()
     {
-        if (empty())
-            throw OUT_OF_WORK_ERROR{};
 
-        --size;
-        if (bottoms[id] != tops[id]) {
-            size_t s = *bottoms[id];
-            ++bottoms[id];
-            return s;
+        if (bottoms[id] < tops[id]) {
+            --size;
+            // post-fix so that we take bottom at current position
+            return *(bottoms[id]++);
         }
 
-        for (size_t id2 = id +1; id2 != id; id2 = (id2+1) % RT_N_SCRIPTCHECK_THREADS) {
-            if (bottoms[id2] != tops[id2])
-                return *(--tops[id2]);
+        // Iterate untill id2 wraps around to id.
+        for (size_t id2 = (id + 1) % RT_N_SCRIPTCHECK_THREADS; id2 != id; id2 = (id2 + 1) % RT_N_SCRIPTCHECK_THREADS) {
+            // if the iterators aren't equal, then there is something to be taken from the top
+            if (bottoms[id2] == tops[id2])
+                continue;
+            --size;
+            // pre-fix so that we take top at position one back
+            return *(--tops[id2]);
         }
-        throw OUT_OF_WORK_ERROR{};
+
+        // This should be checked by caller or caught
+        throw OUT_OF_WORK{};
     };
 
 
@@ -364,6 +375,7 @@ class CCheckQueue
         using JOB_TYPE = T;
         static const size_t MAX_JOBS = J;
         static const size_t MAX_WORKERS = W;
+        // We use the Proto version so that we can pass it to job_array, status_container, etc
         struct Proto {
             using JOB_TYPE = T;
             static const size_t MAX_JOBS = J;
@@ -399,7 +411,7 @@ class CCheckQueue
         assert(ID < RT_N_SCRIPTCHECK_THREADS); // "Got and invalid ID, wrong nScriptThread somewhere");
 
         CCheckQueue_Helpers::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
-        //LogPrintf("[%q] Entered \n", ID);
+        LogPrintf("[%q] Entered \n", ID);
 
         for (;;) {
             // Round setup done here
@@ -422,12 +434,12 @@ class CCheckQueue
                     // Our cleanup should be done by ID == 1
                     // and we already waited for is_cleanup_done
                     // Mark master present
-                    //LogPrintf("Master Joining \n");
+                    LogPrintf("Master Joining \n");
 
                     for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
                         status.masterJoined[i].store(true);
 
-                    //LogPrintf("Master Joined \n");
+                    LogPrintf("Master Joined \n");
                     break;
                 case 1:
 
@@ -436,7 +448,7 @@ class CCheckQueue
                         jobs.reset_flag(i);
                     status.reset(ID);
                     // Reset master flags too -- if ID == 0, it's not wrong just not needed
-                    //LogPrintf("Resetting Master\n");
+                    LogPrintf("Resetting Master\n");
                     for (int i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                         jobs.reset_flag(i);
                     status.reset(0);
@@ -463,9 +475,9 @@ class CCheckQueue
                     // We have all the threads wait on their done_round to be reset, so we
                     // Release all the threads
 
-                    //LogPrintf("Cleanup Complete \n");
+                    LogPrintf("Cleanup Complete \n");
                     done_round.reset(RT_N_SCRIPTCHECK_THREADS);
-                    //LogPrintf("Cleanup Completion Notified\n");
+                    LogPrintf("Cleanup Completion Notified\n");
                     break;
                 default:
                     // We reset all the flags we think we'll use (also warms cache)
@@ -475,12 +487,12 @@ class CCheckQueue
 
                     status.reset(ID);
 
-                    //LogPrintf("[%q] Idle\n", ID);
+                    LogPrintf("[%q] Idle\n", ID);
                     ++nFinishedCleanup;
                     // Wait till the cleanup process marks us not-done
                     while (done_round.is_done(ID))
                         boost::this_thread::yield();
-                    //LogPrintf("[%q] Not Idle\n", ID);
+                    LogPrintf("[%q] Not Idle\n", ID);
             }
             //bool masterJoined_cache = false;
             //bool noWork_cache = true;
@@ -508,23 +520,24 @@ class CCheckQueue
                 //masterJoined_cache = masterJoined;
                 //nTodo_cache = nTodo;
 
-                if ((noWork || !fOk) && fMaster) {
+                if (noWork && fMaster) {
                     // If We're the master then no work will be added so reaching this point signals
                     // exit unconditionally.
                     // We return the current status. Cleanup is handled elsewhere (RAII-style controller)
 
                     // Hack to prevent master looking up itself at this point...
                     done_cache[0] = true;
-                    while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS, done_cache) || !fOk)
+                    while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS, done_cache))
                         boost::this_thread::yield();
                     bool fRet = fOk && status.fAllOk[ID];
                     // Allow others to exit now
                     done_round.mark_done(0, done_cache);
+                    // We can mark the master as having left, because all threads have finished
                     for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
                         status.masterJoined[i].store(false);
                     //LogPrintf("Master Left \n");
                     return fRet;
-                } else if ( (noWork && masterJoined) || !fOk) {
+                } else if (noWork && masterJoined) {
                     // If the master has joined, we won't find more work later
                     // mark ourselves as completed
                     // Any error would have already been reported
@@ -538,19 +551,22 @@ class CCheckQueue
                     fOk = status.fAllOk[ID]; // Read fOk here, not earlier as it may trigger a quit
                     bool fOk_cache = fOk;
 
-                    while (!work_queue.empty() && fOk) {
-                        size_t i = work_queue.get_one();
-                        return jobs.reserve(i) ? jobs.eval(i) : true;
+                    // The try/catch gets rid of explicit bound checking
+                    try {
+                        while (fOk) {
+                            size_t i = work_queue.pop();
+                            return jobs.reserve(i) ? jobs.eval(i) : true;
+                        }
+                    } catch (...) {
                     }
 
                     // Immediately make a failure such that everyone quits on their next read if this thread discovered the failure.
-                    if (!fOk && fOk_cache)
-                        // Technically we're ok invalidating this so we should allow it to be (invalidated), which
-                        // would let us just do an atomic store instead of updating. (TODO: Prove this!)
-                        // Luckily, we aren't optimizing for failure case.
-                        //
-                        for (int i = 1; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-                            status.fAllOk[i].store(false);
+                    if (!fOk) {
+                        work_queue.erase();
+                        if (fOk_cache)
+                            for (int i = 1; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+                                status.fAllOk[i].store(false);
+                    }
                 }
             }
         }
@@ -561,6 +577,11 @@ public:
     CCheckQueue() : ids(0)
     {
         // Initialize all the state
+    }
+
+    void reset_ids() 
+    {
+        ids = 0;
     }
 
 
@@ -608,6 +629,12 @@ public:
     {
         for (auto i =0; i < MAX_WORKERS; ++i)
             status.fQuit[i].store( true);
+    }
+
+    void reset_quit_queue()
+    {
+        for (auto i =0; i < MAX_WORKERS; ++i)
+            status.fQuit[i].store(false);
     }
 };
 
