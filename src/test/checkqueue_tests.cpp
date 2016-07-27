@@ -27,62 +27,135 @@ struct Dummy {
     void swap(Dummy& x) {
     };
 };
-CCheckQueue<Dummy, 100000, 16> queue;
+CCheckQueue<Dummy, (size_t) 100000, 16> queue;
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
 {
 
     CCheckQueue_Helpers::PriorityWorkQueue<decltype(queue)::Proto> work(0, 16);
-    n = 0;
-
+    auto m = 0;
     work.add(100);
-    assert(!work.empty());
-    size_t x = work.get_one();
-    assert(x == 0);
-    size_t x2 = work.get_one();
-    assert(x2 == 16);
-    auto n = 2;
+    BOOST_CHECK(!work.empty());
+    size_t x = work.pop();
+    BOOST_CHECK(x == 0);
+    size_t x2 = work.pop();
+    BOOST_CHECK(x2 == 16);
+    m = 2;
     while(!work.empty()) {
-        work.get_one();
-        ++n;
-    }
-    assert(n == 100);
+        work.pop();
+        ++m;
+    } 
+    BOOST_CHECK(m == 100);
     work.add(200);
     std::unordered_set<size_t> results;
     while(!work.empty()) {
-        results.insert(work.get_one());
+        results.insert(work.pop());
+        ++m;
     }
-    for(int i = 100; i < 200; ++i)
+    for(auto i = 100; i < 200; ++i)
         results.erase(i);
-    assert(results.empty());
+    BOOST_CHECK(results.empty());
+    BOOST_CHECK(m == 200);
+
+    work.reset();
+
+    work.add(1000);
+
+    m = 0;
+    try {
+        for (;;) {
+            work.pop();
+            ++m;
+        }
+    } catch (...) {
+    }
+    BOOST_CHECK(m == 1000);
+
+}
+
+CCheckQueue_Helpers::job_array<decltype(queue)::Proto> jobs;
+static std::atomic<size_t> m;
+BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
+{
+
+    for (size_t i = 0; i < decltype(queue)::MAX_JOBS; ++i)
+        jobs.reset_flag(i);
+    m = 0;
+    threadGroup.create_thread([](){
+            for (size_t i = 0; i < decltype(queue)::MAX_JOBS; ++i)
+            m += jobs.reserve(i) ? 1 : 0;
+            });
+
+    threadGroup.create_thread([](){
+            for (size_t i = 0; i < decltype(queue)::MAX_JOBS; ++i)
+            m += jobs.reserve(i) ? 1 : 0;
+            });
+    threadGroup.join_all();
+
+    BOOST_CHECK(m == decltype(queue)::MAX_JOBS);
+
+}
+CCheckQueue_Helpers::round_barrier<decltype(queue)::Proto> barrier;
+BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
+{
+
+    barrier.reset(8);
+    for (int i = 0; i < 8; ++i)
+    threadGroup.create_thread([=]()
+            {
+            decltype(barrier)::Cache cache;
+            barrier.mark_done(i, cache);
+            while (!barrier.load_done(8, cache))
+                boost::this_thread::yield();
+            }
+            );
+
+    threadGroup.create_thread([](){
+            });
+    threadGroup.join_all();
+
 
 
 }
 
+
+
+BOOST_AUTO_TEST_CASE(test_CheckQueue_quit)
+{
+
+    auto nThreads = 8;
+    for (auto i=0; i<nThreads-1; ++i)
+        threadGroup.create_thread([=](){queue.Thread(nThreads);});
+    queue.quit_queue();
+    threadGroup.join_all();
+    queue.reset_quit_queue();
+    queue.reset_ids();
+
+}
+
+
 BOOST_AUTO_TEST_CASE(test_CheckQueue_All)
 {
 
-    auto nThreads = 3;
-    for (int i=0; i<nThreads-1; ++i)
+    auto nThreads = 8;
+    for (auto i=0; i<nThreads-1; ++i)
         threadGroup.create_thread([=](){queue.Thread(nThreads);});
     n = 0;
 
-    BOOST_TEST_MESSAGE("N was"<< n);
     {
         CCheckQueueControl<decltype(queue)> control(&queue, nThreads);
 
         std::vector<Dummy> vChecks;
         vChecks.reserve(100);
-        for (int j = 0; j< 100; ++j)
-        {
-            for (int i=0; i<100; ++i)
-                vChecks.push_back(Dummy{});
+        for (auto i=0; i<100; ++i)
+            vChecks.push_back(Dummy{});
+        for (auto j = 0; j< 100; ++j)
             control.Add(vChecks);
-            vChecks.clear();
-        }
+        control.Wait();
     }
-    BOOST_TEST_MESSAGE("N was"<< n);
-    assert(n == 100*100);
+    MilliSleep(1000);
+    BOOST_TEST_MESSAGE("n was ["<< n<<"]");
+    BOOST_CHECK(n == 100*100);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
