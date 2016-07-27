@@ -21,6 +21,7 @@ static_assert(ATOMIC_LONG_LOCK_FREE, "shared_status not lock free");
 static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
 #include <sstream>
 #include <string>
+#include <queue>
 
 
 
@@ -229,56 +230,57 @@ class PriorityWorkQueue
     const size_t id;
     /** The number of workers that bitcoind started with, eg, RunTime Number ScriptCheck Threads  */
     const size_t RT_N_SCRIPTCHECK_THREADS;
-    /** The highest index inserted so far */
-    size_t top;
-    /** the current number of elements remaining */
+    std::array<std::array<size_t, Q::MAX_JOBS/Q::MAX_WORKERS>, Q::MAX_WORKERS> available;
+    /** The tops and bottoms track the egion that has been inserted into or completed */
+    std::array<typename std::array<size_t, Q::MAX_JOBS/Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> tops;
+    std::array<typename std::array<size_t, Q::MAX_JOBS/Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> bottoms;
+    /** Stores the number of elements remaining */
     size_t size;
-    /** The other thread id to help*/
-    size_t currently_helping;
-    /** We reserve space here for the remaining work only once
-     * TODO: We can probably do this better at compile time with an array<bool>*/
-    std::array<std::vector<size_t>, Q::MAX_WORKERS> remaining_work;
-    /** This is used to emulate pop_front for a vector */
-    std::array<size_t, Q::MAX_WORKERS> remaining_work_bottom;
+    /** Stores the total inserted, for cleanup */
+    size_t total;
+
 
 public:
     using queue_type = Q;
     struct OUT_OF_WORK_ERROR {
     };
+
     PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_)
     {
-        // We reserve on construction, one extra (potentially)
-        for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-            remaining_work[i].reserve(1 + (Q::MAX_JOBS / RT_N_SCRIPTCHECK_THREADS));
+
         reset();
     };
-    /** adds entries for execution [top,n)
+    /** adds entries for execution [total ,n)
      * Places entries in the proper bucket
      * Resets the next thread to help if work was added
      */
     void add(size_t n)
     {
-        size += top < n ? n - top : 0;
-        currently_helping = top < n ? (id + 1) % RT_N_SCRIPTCHECK_THREADS : currently_helping;
-        for (; top < n; ++top)
-            remaining_work[top % RT_N_SCRIPTCHECK_THREADS].push_back(top);
+        if (n > total) {
+            size += n - total;
+            // TODO: More neatly
+            for (;total < n; ++total) {
+                auto worker = total%RT_N_SCRIPTCHECK_THREADS;
+                *tops[worker] = total;
+                ++tops[worker];
+            }
+        }
     };
     /** Completely reset the state */
     void reset()
     {
-        top = 0;
-        size = 0;
-        currently_helping = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
-        for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i) {
-            remaining_work[i].clear();
-            remaining_work_bottom[i] = 0;
+        for (auto ind = 0; ind < RT_N_SCRIPTCHECK_THREADS; ++ind) {
+            tops[ind] = available[ind].begin();
+            bottoms[ind] = available[ind].begin();
         }
+        size = 0;
+        total = 0;
     };
 
     /** accesses the highest id added, needed for external cleanup operations */
-    size_t get_top()
+    size_t get_total()
     {
-        return top;
+        return total;
     };
 
 
@@ -286,23 +288,21 @@ public:
     */
     size_t get_one()
     {
-        if ((remaining_work[id].size() - remaining_work_bottom[id]) == 0) {
-            while ((remaining_work[currently_helping].size() - remaining_work_bottom[currently_helping]) == 0) {
-                // We've looped around, and there's nothing on anyone's
-                currently_helping = (currently_helping + 1) % RT_N_SCRIPTCHECK_THREADS;
-                if (currently_helping == id)
-                    throw OUT_OF_WORK_ERROR{};
-            }
-            size_t s = remaining_work[currently_helping].back();
-            remaining_work[id].pop_back();
-            --size;
-            return s;
-        } else {
-            size_t s = remaining_work[id][remaining_work_bottom[id]];
-            ++remaining_work_bottom[id];
-            --size;
+        if (empty())
+            throw OUT_OF_WORK_ERROR{};
+
+        --size;
+        if (bottoms[id] != tops[id]) {
+            size_t s = *bottoms[id];
+            ++bottoms[id];
             return s;
         }
+
+        for (size_t id2 = id +1; id2 != id; id2 = (id2+1) % RT_N_SCRIPTCHECK_THREADS) {
+            if (bottoms[id2] != tops[id2])
+                return *(--tops[id2]);
+        }
+        throw OUT_OF_WORK_ERROR{};
     };
 
 
@@ -405,7 +405,7 @@ class CCheckQueue
             // Round setup done here
             bool fOk = true;
 
-            size_t prev_top = work_queue.get_top();
+            size_t prev_total = work_queue.get_total();
             // Technically we could skip this on the first iteration, but not really worth it for added code
             // We prefer reset to allocating a new one to save allocation.
             // reset last because we need to reset our flags
@@ -432,17 +432,17 @@ class CCheckQueue
                 case 1:
 
                     // We reset all the flags we think we'll use (also warms cache)
-                    for (int i = 1; i < prev_top; i += RT_N_SCRIPTCHECK_THREADS)
+                    for (int i = 1; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                         jobs.reset_flag(i);
                     status.reset(ID);
                     // Reset master flags too -- if ID == 0, it's not wrong just not needed
                     //LogPrintf("Resetting Master\n");
-                    for (int i = 0; i < prev_top; i += RT_N_SCRIPTCHECK_THREADS)
+                    for (int i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                         jobs.reset_flag(i);
                     status.reset(0);
 
                     // Cleanup Tasks
-                    jobs.job_cleanup(prev_top);
+                    jobs.job_cleanup(prev_total);
 
 
                     ++nFinishedCleanup;
@@ -470,7 +470,7 @@ class CCheckQueue
                 default:
                     // We reset all the flags we think we'll use (also warms cache)
 
-                    for (int i = ID; i < prev_top; i += RT_N_SCRIPTCHECK_THREADS)
+                    for (int i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                         jobs.reset_flag(i);
 
                     status.reset(ID);
