@@ -22,7 +22,11 @@ static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
 #include <sstream>
 #include <string>
 #include <queue>
+static std::atomic<size_t> order_prints(0);
 
+
+//#define logf(format, ...) LogPrintf("[[%q]]" format, ++order_prints, ##__VA_ARGS__)
+#define logf(format, ...) 
 
 /** cache_optimize is used to pad sizeof(type) to fit a cache line to limit contention.
  *
@@ -31,7 +35,7 @@ static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
  * size won't affect correctness, only performance.
  */
 template <typename T, int cache_line = 64>
-struct alignas(cache_line*((sizeof(T) + cache_line) / cache_line)) cache_optimize : T {
+struct alignas(cache_line*((sizeof(T) + cache_line - 1) / cache_line)) cache_optimize : T {
 };
 
 /** clog2 determines at compile-time how many bits are needed to represent a field in a struct bitfield.
@@ -387,10 +391,10 @@ private:
     std::atomic_uint ids;
     /** used to count how many threads have finished cleanup operations */
     std::atomic_uint nFinishedCleanup;
-    std::atomic_bool masterMayEnter;
+    std::atomic<bool> masterMayEnter;
     void wait_all_finished_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
     {
-        while (nFinishedCleanup != RT_N_SCRIPTCHECK_THREADS)
+        while (nFinishedCleanup.load() != RT_N_SCRIPTCHECK_THREADS)
             boost::this_thread::yield();
     }
 
@@ -404,7 +408,7 @@ private:
         assert(ID < RT_N_SCRIPTCHECK_THREADS); // "Got and invalid ID, wrong nScriptThread somewhere");
 
         CCheckQueue_Helpers::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
-        //LogPrintf("[%q] Entered \n", ID);
+        logf("[%q] Entered \n", ID);
 
         for (;;) {
             // Round setup done here
@@ -426,13 +430,12 @@ private:
                 // Our cleanup should be done by ID == 1
                 // and we already waited for is_cleanup_done
                 // Mark master present
-                //LogPrintf("Master Joining \n");
-                masterMayEnter = false;
+                logf("Master Joining \n");
 
                 for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
                     status.masterJoined[i].store(true);
 
-                //LogPrintf("Master Joined \n");
+                logf("Master Joined \n");
                 break;
             case 1:
 
@@ -441,7 +444,7 @@ private:
                     jobs.reset_flag(i);
                 status.reset(ID);
                 // Reset master flags too -- if ID == 0, it's not wrong just not needed
-                //LogPrintf("Resetting Master\n");
+                logf("Resetting Master\n");
                 for (int i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
                 status.reset(0);
@@ -465,10 +468,11 @@ private:
                 // We have all the threads wait on their done_round to be reset, so we
                 // Release all the threads
 
-                //LogPrintf("Cleanup Complete \n");
+                logf("Cleanup Complete \n");
                 done_round.reset(RT_N_SCRIPTCHECK_THREADS);
-                masterMayEnter = true;
-                //LogPrintf("Cleanup Completion Notified\n");
+                
+                masterMayEnter.store(true);
+                logf("Cleanup Completion Notified\n");
                 break;
             default:
                 // We reset all the flags we think we'll use (also warms cache)
@@ -478,21 +482,21 @@ private:
 
                 status.reset(ID);
 
-                //LogPrintf("[%q] Idle\n", ID);
+                logf("[%q] Idle\n", ID);
                 ++nFinishedCleanup;
                 // Wait till the cleanup process marks us not-done
                 while (done_round.is_done(ID))
                     boost::this_thread::yield();
-                //LogPrintf("[%q] Not Idle\n", ID);
+                logf("[%q] Not Idle\n", ID);
             }
             //bool masterJoined_cache = false;
             //bool noWork_cache = true;
             //size_t nTodo_cache = 0;
             for (;;) {
-                bool fQuit = status.fQuit[ID];
-
-                if (fQuit) {
-                    LogPrintf("Stopping Worker %q\n", ID);
+                if (status.fQuit[ID]) {
+                    logf("Stopping Worker %q\n", ID);
+                    status.fAllOk[ID].store(false);
+                    done_round.mark_done(ID);
                     return false;
                 }
 
@@ -505,10 +509,11 @@ private:
                 bool masterJoined = status.masterJoined[ID].load();
                 // Only print out on updates
                 //if (masterJoined != masterJoined_cache || noWork != noWork_cache || nTodo != nTodo_cache)
-                //LogPrintf("[%q] masterJoined=[%d], noWork=[%d], nTodo=[%q]\n", ID, masterJoined, noWork, nTodo);
+                //logf("[%q] masterJoined=[%d], noWork=[%d], nTodo=[%q]\n", ID, masterJoined, noWork, nTodo);
                 //noWork_cache = noWork;
                 //masterJoined_cache = masterJoined;
                 //nTodo_cache = nTodo;
+                assert(fMaster ? masterJoined : true);
 
                 if (noWork && fMaster) {
                     std::array<bool, MAX_WORKERS> done_cache = {false};
@@ -524,9 +529,9 @@ private:
                     // Allow others to exit now
                     done_round.mark_done(0, done_cache);
                     // We can mark the master as having left, because all threads have finished
+                    logf("Master Leaving \n");
                     for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
                         status.masterJoined[i].store(false);
-                    //LogPrintf("Master Left \n");
                     return fRet;
                 } else if (noWork && masterJoined) {
                     // If the master has joined, we won't find more work later
@@ -535,6 +540,7 @@ private:
                     //
                     // We wait until the master reports leaving explicitly
                     done_round.mark_done(ID);
+                    logf("[%q] Out of Work \n", ID);
                     while (status.masterJoined[ID])
                         boost::this_thread::yield();
                     break;
@@ -574,12 +580,19 @@ public:
     {
         ids = 0;
     }
-
-
-    void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
+    void reset_masterMayEnter()
     {
-        while (!masterMayEnter)
+        masterMayEnter = false;
+    }
+
+
+    void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS)
+    {
+        bool b = true;
+        while (!masterMayEnter.compare_exchange_weak(b, false)) {
+            b = true;
             boost::this_thread::yield();
+        }
     }
     void reset_jobs()
     {
@@ -650,9 +663,10 @@ public:
         //      assert(isIdle);
         // }
         if (pqueue) {
-            //LogPrintf("Master waiting for cleanup to finish\n");
+            assert(RT_N_SCRIPTCHECK_THREADS != 1);
+            logf("Master waiting for cleanup to finish\n");
             pqueue->wait_for_cleanup(RT_N_SCRIPTCHECK_THREADS);
-            //LogPrintf("Master saw cleanup done\n");
+            logf("Master saw cleanup done\n");
             pqueue->reset_jobs();
         }
     }
