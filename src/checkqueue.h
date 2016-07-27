@@ -382,11 +382,7 @@ class CCheckQueue
             static const size_t MAX_WORKERS = W;
         };
 
-    private:// TODO: all public for testing
-
-        /* 
-         * instances of the nested classes of the CCheckQueue
-     */
+    private:
     CCheckQueue_Helpers::job_array<Proto> jobs;
     CCheckQueue_Helpers::status_container<Proto> status;
     CCheckQueue_Helpers::round_barrier<Proto> done_round;
@@ -397,7 +393,7 @@ class CCheckQueue
     std::atomic_bool masterMayEnter;
     void wait_all_finished_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
     {
-        while (nFinishedCleanup != RT_N_SCRIPTCHECK_THREADS - 1)
+        while (nFinishedCleanup != RT_N_SCRIPTCHECK_THREADS)
             boost::this_thread::yield();
     }
 
@@ -411,7 +407,7 @@ class CCheckQueue
         assert(ID < RT_N_SCRIPTCHECK_THREADS); // "Got and invalid ID, wrong nScriptThread somewhere");
 
         CCheckQueue_Helpers::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
-        LogPrintf("[%q] Entered \n", ID);
+        //LogPrintf("[%q] Entered \n", ID);
 
         for (;;) {
             // Round setup done here
@@ -434,12 +430,13 @@ class CCheckQueue
                     // Our cleanup should be done by ID == 1
                     // and we already waited for is_cleanup_done
                     // Mark master present
-                    LogPrintf("Master Joining \n");
+                    //LogPrintf("Master Joining \n");
+                    masterMayEnter = false;
 
                     for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
                         status.masterJoined[i].store(true);
 
-                    LogPrintf("Master Joined \n");
+                    //LogPrintf("Master Joined \n");
                     break;
                 case 1:
 
@@ -448,7 +445,7 @@ class CCheckQueue
                         jobs.reset_flag(i);
                     status.reset(ID);
                     // Reset master flags too -- if ID == 0, it's not wrong just not needed
-                    LogPrintf("Resetting Master\n");
+                    //LogPrintf("Resetting Master\n");
                     for (int i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                         jobs.reset_flag(i);
                     status.reset(0);
@@ -457,13 +454,11 @@ class CCheckQueue
                     jobs.job_cleanup(prev_total);
 
 
-                    ++nFinishedCleanup;
 
                     // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
                     // because of cleanup occuring after others are running in main section
                     wait_all_finished_cleanup(RT_N_SCRIPTCHECK_THREADS);
-                    nFinishedCleanup = 0;
-                    masterMayEnter = true;
+                    nFinishedCleanup = 2;
 
                     // There is actually no other cleanup we can do without causing some bugs unfortunately (race condition
                     // with external adding)
@@ -475,9 +470,10 @@ class CCheckQueue
                     // We have all the threads wait on their done_round to be reset, so we
                     // Release all the threads
 
-                    LogPrintf("Cleanup Complete \n");
+                    //LogPrintf("Cleanup Complete \n");
                     done_round.reset(RT_N_SCRIPTCHECK_THREADS);
-                    LogPrintf("Cleanup Completion Notified\n");
+                    masterMayEnter = true;
+                    //LogPrintf("Cleanup Completion Notified\n");
                     break;
                 default:
                     // We reset all the flags we think we'll use (also warms cache)
@@ -487,17 +483,16 @@ class CCheckQueue
 
                     status.reset(ID);
 
-                    LogPrintf("[%q] Idle\n", ID);
+                    //LogPrintf("[%q] Idle\n", ID);
                     ++nFinishedCleanup;
                     // Wait till the cleanup process marks us not-done
                     while (done_round.is_done(ID))
                         boost::this_thread::yield();
-                    LogPrintf("[%q] Not Idle\n", ID);
+                    //LogPrintf("[%q] Not Idle\n", ID);
             }
             //bool masterJoined_cache = false;
             //bool noWork_cache = true;
             //size_t nTodo_cache = 0;
-            std::array<bool, MAX_WORKERS> done_cache = {false};
             for (;;) {
                 bool fQuit = status.fQuit[ID];
 
@@ -521,6 +516,7 @@ class CCheckQueue
                 //nTodo_cache = nTodo;
 
                 if (noWork && fMaster) {
+                    std::array<bool, MAX_WORKERS> done_cache = {false};
                     // If We're the master then no work will be added so reaching this point signals
                     // exit unconditionally.
                     // We return the current status. Cleanup is handled elsewhere (RAII-style controller)
@@ -543,7 +539,7 @@ class CCheckQueue
                     // Any error would have already been reported
                     //
                     // We wait until the master reports leaving explicitly
-                    done_round.mark_done(ID, done_cache);
+                    done_round.mark_done(ID);
                     while (status.masterJoined[ID])
                         boost::this_thread::yield();
                     break;
@@ -555,7 +551,7 @@ class CCheckQueue
                     try {
                         while (fOk) {
                             size_t i = work_queue.pop();
-                            return jobs.reserve(i) ? jobs.eval(i) : true;
+                            jobs.reserve(i) ? jobs.eval(i) : true;
                         }
                     } catch (...) {
                     }
@@ -574,7 +570,7 @@ class CCheckQueue
 
 public:
     //! Create a new check queue -- should be impossible to ever have more than 100k checks
-    CCheckQueue() : ids(0)
+    CCheckQueue() : ids(0), nFinishedCleanup(2), masterMayEnter(false)
     {
         // Initialize all the state
     }
@@ -585,11 +581,10 @@ public:
     }
 
 
-    void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) 
+    void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
     {
         while(!masterMayEnter)
             boost::this_thread::yield();
-        masterMayEnter = false;
     }
     void reset_jobs()
     {
@@ -676,6 +671,7 @@ public:
         fDone = true;
         return fRet;
     }
+    
 
     void Add(std::vector<typename Q::JOB_TYPE>& vChecks)
     {
