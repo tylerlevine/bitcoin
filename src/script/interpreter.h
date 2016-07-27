@@ -8,7 +8,6 @@
 
 #include "script_error.h"
 #include "primitives/transaction.h"
-#include "cheaphash.h"
 
 #include <vector>
 #include <stdint.h>

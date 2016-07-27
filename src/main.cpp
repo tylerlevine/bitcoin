@@ -1910,18 +1910,18 @@ void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight)
 bool CScriptCheck::operator()(bool readOnly, std::function<void ()>& cleanup ) {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     const CScriptWitness *witness = (nIn < ptxTo->wit.vtxinwit.size()) ? &ptxTo->wit.vtxinwit[nIn].scriptWitness : NULL;
-    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore, readOnly, cleanup), &error)) {
+    if (!VerifyScript(scriptSig, scriptPubKey, witness, nFlags, CachingTransactionSignatureChecker(ptxTo, nIn, amount, cacheStore/*,readOnly, cleanup*/), &error)) {
         return false;
     }
     return true;
 }
 bool CScriptCheck::operator()() {
     std::function<void()> a = [](){};
-    return (*this)(false, a);
+    return (*this)();//(false, a);
 }
 
 bool CScriptCheck::operator()(std::function<void()>& cleanup) {
-    return (*this)(true, cleanup);
+    return (*this)();//(true, cleanup);
 }
 
 int GetSpendHeight(const CCoinsViewCache& inputs)

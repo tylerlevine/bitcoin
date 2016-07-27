@@ -12,7 +12,6 @@
 #include "pubkey.h"
 #include "script/script.h"
 #include "uint256.h"
-#include "cheaphash.h"
 
 using namespace std;
 
