@@ -24,8 +24,6 @@ static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
 #include <queue>
 
 
-
-
 /** cache_optimize is used to pad sizeof(type) to fit a cache line to limit contention.
  *
  * This is currently architecture dependent if the cache line sizes are correct.
@@ -69,7 +67,7 @@ class job_array
     size_t next_free_index = 0;
 
 public:
-    using queue_type =  Q;
+    using queue_type = Q;
     /** add swaps a vector of checks into the checks array and increments the pointed 
      * only safe to run on master */
     job_array()
@@ -229,10 +227,10 @@ class PriorityWorkQueue
     const size_t id;
     /** The number of workers that bitcoind started with, eg, RunTime Number ScriptCheck Threads  */
     const size_t RT_N_SCRIPTCHECK_THREADS;
-    std::array<std::array<size_t,1+ Q::MAX_JOBS/Q::MAX_WORKERS>, Q::MAX_WORKERS> available;
+    std::array<std::array<size_t, 1 + Q::MAX_JOBS / Q::MAX_WORKERS>, Q::MAX_WORKERS> available;
     /** The tops and bottoms track the egion that has been inserted into or completed */
-    std::array<typename std::array<size_t,1+ Q::MAX_JOBS/Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> tops;
-    std::array<typename std::array<size_t,1+ Q::MAX_JOBS/Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> bottoms;
+    std::array<typename std::array<size_t, 1 + Q::MAX_JOBS / Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> tops;
+    std::array<typename std::array<size_t, 1 + Q::MAX_JOBS / Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> bottoms;
     /** Stores the number of elements remaining */
     size_t size;
     /** Stores the total inserted, for cleanup */
@@ -241,10 +239,10 @@ class PriorityWorkQueue
 
 public:
     using queue_type = Q;
-    struct OUT_OF_WORK{};
+    struct OUT_OF_WORK {
+    };
     PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_)
     {
-
         reset();
     };
     /** adds entries for execution [total, n)
@@ -257,7 +255,7 @@ public:
             size += n - total;
             // TODO: More neatly
             for (; total < n; ++total) {
-                auto worker_select = total%RT_N_SCRIPTCHECK_THREADS;
+                auto worker_select = total % RT_N_SCRIPTCHECK_THREADS;
                 *tops[worker_select] = total;
                 ++tops[worker_select];
             }
@@ -277,7 +275,7 @@ public:
     void erase()
     {
         for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-            if (i == id) 
+            if (i == id)
                 bottoms[i] = tops[i];
             else
                 tops[i] = bottoms[i];
@@ -295,7 +293,6 @@ public:
     */
     size_t pop()
     {
-
         if (bottoms[id] < tops[id]) {
             --size;
             // post-fix so that we take bottom at current position
@@ -371,18 +368,18 @@ struct status_container {
 template <typename T, size_t J, size_t W>
 class CCheckQueue
 {
-    public:
+public:
+    using JOB_TYPE = T;
+    static const size_t MAX_JOBS = J;
+    static const size_t MAX_WORKERS = W;
+    // We use the Proto version so that we can pass it to job_array, status_container, etc
+    struct Proto {
         using JOB_TYPE = T;
         static const size_t MAX_JOBS = J;
         static const size_t MAX_WORKERS = W;
-        // We use the Proto version so that we can pass it to job_array, status_container, etc
-        struct Proto {
-            using JOB_TYPE = T;
-            static const size_t MAX_JOBS = J;
-            static const size_t MAX_WORKERS = W;
-        };
+    };
 
-    private:
+private:
     CCheckQueue_Helpers::job_array<Proto> jobs;
     CCheckQueue_Helpers::status_container<Proto> status;
     CCheckQueue_Helpers::round_barrier<Proto> done_round;
@@ -403,7 +400,7 @@ class CCheckQueue
         // If we are at 1 then CheckQueue should be disabled
         // Keep master always at 0 id -- maybe we should manually assign id's rather than this way, but this works.
         size_t ID = fMaster ? 0 : ++ids;
-        assert(RT_N_SCRIPTCHECK_THREADS != 1); 
+        assert(RT_N_SCRIPTCHECK_THREADS != 1);
         assert(ID < RT_N_SCRIPTCHECK_THREADS); // "Got and invalid ID, wrong nScriptThread somewhere");
 
         CCheckQueue_Helpers::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
@@ -424,71 +421,69 @@ class CCheckQueue
             // And allows for the ID == 1 to do the master's cleanup for it
             // We can immediately begin cleanup because all threads waited for master to
             // exit on previous round and master waited for all workers.
-            switch (ID) 
-            {
-                case 0:
-                    // Our cleanup should be done by ID == 1
-                    // and we already waited for is_cleanup_done
-                    // Mark master present
-                    //LogPrintf("Master Joining \n");
-                    masterMayEnter = false;
+            switch (ID) {
+            case 0:
+                // Our cleanup should be done by ID == 1
+                // and we already waited for is_cleanup_done
+                // Mark master present
+                //LogPrintf("Master Joining \n");
+                masterMayEnter = false;
 
-                    for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-                        status.masterJoined[i].store(true);
+                for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+                    status.masterJoined[i].store(true);
 
-                    //LogPrintf("Master Joined \n");
-                    break;
-                case 1:
+                //LogPrintf("Master Joined \n");
+                break;
+            case 1:
 
-                    // We reset all the flags we think we'll use (also warms cache)
-                    for (int i = 1; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
-                        jobs.reset_flag(i);
-                    status.reset(ID);
-                    // Reset master flags too -- if ID == 0, it's not wrong just not needed
-                    //LogPrintf("Resetting Master\n");
-                    for (int i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
-                        jobs.reset_flag(i);
-                    status.reset(0);
+                // We reset all the flags we think we'll use (also warms cache)
+                for (int i = 1; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
+                    jobs.reset_flag(i);
+                status.reset(ID);
+                // Reset master flags too -- if ID == 0, it's not wrong just not needed
+                //LogPrintf("Resetting Master\n");
+                for (int i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
+                    jobs.reset_flag(i);
+                status.reset(0);
 
-                    // Cleanup Tasks
-                    jobs.job_cleanup(prev_total);
-
+                // Cleanup Tasks
+                jobs.job_cleanup(prev_total);
 
 
-                    // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
-                    // because of cleanup occuring after others are running in main section
-                    wait_all_finished_cleanup(RT_N_SCRIPTCHECK_THREADS);
-                    nFinishedCleanup = 2;
+                // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
+                // because of cleanup occuring after others are running in main section
+                wait_all_finished_cleanup(RT_N_SCRIPTCHECK_THREADS);
+                nFinishedCleanup = 2;
 
-                    // There is actually no other cleanup we can do without causing some bugs unfortunately (race condition
-                    // with external adding)
-                    // However, it was critical to have all flags reset before proceeding
-                    // TODO: refactor to have each thread set themselves as being reset (except for master) 
-                    // and only proceed when all are false.
+                // There is actually no other cleanup we can do without causing some bugs unfortunately (race condition
+                // with external adding)
+                // However, it was critical to have all flags reset before proceeding
+                // TODO: refactor to have each thread set themselves as being reset (except for master)
+                // and only proceed when all are false.
 
-                    //
-                    // We have all the threads wait on their done_round to be reset, so we
-                    // Release all the threads
+                //
+                // We have all the threads wait on their done_round to be reset, so we
+                // Release all the threads
 
-                    //LogPrintf("Cleanup Complete \n");
-                    done_round.reset(RT_N_SCRIPTCHECK_THREADS);
-                    masterMayEnter = true;
-                    //LogPrintf("Cleanup Completion Notified\n");
-                    break;
-                default:
-                    // We reset all the flags we think we'll use (also warms cache)
+                //LogPrintf("Cleanup Complete \n");
+                done_round.reset(RT_N_SCRIPTCHECK_THREADS);
+                masterMayEnter = true;
+                //LogPrintf("Cleanup Completion Notified\n");
+                break;
+            default:
+                // We reset all the flags we think we'll use (also warms cache)
 
-                    for (int i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
-                        jobs.reset_flag(i);
+                for (int i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
+                    jobs.reset_flag(i);
 
-                    status.reset(ID);
+                status.reset(ID);
 
-                    //LogPrintf("[%q] Idle\n", ID);
-                    ++nFinishedCleanup;
-                    // Wait till the cleanup process marks us not-done
-                    while (done_round.is_done(ID))
-                        boost::this_thread::yield();
-                    //LogPrintf("[%q] Not Idle\n", ID);
+                //LogPrintf("[%q] Idle\n", ID);
+                ++nFinishedCleanup;
+                // Wait till the cleanup process marks us not-done
+                while (done_round.is_done(ID))
+                    boost::this_thread::yield();
+                //LogPrintf("[%q] Not Idle\n", ID);
             }
             //bool masterJoined_cache = false;
             //bool noWork_cache = true;
@@ -503,14 +498,14 @@ class CCheckQueue
 
                 size_t nTodo = status.nTodo[ID];
                 // Add the new work.
-                work_queue.add(nTodo); 
+                work_queue.add(nTodo);
                 // We break if masterJoined and there is no work left to do
                 bool noWork = work_queue.empty();
                 // Master failed to denote presence on join
                 bool masterJoined = status.masterJoined[ID].load();
                 // Only print out on updates
                 //if (masterJoined != masterJoined_cache || noWork != noWork_cache || nTodo != nTodo_cache)
-                    //LogPrintf("[%q] masterJoined=[%d], noWork=[%d], nTodo=[%q]\n", ID, masterJoined, noWork, nTodo);
+                //LogPrintf("[%q] masterJoined=[%d], noWork=[%d], nTodo=[%q]\n", ID, masterJoined, noWork, nTodo);
                 //noWork_cache = noWork;
                 //masterJoined_cache = masterJoined;
                 //nTodo_cache = nTodo;
@@ -575,7 +570,7 @@ public:
         // Initialize all the state
     }
 
-    void reset_ids() 
+    void reset_ids()
     {
         ids = 0;
     }
@@ -583,7 +578,7 @@ public:
 
     void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
     {
-        while(!masterMayEnter)
+        while (!masterMayEnter)
             boost::this_thread::yield();
     }
     void reset_jobs()
@@ -604,7 +599,7 @@ public:
     }
 
     //! Add a batch of checks to the queue
-    void Add(std::vector<T>& vChecks, size_t RT_N_SCRIPTCHECK_THREADS )
+    void Add(std::vector<T>& vChecks, size_t RT_N_SCRIPTCHECK_THREADS)
     {
         jobs.add(vChecks);
         size_t vs = vChecks.size();
@@ -612,7 +607,7 @@ public:
         // we could get away with aborting if it fails because it would unconditionally
         // mean fAllOk was false, therefore we would abort anyways...
         // But again, failure case is not the hot-path
-        for (auto i =0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
             status.nTodo[i] += vs;
     }
 
@@ -622,13 +617,13 @@ public:
     }
     void quit_queue()
     {
-        for (auto i =0; i < MAX_WORKERS; ++i)
-            status.fQuit[i].store( true);
+        for (auto i = 0; i < MAX_WORKERS; ++i)
+            status.fQuit[i].store(true);
     }
 
     void reset_quit_queue()
     {
-        for (auto i =0; i < MAX_WORKERS; ++i)
+        for (auto i = 0; i < MAX_WORKERS; ++i)
             status.fQuit[i].store(false);
     }
 };
@@ -655,7 +650,6 @@ public:
         //      assert(isIdle);
         // }
         if (pqueue) {
-    
             //LogPrintf("Master waiting for cleanup to finish\n");
             pqueue->wait_for_cleanup(RT_N_SCRIPTCHECK_THREADS);
             //LogPrintf("Master saw cleanup done\n");
@@ -671,7 +665,7 @@ public:
         fDone = true;
         return fRet;
     }
-    
+
 
     void Add(std::vector<typename Q::JOB_TYPE>& vChecks)
     {
