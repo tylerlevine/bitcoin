@@ -18,6 +18,7 @@ boost::thread_group threadGroup;
 BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, BasicTestingSetup)
 
 
+
 static std::atomic<size_t> n;
 struct Dummy {
     bool operator()(std::function<void()>& z)
@@ -28,9 +29,17 @@ struct Dummy {
     void swap(Dummy& x){};
 };
 CCheckQueue<Dummy, (size_t)100000, 16> queue;
+void reset() {
+    queue.reset_quit_queue();
+    queue.reset_ids();
+    queue.reset_masterMayEnter();
+    queue.reset_jobs();
+};
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
 {
+
+    fPrintToConsole = true;
     CCheckQueue_Helpers::PriorityWorkQueue<decltype(queue)::Proto> work(0, 16);
     auto m = 0;
     work.add(100);
@@ -75,6 +84,7 @@ CCheckQueue_Helpers::job_array<decltype(queue)::Proto> jobs;
 static std::atomic<size_t> m;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
 {
+    fPrintToConsole = true;
     for (size_t i = 0; i < decltype(queue)::MAX_JOBS; ++i)
         jobs.reset_flag(i);
     m = 0;
@@ -94,6 +104,8 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
 CCheckQueue_Helpers::round_barrier<decltype(queue)::Proto> barrier;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 {
+
+    fPrintToConsole = true;
     barrier.reset(8);
     for (int i = 0; i < 8; ++i)
         threadGroup.create_thread([=]() {
@@ -111,19 +123,22 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_quit)
 {
+
+    fPrintToConsole = true;
+    reset();
     auto nThreads = 8;
     for (auto i = 0; i < nThreads - 1; ++i)
         threadGroup.create_thread([=]() {queue.Thread(nThreads); });
     queue.quit_queue();
     threadGroup.join_all();
-    queue.reset_quit_queue();
-    queue.reset_ids();
 }
 
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_All)
 {
+
     fPrintToConsole = true;
+    reset();
     auto nThreads = 8;
     for (auto i = 0; i < nThreads - 1; ++i)
         threadGroup.create_thread([=]() {queue.Thread(nThreads); });
@@ -138,9 +153,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_All)
             vChecks.push_back(Dummy{});
         for (auto j = 0; j < 100; ++j)
             control.Add(vChecks);
-        control.Wait();
     }
-    MilliSleep(1000);
     BOOST_TEST_MESSAGE("n was [" << n << "]");
     BOOST_CHECK(n == 100 * 100);
 }
