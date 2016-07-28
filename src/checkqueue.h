@@ -338,28 +338,29 @@ template <typename Q>
 struct status_container {
     /**Need clog2(MAX_JOBS +1) bits to represent 0 jobs and MAX_JOBS jobs, which should be around 17 bits */
     static_assert(clog2(Q::MAX_JOBS + 1) <= 64, "can't store that many jobs");
-    std::array<std::atomic<size_t>, Q::MAX_WORKERS> nTodo;
+    std::atomic<size_t> nTodo;
     /** true if all checks were successful, false if any failure occurs */
     std::array<std::atomic<bool>, Q::MAX_WORKERS> fAllOk;
     /** true if the master has joined, false otherwise. A round may not terminate unless masterJoined */
-    std::array<std::atomic<bool>, Q::MAX_WORKERS> masterJoined;
+    //std::array<std::atomic<bool>, Q::MAX_WORKERS> masterJoined;
+    std::atomic<bool> masterJoined;
     /** used to signal external quit, eg, from ShutDown() */
     std::array<std::atomic<bool>, Q::MAX_WORKERS> fQuit;
 
     status_container()
     {
         for (auto i = 0; i < Q::MAX_WORKERS; ++i) {
-            nTodo[i].store(0);
             fAllOk[i].store(true);
-            masterJoined[i].store(false);
             fQuit[i].store(false);
         }
+            nTodo.store(0);
+            masterJoined.store(false);
     }
     /** Force a store of the status to the initialized state */
     void reset(size_t id)
     {
         fAllOk[id].store(true);
-        nTodo[id].store(0);
+        //nTodo[id].store(0);
     };
 };
 }
@@ -442,8 +443,8 @@ private:
                 // Mark master present
                 logf("Master Joining \n");
 
-                for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-                    status.masterJoined[i].store(true);
+                //for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+                    status.masterJoined.store(true);
 
                 logf("Master Joined \n");
                 break;
@@ -510,9 +511,9 @@ private:
                 }
                 // Note: Must check masterJoined before nTodo, otherwise 
                 // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()} 
-                bool masterJoined = status.masterJoined[ID].load();
+                bool masterJoined = status.masterJoined.load();
                 assert(fMaster ? masterJoined : true);
-                size_t nTodo = status.nTodo[ID].load();
+                size_t nTodo = status.nTodo.load();
 
                 // Add the new work.
                 work_queue.add(nTodo);
@@ -521,7 +522,8 @@ private:
 
 
                 if (noWork && fMaster) {
-                    typename decltype(done_round)::Cache done_cache;
+                    // default-initialize, but put one entry to dismiss compiler warning
+                    typename decltype(done_round)::Cache done_cache {false};
                     // If We're the master then no work will be added so reaching this point signals
                     // exit unconditionally.
                     // We return the current status. Cleanup is handled elsewhere (RAII-style controller)
@@ -536,8 +538,8 @@ private:
                     logf("[%q] Out of Work, did %q, skipped %q, condsidered %q \n", ID, nDone, nNotDone, nDone+nNotDone);
                     // We can mark the master as having left, because all threads have finished
                     logf("Master Leaving \n");
-                    for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-                        status.masterJoined[i].store(false);
+                    //for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+                    status.masterJoined.store(false);
                     return fRet;
                 } else if (noWork && masterJoined) {
                     // If the master has joined, we won't find more work later
@@ -548,7 +550,7 @@ private:
                     logf("[%q] Out of Work, did %q, skipped %q, condsidered %q \n", ID, nDone, nNotDone, nDone+nNotDone);
 
                     // We wait until the master reports leaving explicitly
-                    while (status.masterJoined[ID])
+                    while (status.masterJoined)
                         boost::this_thread::yield();
                     break;
                 } else {
@@ -632,8 +634,8 @@ public:
         // we could get away with aborting if it fails because it would unconditionally
         // mean fAllOk was false, therefore we would abort anyways...
         // But again, failure case is not the hot-path
-        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-            status.nTodo[i] += vs;
+        //for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+            status.nTodo += vs;
     }
 
     ~CCheckQueue()
