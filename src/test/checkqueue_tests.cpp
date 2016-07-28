@@ -26,6 +26,12 @@ struct Dummy {
         ++n;
         return true;
     }
+    bool operator()()
+    {
+        ++n;
+        return true;
+    }
+
     void swap(Dummy& x){};
 };
 CCheckQueue<Dummy, (size_t)100000, 16> queue;
@@ -142,20 +148,23 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_All)
     auto nThreads = 8;
     for (auto i = 0; i < nThreads - 1; ++i)
         threadGroup.create_thread([=]() {queue.Thread(nThreads); });
-    n = 0;
 
-    {
-        CCheckQueueControl<decltype(queue)> control(&queue, nThreads);
-
-        std::vector<Dummy> vChecks;
-        vChecks.reserve(100);
-        for (auto i = 0; i < 100; ++i)
-            vChecks.push_back(Dummy{});
-        for (auto j = 0; j < 100; ++j)
-            control.Add(vChecks);
+    for (auto i = 0; i < 100; ++i) {
+        n = 0;
+        {
+            CCheckQueueControl<decltype(queue)> control(&queue, nThreads);
+            std::vector<Dummy> vChecks;
+            vChecks.reserve(5);
+            for (auto k = 0; k < 5; ++k)
+                vChecks.push_back(Dummy{});
+            for (auto j = 0; j < 20000; ++j)
+                control.Add(vChecks);
+        }
+        BOOST_TEST_MESSAGE("n was " << n<<"\n");
+        BOOST_CHECK(n == 100000);
     }
-    BOOST_TEST_MESSAGE("n was [" << n << "]");
-    BOOST_CHECK(n == 100 * 100);
+    queue.quit_queue();
+    threadGroup.join_all();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
