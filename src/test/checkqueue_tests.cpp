@@ -34,7 +34,7 @@ struct Dummy {
 
     void swap(Dummy& x){};
 };
-CCheckQueue<Dummy, (size_t)100000, 16> queue;
+CCheckQueue<Dummy, (size_t)1000000, 16> queue;
 void reset() {
     queue.reset_quit_queue();
     queue.reset_ids();
@@ -150,18 +150,25 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_All)
         threadGroup.create_thread([=]() {queue.Thread(nThreads); });
 
     for (auto i = 0; i < 100; ++i) {
-        n = 0;
+        size_t total = 0;
         {
+            n = 0;
+            logf("Round Begin [ n was %q ] \n", n);
             CCheckQueueControl<decltype(queue)> control(&queue, nThreads);
-            std::vector<Dummy> vChecks;
-            vChecks.reserve(5);
-            for (auto k = 0; k < 5; ++k)
-                vChecks.push_back(Dummy{});
-            for (auto j = 0; j < 20000; ++j)
+            for (size_t j = 0; j < 20000; ++j) {
+                std::vector<Dummy> vChecks;
+                size_t r = GetRand(39)+1;
+                total += r;
+                vChecks.reserve(r);
+                for (size_t k = 0; k < r; ++k)
+                    vChecks.push_back(Dummy{});
                 control.Add(vChecks);
+            }
         }
-        BOOST_TEST_MESSAGE("n was " << n<<"\n");
-        BOOST_CHECK(n == 100000);
+        logf("Round End [ n was %q ] \n", n);
+        BOOST_CHECK(n == total);
+        if (n != total)
+            break;
     }
     queue.quit_queue();
     threadGroup.join_all();

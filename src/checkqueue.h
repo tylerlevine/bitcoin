@@ -25,8 +25,8 @@ static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
 static std::atomic<size_t> order_prints(0);
 
 
-#define logf(format, ...) LogPrintf("[[%q]]" format, ++order_prints, ##__VA_ARGS__)
-//#define logf(format, ...) 
+//#define logf(format, ...) LogPrintf("[[%q]]" format, ++order_prints, ##__VA_ARGS__)
+#define logf(format, ...) 
 
 /** cache_optimize is used to pad sizeof(type) to fit a cache line to limit contention.
  *
@@ -68,7 +68,7 @@ class job_array
     std::array<cache_optimize<std::atomic_flag>, Q::MAX_JOBS> flags;
     std::array<std::function<void()>, Q::MAX_JOBS> cleanups;
     /** used as the insertion point into the array. */
-    size_t next_free_index = 0;
+    typename decltype(checks)::iterator next_free_index;
 
 public:
     using queue_type = Q;
@@ -80,11 +80,12 @@ public:
             i = []() {};
         for (auto& i : flags)
             i.clear();
+        next_free_index = checks.begin();
     }
     void add(std::vector<typename Q::JOB_TYPE>& vChecks)
     {
         for (typename Q::JOB_TYPE& check : vChecks)
-            check.swap(checks[next_free_index++]);
+            check.swap(*(next_free_index++));
     }
 
     /** reserve tries to set a flag for an element with memory_order_relaxed as we use other atomics for memory consistency
@@ -114,7 +115,7 @@ public:
      */
     void reset_jobs()
     {
-        next_free_index = 0;
+        next_free_index = checks.begin();
     };
     void job_cleanup(size_t upto)
     {
@@ -459,6 +460,7 @@ private:
                 for (size_t i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
                 status.reset(0);
+                status.nTodo = 0;
 
                 // Cleanup Tasks
                 jobs.job_cleanup(prev_total);
@@ -635,7 +637,7 @@ public:
         // mean fAllOk was false, therefore we would abort anyways...
         // But again, failure case is not the hot-path
         //for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-            status.nTodo += vs;
+        status.nTodo += vs;
     }
 
     ~CCheckQueue()
@@ -678,9 +680,9 @@ public:
         // }
         if (pqueue) {
             assert(RT_N_SCRIPTCHECK_THREADS != 1);
-            logf("Master waiting for cleanup to finish\n");
+            logf("[0] Master waiting for cleanup to finish\n");
             pqueue->wait_for_cleanup(RT_N_SCRIPTCHECK_THREADS);
-            logf("Master saw cleanup done\n");
+            logf("[0] Master saw cleanup done\n");
             pqueue->reset_jobs();
         }
     }
