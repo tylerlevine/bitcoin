@@ -25,8 +25,8 @@ static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
 static std::atomic<size_t> order_prints(0);
 
 
-//#define logf(format, ...) LogPrintf("[[%q]]" format, ++order_prints, ##__VA_ARGS__)
-#define logf(format, ...) 
+#define logf(format, ...) LogPrintf("[[%q]]" format, ++order_prints, ##__VA_ARGS__)
+//#define logf(format, ...) 
 
 /** cache_optimize is used to pad sizeof(type) to fit a cache line to limit contention.
  *
@@ -78,6 +78,8 @@ public:
     {
         for (auto& i : cleanups)
             i = []() {};
+        for (auto& i : flags)
+            i.clear();
     }
     void add(std::vector<typename Q::JOB_TYPE>& vChecks)
     {
@@ -324,6 +326,14 @@ public:
     }
 };
 
+template <typename T, size_t s>
+struct fake_array {
+    T elt;
+    T operator[](size_t ignore) 
+    {
+        return elt;
+    };
+};
 template <typename Q>
 struct status_container {
     /**Need clog2(MAX_JOBS +1) bits to represent 0 jobs and MAX_JOBS jobs, which should be around 17 bits */
@@ -440,12 +450,12 @@ private:
             case 1:
 
                 // We reset all the flags we think we'll use (also warms cache)
-                for (int i = 1; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
+                for (size_t i = 1; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
                 status.reset(ID);
                 // Reset master flags too -- if ID == 0, it's not wrong just not needed
                 logf("Resetting Master\n");
-                for (int i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
+                for (size_t i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
                 status.reset(0);
 
@@ -477,7 +487,7 @@ private:
             default:
                 // We reset all the flags we think we'll use (also warms cache)
 
-                for (int i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
+                for (size_t i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
 
                 status.reset(ID);
@@ -489,34 +499,29 @@ private:
                     boost::this_thread::yield();
                 logf("[%q] Not Idle\n", ID);
             }
-            //bool masterJoined_cache = false;
-            //bool noWork_cache = true;
-            //size_t nTodo_cache = 0;
+            size_t nDone {0};
+            size_t nNotDone {0};
             for (;;) {
-                if (status.fQuit[ID]) {
+                if (status.fQuit[ID].load()) {
                     logf("Stopping Worker %q\n", ID);
                     status.fAllOk[ID].store(false);
                     done_round.mark_done(ID);
                     return false;
                 }
+                // Note: Must check masterJoined before nTodo, otherwise 
+                // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()} 
+                bool masterJoined = status.masterJoined[ID].load();
+                assert(fMaster ? masterJoined : true);
+                size_t nTodo = status.nTodo[ID].load();
 
-                size_t nTodo = status.nTodo[ID];
                 // Add the new work.
                 work_queue.add(nTodo);
                 // We break if masterJoined and there is no work left to do
                 bool noWork = work_queue.empty();
-                // Master failed to denote presence on join
-                bool masterJoined = status.masterJoined[ID].load();
-                // Only print out on updates
-                //if (masterJoined != masterJoined_cache || noWork != noWork_cache || nTodo != nTodo_cache)
-                //logf("[%q] masterJoined=[%d], noWork=[%d], nTodo=[%q]\n", ID, masterJoined, noWork, nTodo);
-                //noWork_cache = noWork;
-                //masterJoined_cache = masterJoined;
-                //nTodo_cache = nTodo;
-                assert(fMaster ? masterJoined : true);
+
 
                 if (noWork && fMaster) {
-                    std::array<bool, MAX_WORKERS> done_cache = {false};
+                    typename decltype(done_round)::Cache done_cache;
                     // If We're the master then no work will be added so reaching this point signals
                     // exit unconditionally.
                     // We return the current status. Cleanup is handled elsewhere (RAII-style controller)
@@ -528,6 +533,7 @@ private:
                     bool fRet = fOk && status.fAllOk[ID];
                     // Allow others to exit now
                     done_round.mark_done(0, done_cache);
+                    logf("[%q] Out of Work, did %q, skipped %q, condsidered %q \n", ID, nDone, nNotDone, nDone+nNotDone);
                     // We can mark the master as having left, because all threads have finished
                     logf("Master Leaving \n");
                     for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
@@ -538,9 +544,10 @@ private:
                     // mark ourselves as completed
                     // Any error would have already been reported
                     //
-                    // We wait until the master reports leaving explicitly
                     done_round.mark_done(ID);
-                    logf("[%q] Out of Work \n", ID);
+                    logf("[%q] Out of Work, did %q, skipped %q, condsidered %q \n", ID, nDone, nNotDone, nDone+nNotDone);
+
+                    // We wait until the master reports leaving explicitly
                     while (status.masterJoined[ID])
                         boost::this_thread::yield();
                     break;
@@ -550,9 +557,14 @@ private:
 
                     // The try/catch gets rid of explicit bound checking
                     try {
-                        while (fOk) {
+                        while (!work_queue.empty() && fOk) {
                             size_t i = work_queue.pop();
-                            jobs.reserve(i) ? jobs.eval(i) : true;
+                            if (jobs.reserve(i)) {
+                                fOk = jobs.eval(i);
+                                ++nDone;
+                            } else {
+                                ++nNotDone;
+                            }
                         }
                     } catch (...) {
                     }
