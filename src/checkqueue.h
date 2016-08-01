@@ -246,6 +246,7 @@ class PriorityWorkQueue
     size_t size;
     /** Stores the total inserted, for cleanup */
     size_t total;
+    size_t id2_cache;
 
 
 public:
@@ -271,6 +272,7 @@ public:
                 ++tops[worker_select];
             }
         }
+        id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
     };
     /** Completely reset the state */
     void reset()
@@ -281,6 +283,7 @@ public:
         }
         size = 0;
         total = 0;
+        id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
     };
     /** as if all elements had been processed via pop */
     void erase()
@@ -291,6 +294,7 @@ public:
             else
                 tops[i] = bottoms[i];
         size = 0;
+        id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
     };
 
     /** accesses the highest id added, needed for external cleanup operations */
@@ -311,13 +315,13 @@ public:
         }
 
         // Iterate untill id2 wraps around to id.
-        for (size_t id2 = (id + 1) % RT_N_SCRIPTCHECK_THREADS; id2 != id; id2 = (id2 + 1) % RT_N_SCRIPTCHECK_THREADS) {
+        for (; id2_cache != id; id2_cache = (id2_cache + 1) % RT_N_SCRIPTCHECK_THREADS) {
             // if the iterators aren't equal, then there is something to be taken from the top
-            if (bottoms[id2] == tops[id2])
+            if (bottoms[id2_cache] == tops[id2_cache])
                 continue;
             --size;
             // pre-fix so that we take top at position one back
-            return *(--tops[id2]);
+            return *(--tops[id2_cache]);
         }
 
         // This should be checked by caller or caught
