@@ -577,7 +577,6 @@ private:
                     bool fOk_cache = fOk;
 
                     // The try/catch gets rid of explicit bound checking
-                    try {
                         while (!work_queue.empty() && fOk) {
                             size_t i = work_queue.pop();
                             if (jobs.reserve(i)) {
@@ -587,14 +586,12 @@ private:
                                 ++nNotDone;
                             }
                         }
-                    } catch (...) {
-                    }
 
                     // Immediately make a failure such that everyone quits on their next read if this thread discovered the failure.
                     if (!fOk) {
                         work_queue.erase();
                         if (fOk_cache)
-                            for (int i = 1; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+                            for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
                                 status.fAllOk[i].store(false);
                     }
                 }
