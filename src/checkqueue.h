@@ -22,6 +22,10 @@ static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
 #include <sstream>
 #include <string>
 #include <queue>
+#ifdef BOOST_THREAD_PLATFORM_PTHREAD
+#include <pthread.h>
+#include <thread>
+#endif
 static std::atomic<size_t> order_prints(0);
 
 
@@ -234,10 +238,10 @@ class PriorityWorkQueue
     const size_t id;
     /** The number of workers that bitcoind started with, eg, RunTime Number ScriptCheck Threads  */
     const size_t RT_N_SCRIPTCHECK_THREADS;
-    std::array<std::array<size_t, 1 + Q::MAX_JOBS / Q::MAX_WORKERS>, Q::MAX_WORKERS> available;
+    std::array<std::array<size_t, 1 + (Q::MAX_JOBS / Q::MAX_WORKERS)>, Q::MAX_WORKERS> available;
     /** The tops and bottoms track the egion that has been inserted into or completed */
-    std::array<typename std::array<size_t, 1 + Q::MAX_JOBS / Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> tops;
-    std::array<typename std::array<size_t, 1 + Q::MAX_JOBS / Q::MAX_WORKERS>::iterator, Q::MAX_WORKERS> bottoms;
+    std::array<typename std::array<size_t, 1 + (Q::MAX_JOBS / Q::MAX_WORKERS)>::iterator, Q::MAX_WORKERS> tops;
+    std::array<typename std::array<size_t, 1 + (Q::MAX_JOBS / Q::MAX_WORKERS)>::iterator, Q::MAX_WORKERS> bottoms;
     /** Stores the number of elements remaining */
     size_t size;
     /** Stores the total inserted, for cleanup */
@@ -407,7 +411,7 @@ private:
     void wait_all_finished_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
     {
         while (nFinishedCleanup.load() != RT_N_SCRIPTCHECK_THREADS)
-            boost::this_thread::yield();
+            ;//boost::this_thread::yield();
     }
 
     /** Internal function that does bulk of the verification work. */
@@ -418,6 +422,15 @@ private:
         size_t ID = fMaster ? 0 : ++ids;
         assert(RT_N_SCRIPTCHECK_THREADS != 1);
         assert(ID < RT_N_SCRIPTCHECK_THREADS); // "Got and invalid ID, wrong nScriptThread somewhere");
+#ifdef BOOST_THREAD_PLATFORM_PTHREAD
+        {
+            unsigned num_cpus = std::thread::hardware_concurrency();
+            cpu_set_t cpuset;
+            CPU_ZERO(&cpuset);
+            CPU_SET(ID%num_cpus, &cpuset);
+            pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+        }
+#endif
 
         CCheckQueue_Helpers::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
         logf("[%q] Entered \n", ID);
@@ -499,7 +512,7 @@ private:
                 ++nFinishedCleanup;
                 // Wait till the cleanup process marks us not-done
                 while (done_round.is_done(ID))
-                    boost::this_thread::yield();
+                    ;//boost::this_thread::yield();
                 logf("[%q] Not Idle\n", ID);
             }
             size_t nDone {0};
@@ -533,7 +546,7 @@ private:
                     // Hack to prevent master looking up itself at this point...
                     done_cache[0] = true;
                     while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS, done_cache))
-                        boost::this_thread::yield();
+                        ;//boost::this_thread::yield();
                     bool fRet = fOk && status.fAllOk[ID];
                     // Allow others to exit now
                     done_round.mark_done(0, done_cache);
@@ -553,7 +566,7 @@ private:
 
                     // We wait until the master reports leaving explicitly
                     while (status.masterJoined)
-                        boost::this_thread::yield();
+                        ;//boost::this_thread::yield();
                     break;
                 } else {
                     fOk = status.fAllOk[ID]; // Read fOk here, not earlier as it may trigger a quit
@@ -607,7 +620,7 @@ public:
         bool b = true;
         while (!masterMayEnter.compare_exchange_weak(b, false)) {
             b = true;
-            boost::this_thread::yield();
+            //boost::this_thread::yield();
         }
     }
     void reset_jobs()
