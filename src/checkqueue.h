@@ -294,8 +294,10 @@ struct status_container {
     std::atomic_uint nFinishedCleanup;
     /** used to gate the creation of a CCheckQueueControl/master friom entering prematurely and signal when cleanup can occur */
     std::atomic<bool> masterMayEnter;
+    /** used to signal when to go into low-cpu usage mode */
+    std::atomic<bool> sleep;
 
-    status_container() : nTodo(0), fAllOk(true), masterJoined(false), fQuit(false), ids(0), nFinishedCleanup(2), masterMayEnter(false) {}
+    status_container() : nTodo(0), fAllOk(true), masterJoined(false), fQuit(false), ids(0), nFinishedCleanup(2), masterMayEnter(false), sleep(true) {}
 };
 }
 
@@ -411,6 +413,17 @@ private:
                 while (done_round.is_done(ID))
                     ;
             }
+            while (!fMaster && status.sleep.load()) {
+
+                if (status.fQuit.load()) {
+                    LogPrintf("Stopping CCheckQueue Worker %q\n", ID);
+                    status.fAllOk.store(false);
+                    done_round.mark_done(ID);
+                    return false;
+                }
+                boost::this_thread::yield();
+
+            }
             for (;;) {
                 if (status.fQuit.load()) {
                     LogPrintf("Stopping CCheckQueue Worker %q\n", ID);
@@ -435,7 +448,7 @@ private:
                 if (noWork && fMaster) {
                     // If We're the master then no work will be added so reaching this point signals
                     // exit unconditionally.
-
+                    
 
                     // Wait until all threads finish reporting errors. Otherwise we may miss
                     // an error
@@ -446,6 +459,7 @@ private:
                     // We return the current status.
                     bool fRet = fOk && status.fAllOk;
 
+                    status.sleep.store(true);
                     // Allow workers to exit now
                     // We can mark the master as having left, because all threads have finished
                     // and are not waiting on the masterJoined signal
@@ -507,6 +521,9 @@ public:
             b = true;
         }
     }
+    void wakeup_workers() {
+        status.sleep.store(false);
+    }
     void reset_jobs()
     {
         jobs.reset_jobs();
@@ -563,6 +580,7 @@ public:
     CCheckQueueControl(Q* pqueueIn, size_t RT_N_SCRIPTCHECK_THREADS_) : pqueue(pqueueIn), fDone(false), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_)
     {
         if (pqueue) {
+            pqueue->wakeup_workers();
             assert(RT_N_SCRIPTCHECK_THREADS != 1);
             pqueue->wait_for_cleanup(RT_N_SCRIPTCHECK_THREADS);
             pqueue->reset_jobs();
