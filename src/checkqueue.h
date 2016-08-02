@@ -455,7 +455,8 @@ private:
 
                     // We return the current status.
                     bool fRet = fOk && status.fAllOk;
-
+                    // We shouldn't need to lock this non-atomic bool here because it is consistent
+                    // by the status.masterJoined.store
                     status.awake = false;
                     // Allow workers to exit now
                     // We can mark the master as having left, because all threads have finished
