@@ -18,9 +18,8 @@ boost::thread_group threadGroup;
 BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, BasicTestingSetup)
 
 
-
 static std::atomic<size_t> n;
-struct FakeJobCheckComplettion {
+struct FakeJobCheckCompletion {
     bool operator()(std::function<void()>& z)
     {
         ++n;
@@ -32,13 +31,15 @@ struct FakeJobCheckComplettion {
         return true;
     }
 
-    void swap(FakeJobCheckComplettion& x){};
+    void swap(FakeJobCheckCompletion& x){};
 };
 struct FakeJobNoWork {
-    bool operator()(){
+    bool operator()()
+    {
         return true;
     }
-    bool operator()(std::function<void()>& z){
+    bool operator()(std::function<void()>& z)
+    {
         return true;
     }
     void swap(FakeJobNoWork& x){};
@@ -46,50 +47,31 @@ struct FakeJobNoWork {
 
 struct FailingJob {
     bool f;
-    FailingJob(bool fails) : f(fails) {};
-    FailingJob() : f(true) {};
-    bool operator()(){
+    FailingJob(bool fails) : f(fails){};
+    FailingJob() : f(true){};
+    bool operator()()
+    {
         return !f;
     }
-    bool operator()(std::function<void()>& z){
+    bool operator()(std::function<void()>& z)
+    {
         return !f;
     }
-    void swap(FailingJob& x){ std::swap(f, x.f);};
+    void swap(FailingJob& x) { std::swap(f, x.f); };
 };
-CCheckQueue<FakeJobCheckComplettion, (size_t)100000, 16> big_queue;
-CCheckQueue<FakeJobCheckComplettion, (size_t)100, 16> small_queue;
-CCheckQueue<FakeJobNoWork, (size_t)100000, 16> fast_queue;
-CCheckQueue<FailingJob, (size_t)100, 16> fail_queue;
-void reset() {
-    big_queue.reset_quit_queue();
-    big_queue.reset_ids();
-    big_queue.reset_masterMayEnter();
-    big_queue.reset_jobs();
-
-    small_queue.reset_quit_queue();
-    small_queue.reset_ids();
-    small_queue.reset_masterMayEnter();
-    small_queue.reset_jobs();
-
-
-    fast_queue.reset_quit_queue();
-    fast_queue.reset_ids();
-    fast_queue.reset_masterMayEnter();
-    fast_queue.reset_jobs();
-};
+typedef CCheckQueue<FakeJobCheckCompletion, (size_t)100000, 16> big_queue;
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
 {
-
     fPrintToConsole = true;
-    CCheckQueue_Internals::PriorityWorkQueue<decltype(big_queue)::Proto> work(0, 16);
+    CCheckQueue_Internals::PriorityWorkQueue<big_queue::Proto> work(0, 16);
     auto m = 0;
     work.add(100);
     BOOST_CHECK(!work.empty());
     size_t x = work.pop();
     BOOST_CHECK(x == 0);
     size_t x2 = work.pop();
-    BOOST_TEST_MESSAGE("GOT: x2 = " <<x2);
+    BOOST_TEST_MESSAGE("GOT: x2 = " << x2);
     BOOST_CHECK(x2 == 16);
     m = 2;
     while (!work.empty()) {
@@ -123,31 +105,30 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
     BOOST_CHECK(m == 1000);
 }
 
-CCheckQueue_Internals::job_array<decltype(big_queue)::Proto> jobs;
+CCheckQueue_Internals::job_array<big_queue::Proto> jobs;
 static std::atomic<size_t> m;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
 {
     fPrintToConsole = true;
-    for (size_t i = 0; i < decltype(big_queue)::MAX_JOBS; ++i)
+    for (size_t i = 0; i < big_queue::MAX_JOBS; ++i)
         jobs.reset_flag(i);
     m = 0;
     threadGroup.create_thread([]() {
-            for (size_t i = 0; i < decltype(big_queue)::MAX_JOBS; ++i)
+            for (size_t i = 0; i < big_queue::MAX_JOBS; ++i)
             m += jobs.reserve(i) ? 1 : 0;
     });
 
     threadGroup.create_thread([]() {
-            for (size_t i = 0; i < decltype(big_queue)::MAX_JOBS; ++i)
+            for (size_t i = 0; i < big_queue::MAX_JOBS; ++i)
             m += jobs.reserve(i) ? 1 : 0;
     });
     threadGroup.join_all();
 
-    BOOST_CHECK(m == decltype(big_queue)::MAX_JOBS);
+    BOOST_CHECK(m == big_queue::MAX_JOBS);
 }
-CCheckQueue_Internals::round_barrier<decltype(big_queue)::Proto> barrier;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 {
-
+    static CCheckQueue_Internals::round_barrier<big_queue::Proto> barrier;
     fPrintToConsole = true;
     barrier.reset(8);
     for (int i = 0; i < 8; ++i)
@@ -166,21 +147,20 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_quit)
 {
+    static CCheckQueue<FakeJobCheckCompletion, (size_t)100, 16> small_queue;
 
     fPrintToConsole = true;
-    reset();
     auto nThreads = 8;
     for (auto i = 0; i < nThreads - 1; ++i)
-        threadGroup.create_thread([=]() {big_queue.Thread(nThreads); });
-    big_queue.quit_queue();
+        threadGroup.create_thread([=]() {small_queue.Thread(nThreads); });
+    small_queue.quit_queue();
     threadGroup.join_all();
 }
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
 {
-
+    static CCheckQueue<FakeJobNoWork, (size_t)100000, 16> fast_queue;
     fPrintToConsole = true;
-    reset();
     auto nThreads = 8;
     for (auto i = 0; i < nThreads - 1; ++i)
         threadGroup.create_thread([=]() {fast_queue.Thread(nThreads); });
@@ -189,7 +169,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
     vChecks.reserve(100);
     auto start_time = GetTimeMicros();
     size_t ROUNDS = 1000;
-    for (size_t i = 0; i< ROUNDS; ++i) {
+    for (size_t i = 0; i < ROUNDS; ++i) {
         size_t total = 0;
         {
             n = 0;
@@ -205,22 +185,21 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
         }
     }
     auto end_time = GetTimeMicros();
-    BOOST_TEST_MESSAGE("Perf Test took "<<end_time - start_time <<" microseconds for 100 rounds, " << (ROUNDS*1000000.0)/(end_time - start_time) << "rps");
+    BOOST_TEST_MESSAGE("Perf Test took " << end_time - start_time << " microseconds for 100 rounds, " << (ROUNDS * 1000000.0) / (end_time - start_time) << "rps");
     fast_queue.quit_queue();
     threadGroup.join_all();
 }
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
 {
-
+    static CCheckQueue<FailingJob, (size_t)100, 16> fail_queue;
     fPrintToConsole = true;
-    reset();
     auto nThreads = 8;
     for (auto i = 0; i < nThreads - 1; ++i)
         threadGroup.create_thread([=]() {fail_queue.Thread(nThreads); });
 
     size_t count = 0;
-    for (size_t i = 0; i< 101; ++i) {
+    for (size_t i = 0; i < 101; ++i) {
         size_t total = i;
         n = 0;
         CCheckQueueControl<decltype(fail_queue)> control(&fail_queue, nThreads);
@@ -242,33 +221,32 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
 }
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
 {
-
+    static CCheckQueue<FakeJobCheckCompletion, (size_t)100, 16> small_queue;
     fPrintToConsole = true;
-    reset();
     auto nThreads = 8;
     for (auto i = 0; i < nThreads - 1; ++i)
         threadGroup.create_thread([=]() {small_queue.Thread(nThreads); });
 
     size_t count = 0;
-    for (size_t i = 0; i< 101; ++i) {
+    for (size_t i = 0; i < 101; ++i) {
         size_t total = i;
         {
             n = 0;
             CCheckQueueControl<decltype(small_queue)> control(&small_queue, nThreads);
             while (total) {
                 size_t r = GetRand(10);
-                std::vector<FakeJobCheckComplettion> vChecks;
+                std::vector<FakeJobCheckCompletion> vChecks;
                 vChecks.reserve(r);
                 for (size_t k = 0; k < r && total; k++) {
                     total--;
-                    vChecks.push_back(FakeJobCheckComplettion{});
+                    vChecks.push_back(FakeJobCheckCompletion{});
                 }
                 control.Add(vChecks);
             }
         }
         ++count;
         if (n != i) {
-            BOOST_TEST_MESSAGE("Failure on trial " << count-1);
+            BOOST_TEST_MESSAGE("Failure on trial " << count - 1);
         }
     }
     small_queue.quit_queue();
