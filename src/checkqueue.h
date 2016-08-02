@@ -28,7 +28,6 @@ static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
 #endif
 
 
-
 /** cache_optimize is used to pad sizeof(type) to fit a cache line to limit contention.
  *
  * This is currently architecture dependent if the cache line sizes are correct.
@@ -97,7 +96,7 @@ public:
         return !flags[i].test_and_set();
     }
 
-    /** reset_flag resets a flag */ 
+    /** reset_flag resets a flag */
     void reset_flag(size_t i)
     {
         flags[i].clear();
@@ -124,10 +123,7 @@ public:
     };
 
     /** For future use in case there is any post-job cleanup to do */
-    void job_cleanup(size_t upto)
-    {
-
-    };
+    void job_cleanup(size_t upto){};
 };
 /* round_barrier is used to communicate that a thread has finished
  * all work and reported any bad checks it might have seen.
@@ -421,10 +417,10 @@ private:
     CCheckQueue_Internals::round_barrier<Proto> done_round;
     void wait_all_finished_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
     {
-        while (status.nFinishedCleanup.load() != RT_N_SCRIPTCHECK_THREADS);
+        while (status.nFinishedCleanup.load() != RT_N_SCRIPTCHECK_THREADS)
+            ;
         // could call boost::this_thread::yield() for better CPU utilization
         // This one shouldn't be that hot though
-        
     }
 
     /** Internal function that does bulk of the verification work. */
@@ -440,7 +436,7 @@ private:
             unsigned num_cpus = std::thread::hardware_concurrency();
             cpu_set_t cpuset;
             CPU_ZERO(&cpuset);
-            CPU_SET(ID%num_cpus, &cpuset);
+            CPU_SET(ID % num_cpus, &cpuset);
             pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
         }
 #endif
@@ -469,7 +465,7 @@ private:
                 // Mark master present
 
                 //for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-                    status.masterJoined.store(true);
+                status.masterJoined.store(true);
 
                 break;
             case 1:
@@ -493,70 +489,66 @@ private:
                 wait_all_finished_cleanup(RT_N_SCRIPTCHECK_THREADS);
                 status.nFinishedCleanup = 2;
 
-                // There is actually no other cleanup we can do without causing some bugs unfortunately (race condition
-                // with external adding)
-                // However, it was critical to have all flags reset before proceeding
-                // TODO: refactor to have each thread set themselves as being reset (except for master)
-                // and only proceed when all are false.
-
-                //
                 // We have all the threads wait on their done_round to be reset, so we
                 // Release all the threads
-
                 done_round.reset(RT_N_SCRIPTCHECK_THREADS);
-                
                 status.masterMayEnter.store(true);
+
                 break;
             default:
                 // We reset all the flags we think we'll use (also warms cache)
-
                 for (size_t i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
-
                 status.reset(ID);
-
                 ++status.nFinishedCleanup;
+
                 // Wait till the cleanup process marks us not-done
-                while (done_round.is_done(ID));
                 // we could call boost::this_thread::yield() here, but this one is not too hot
+                while (done_round.is_done(ID))
+                    ;
             }
             for (;;) {
                 if (status.fQuit[ID].load()) {
-                    LogPrintF("Stopping CCheckQueue Worker %q\n", ID);
+                    LogPrintf("Stopping CCheckQueue Worker %q\n", ID);
                     status.fAllOk[ID].store(false);
                     done_round.mark_done(ID);
                     return false;
                 }
-                // Note: Must check masterJoined before nTodo, otherwise 
-                // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()} 
+                // Note: Must check masterJoined before nTodo, otherwise
+                // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
                 bool masterJoined = status.masterJoined.load();
                 assert(fMaster ? masterJoined : true);
                 size_t nTodo = status.nTodo.load();
 
                 // TODO: A yield+continue could be put here if nTodo does not increase from the last round and not masterJoined
 
-                // Add the new work.
+                // Add the new work to the queue.
                 work_queue.add(nTodo);
                 // We break if masterJoined and there is no work left to do
                 bool noWork = work_queue.empty();
 
 
                 if (noWork && fMaster) {
-                    // default-initialize, but put one entry to dismiss compiler warning
-                    typename decltype(done_round)::Cache done_cache {false};
                     // If We're the master then no work will be added so reaching this point signals
                     // exit unconditionally.
-                    // We return the current status. Cleanup is handled elsewhere (RAII-style controller)
 
+                    // default-initialize to all false, but put one entry to dismiss compiler warning
+                    typename decltype(done_round)::Cache done_cache{false};
+
+                    // Wait until all threads finish reporting errors. Otherwise we may miss
+                    // an error
                     // Hack to prevent master looking up itself at this point...
                     done_cache[0] = true;
                     while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS, done_cache))
-                        ;//boost::this_thread::yield();
+                        ; //boost::this_thread::yield();
+
+                    // We return the current status.
                     bool fRet = fOk && status.fAllOk[ID];
-                    // Allow others to exit now
                     done_round.mark_done(0, done_cache);
+
+                    // Allow workers to exit now
                     // We can mark the master as having left, because all threads have finished
-                    //for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+                    // and are not waiting on the masterJoined signal
                     status.masterJoined.store(false);
                     return fRet;
                 } else if (noWork && masterJoined) {
@@ -567,20 +559,23 @@ private:
                     done_round.mark_done(ID);
 
                     // We wait until the master reports leaving explicitly
-                    while (status.masterJoined);
                     // a boost::this_thread::yield() could be called here, but this while isn't particularly hot
+                    while (status.masterJoined)
+                        ;
                     break;
                 } else {
-                    fOk = status.fAllOk[ID]; // Read fOk here, not earlier as it may trigger a quit
+                    fOk = status.fAllOk[ID];
                     bool fOk_cache = fOk;
 
                     while (!work_queue.empty() && fOk) {
                         size_t i = work_queue.pop();
-                        if (jobs.reserve(i)) 
+                        if (jobs.reserve(i))
                             fOk = jobs.eval(i);
                     }
 
                     // Immediately make a failure such that everyone quits on their next read if this thread discovered the failure.
+                    // TODO: This code isn't very hot, but this could be made faster if the quitter tries to reserve all the jobs or
+                    // something similar
                     if (!fOk) {
                         work_queue.erase();
                         if (fOk_cache)
@@ -606,11 +601,11 @@ public:
     void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS)
     {
         bool b = true;
+        // we could call boost::this_thread::yield() in this loop, but this shouldn't be too hot because
+        // cleanup should usually finish before master joins. Furthermore, we wouldn't want to
+        // yield on a spurrious failure
         while (!status.masterMayEnter.compare_exchange_weak(b, false)) {
             b = true;
-            // we could call boost::this_thread::yield(), but this shouldn't be too hot because
-            // cleanup should usually finish before master joins. Furthermore, we wouldn't want to 
-            // yield on a spurrious failure
         }
     }
     void reset_jobs()
@@ -635,11 +630,6 @@ public:
     {
         jobs.add(vChecks);
         size_t vs = vChecks.size();
-        // Technically this is over strict as we are the ONLY writer to nTodo,
-        // we could get away with aborting if it fails because it would unconditionally
-        // mean fAllOk was false, therefore we would abort anyways...
-        // But again, failure case is not the hot-path
-        //for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
         status.nTodo += vs;
     }
 
