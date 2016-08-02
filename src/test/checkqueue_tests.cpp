@@ -20,7 +20,7 @@ BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, BasicTestingSetup)
 
 
 static std::atomic<size_t> n;
-struct Dummy {
+struct FakeJobCheckComplettion {
     bool operator()(std::function<void()>& z)
     {
         ++n;
@@ -32,20 +32,34 @@ struct Dummy {
         return true;
     }
 
-    void swap(Dummy& x){};
+    void swap(FakeJobCheckComplettion& x){};
 };
-struct Dummy2 {
+struct FakeJobNoWork {
     bool operator()(){
         return true;
     }
     bool operator()(std::function<void()>& z){
         return true;
     }
-    void swap(Dummy2& x){};
+    void swap(FakeJobNoWork& x){};
 };
-CCheckQueue<Dummy, (size_t)100000, 16> big_queue;
-CCheckQueue<Dummy, (size_t)100, 16> small_queue;
-CCheckQueue<Dummy2, (size_t)100000, 16> fast_queue;
+
+struct FailingJob {
+    bool f;
+    FailingJob(bool fails) : f(fails) {};
+    FailingJob() : f(true) {};
+    bool operator()(){
+        return !f;
+    }
+    bool operator()(std::function<void()>& z){
+        return !f;
+    }
+    void swap(FailingJob& x){ std::swap(f, x.f);};
+};
+CCheckQueue<FakeJobCheckComplettion, (size_t)100000, 16> big_queue;
+CCheckQueue<FakeJobCheckComplettion, (size_t)100, 16> small_queue;
+CCheckQueue<FakeJobNoWork, (size_t)100000, 16> fast_queue;
+CCheckQueue<FailingJob, (size_t)100, 16> fail_queue;
 void reset() {
     big_queue.reset_quit_queue();
     big_queue.reset_ids();
@@ -171,7 +185,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
     for (auto i = 0; i < nThreads - 1; ++i)
         threadGroup.create_thread([=]() {fast_queue.Thread(nThreads); });
 
-    std::vector<Dummy2> vChecks;
+    std::vector<FakeJobNoWork> vChecks;
     vChecks.reserve(100);
     auto start_time = GetTimeMicros();
     size_t ROUNDS = 1000;
@@ -185,7 +199,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
                 total += r;
                 vChecks.clear();
                 for (size_t k = 0; k < r; ++k)
-                    vChecks.push_back(Dummy2{});
+                    vChecks.push_back(FakeJobNoWork{});
                 control.Add(vChecks);
             }
         }
@@ -196,6 +210,36 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
     threadGroup.join_all();
 }
 
+BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
+{
+
+    fPrintToConsole = true;
+    reset();
+    auto nThreads = 8;
+    for (auto i = 0; i < nThreads - 1; ++i)
+        threadGroup.create_thread([=]() {fail_queue.Thread(nThreads); });
+
+    size_t count = 0;
+    for (size_t i = 0; i< 101; ++i) {
+        size_t total = i;
+        n = 0;
+        CCheckQueueControl<decltype(fail_queue)> control(&fail_queue, nThreads);
+        while (total) {
+            size_t r = GetRand(10);
+            std::vector<FailingJob> vChecks;
+            vChecks.reserve(r);
+            for (size_t k = 0; k < r && total; k++) {
+                total--;
+                vChecks.push_back(FailingJob{total == 0});
+            }
+            control.Add(vChecks);
+        }
+        BOOST_CHECK(control.Wait() == (i == 0));
+        ++count;
+    }
+    fail_queue.quit_queue();
+    threadGroup.join_all();
+}
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
 {
 
@@ -210,20 +254,18 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
         size_t total = i;
         {
             n = 0;
-            logf("Round Begin [ n was %q ] \n", n);
             CCheckQueueControl<decltype(small_queue)> control(&small_queue, nThreads);
             while (total) {
                 size_t r = GetRand(10);
-                std::vector<Dummy> vChecks;
+                std::vector<FakeJobCheckComplettion> vChecks;
                 vChecks.reserve(r);
                 for (size_t k = 0; k < r && total; k++) {
                     total--;
-                    vChecks.push_back(Dummy{});
+                    vChecks.push_back(FakeJobCheckComplettion{});
                 }
                 control.Add(vChecks);
             }
         }
-        logf("Round End [ n was %q ] \n", n);
         ++count;
         if (n != i) {
             BOOST_TEST_MESSAGE("Failure on trial " << count-1);
