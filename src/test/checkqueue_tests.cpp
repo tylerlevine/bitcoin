@@ -68,7 +68,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
 {
 
     fPrintToConsole = true;
-    CCheckQueue_Helpers::PriorityWorkQueue<decltype(big_queue)::Proto> work(0, 16);
+    CCheckQueue_Internals::PriorityWorkQueue<decltype(big_queue)::Proto> work(0, 16);
     auto m = 0;
     work.add(100);
     BOOST_CHECK(!work.empty());
@@ -109,7 +109,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
     BOOST_CHECK(m == 1000);
 }
 
-CCheckQueue_Helpers::job_array<decltype(big_queue)::Proto> jobs;
+CCheckQueue_Internals::job_array<decltype(big_queue)::Proto> jobs;
 static std::atomic<size_t> m;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
 {
@@ -130,7 +130,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
 
     BOOST_CHECK(m == decltype(big_queue)::MAX_JOBS);
 }
-CCheckQueue_Helpers::round_barrier<decltype(big_queue)::Proto> barrier;
+CCheckQueue_Internals::round_barrier<decltype(big_queue)::Proto> barrier;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 {
 
