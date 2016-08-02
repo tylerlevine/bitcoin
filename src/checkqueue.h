@@ -7,51 +7,15 @@
 
 #include <algorithm>
 #include <vector>
-#include "utiltime.h"
-#include "random.h"
 #include "util.h"
-
 #include <boost/thread.hpp>
-#include <mutex>
-
 #include <atomic>
 // This should be ignored eventually, but needs testing to ensure this works on more platforms
 static_assert(ATOMIC_BOOL_LOCK_FREE, "shared_status not lock free");
 static_assert(ATOMIC_LONG_LOCK_FREE, "shared_status not lock free");
 static_assert(ATOMIC_LLONG_LOCK_FREE, "shared_status not lock free");
-#include <sstream>
-#include <string>
-#include <queue>
-#ifdef BOOST_THREAD_PLATFORM_PTHREAD
-#include <pthread.h>
-#include <thread>
-#endif
 
 
-/** cache_optimize is used to pad sizeof(type) to fit a cache line to limit contention.
- *
- * This is currently architecture dependent if the cache line sizes are correct.
- * Apparently true cache line sizes can only be determined at runtime. Wrong
- * size won't affect correctness, only performance. This seems to work poorly with
- * primitive types/operators.
- */
-template <typename T, int cache_line = 64>
-struct alignas(cache_line*((sizeof(T) + cache_line - 1) / cache_line)) cache_optimize : T {
-};
-
-/** clog2 determines at compile-time how many bits are needed to represent a field in a struct bitfield.
- *
- * For example, clog2(31) == 5, clog2(32) == 6.
- *
- * @param MAX the largest value stored.
- * @return the number of bits needed to store such an integer.
- */
-constexpr size_t clog2(size_t MAX)
-{
-    return (MAX << 1) >> 1 == MAX ? clog2(MAX << 1) - 1 : 8 * sizeof(size_t);
-}
-static_assert(clog2(31) == 5, "clog2 is incorrect");
-static_assert(clog2(32) == 6, "clog2 is broken");
 
 /** CCheckQueue_Internals contains various components that otherwise could live inside
  * of CCheckQueue, but is separate for easier testability and modularity */
@@ -68,13 +32,11 @@ class job_array
     /** atomic flags which are used to reserve a check from checks
      * C++11 standard guarantees that these are atomic on all platforms
      * */
-    std::array<cache_optimize<std::atomic_flag>, Q::MAX_JOBS> flags;
+    std::array<std::atomic_flag, Q::MAX_JOBS> flags;
     /** used as the insertion point into the array. */
     typename decltype(checks)::iterator next_free_index;
 
 public:
-    typedef Q queue_type;
-    typedef typename Q::JOB_TYPE value_type;
     job_array()
     {
         for (auto& i : flags)
@@ -110,11 +72,11 @@ public:
 
     /** reset_jobs resets the insertion index only, so should only be run on master.
      *
-     * The caller must ensure that forall i, data[i] is destructed and flags[i] is
+     * The caller must ensure that forall i, checks[i] is destructed and flags[i] is
      * reset.
      *
      * NOTE: This cleanup done "for free" elsewhere
-     *      - data[i] is destructed by master on swap
+     *      - checksi] is destructed by master on swap
      *      - flags[i] is reset by each thread while waiting to be cleared for duty
      */
     void reset_jobs()
@@ -122,8 +84,6 @@ public:
         next_free_index = checks.begin();
     };
 
-    /** For future use in case there is any post-job cleanup to do */
-    void job_cleanup(size_t upto){};
 };
 /* round_barrier is used to communicate that a thread has finished
  * all work and reported any bad checks it might have seen.
@@ -138,24 +98,12 @@ class round_barrier
     std::array<std::atomic_bool, Q::MAX_WORKERS> state;
 
 public:
-    /** We pass a cache to round_barrier calls to decrease
-      un-needed atomic-loads. Note that Cache is a reference. 
-      Cache must be correct, it would unsafe to manually update cache, but can
-      be done if needed for control flow */
-    using Cache = std::array<bool, Q::MAX_WORKERS>;
     /** Default state is true so that first round looks like a previous round succeeded*/
     round_barrier()
     {
         for (auto& i : state)
             i = true;
     }
-
-    /** Mark an id as done */
-    void mark_done(size_t id, Cache& cache)
-    {
-        state[id] = true;
-        cache[id] = true;
-    };
 
     void mark_done(size_t id)
     {
@@ -165,16 +113,12 @@ public:
     /** Iterates from [0,upto) to fetch status updates on unfinished workers.
      *
      * @param upto 
-     * @param cache
      * @returns if all entries up to upto were true*/
-    bool load_done(size_t upto, Cache& cache)
+    bool load_done(size_t upto)
     {
         bool x = true;
         for (auto i = 0; i < upto; i++) {
-            if (!cache[i]) {
-                cache[i] = state[i].load();
-                x = x && cache[i];
-            }
+            x = x && state[i].load();
         }
         return x;
     };
@@ -195,16 +139,6 @@ public:
         return state[i];
     }
 
-    /** Read the state if not cached, otherwise read and cache result */
-    bool is_done(size_t i, Cache& cache)
-    {
-        if (cache[i])
-            return true;
-        else {
-            cache[i] = state[i];
-            return true;
-        }
-    }
 };
 /* PriorityWorkQueue exists to help threads select work 
  * to do in a cache friendly way. As long as all entries added are
@@ -254,8 +188,6 @@ class PriorityWorkQueue
 
 
 public:
-    typedef Q queue_type;
-    typedef typename Q::JOB_TYPE value_type;
     struct OUT_OF_WORK {
     };
     PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_)
@@ -347,35 +279,23 @@ public:
  * TODO: cache align things.*/
 template <typename Q>
 struct status_container {
-    /**Need clog2(MAX_JOBS +1) bits to represent 0 jobs and MAX_JOBS jobs, which should be around 17 bits 
-     * nTodo and  materJoined can be packed into one struct if desired*/
-    static_assert(clog2(Q::MAX_JOBS + 1) <= 64, "can't store that many jobs");
+    /** nTodo and  materJoined can be packed into one struct if desired*/
     std::atomic<size_t> nTodo;
     /** true if all checks were successful, false if any failure occurs */
-    std::array<std::atomic<bool>, Q::MAX_WORKERS> fAllOk;
+    std::atomic<bool> fAllOk;
     /** true if the master has joined, false otherwise. A round may not terminate unless masterJoined */
     //std::array<std::atomic<bool>, Q::MAX_WORKERS> masterJoined;
     std::atomic<bool> masterJoined;
     /** used to signal external quit, eg, from ShutDown() */
-    std::array<std::atomic<bool>, Q::MAX_WORKERS> fQuit;
+    std::atomic<bool> fQuit;
     /** used to assign ids to threads initially */
     std::atomic_uint ids;
     /** used to count how many threads have finished cleanup operations */
     std::atomic_uint nFinishedCleanup;
+    /** used to gate the creation of a CCheckQueueControl/master friom entering prematurely and signal when cleanup can occur */
     std::atomic<bool> masterMayEnter;
 
-    status_container() : nTodo(0), masterJoined(false), ids(0), nFinishedCleanup(2), masterMayEnter(false)
-    {
-        for (auto i = 0; i < Q::MAX_WORKERS; ++i) {
-            fAllOk[i].store(true);
-            fQuit[i].store(false);
-        }
-    }
-    /** Force a store of the status to the initialized state */
-    void reset(size_t id)
-    {
-        fAllOk[id].store(true);
-    };
+    status_container() : nTodo(0), fAllOk(true), masterJoined(false), fQuit(false), ids(0), nFinishedCleanup(2), masterMayEnter(false) {}
 };
 }
 
@@ -399,14 +319,11 @@ class CCheckQueue
 {
 public:
     typedef T JOB_TYPE;
-    // in case someone wants a container-y view
-    typedef T value_type;
     static const size_t MAX_JOBS = J;
     static const size_t MAX_WORKERS = W;
     // We use the Proto version so that we can pass it to job_array, status_container, etc
     struct Proto {
         typedef T JOB_TYPE;
-        typedef T value_type;
         static const size_t MAX_JOBS = J;
         static const size_t MAX_WORKERS = W;
     };
@@ -431,15 +348,6 @@ private:
         const size_t ID = fMaster ? 0 : ++status.ids;
         assert(RT_N_SCRIPTCHECK_THREADS != 1);
         assert(ID < RT_N_SCRIPTCHECK_THREADS); // "Got and invalid ID, wrong nScriptThread somewhere");
-#ifdef BOOST_THREAD_PLATFORM_PTHREAD
-        {
-            unsigned num_cpus = std::thread::hardware_concurrency();
-            cpu_set_t cpuset;
-            CPU_ZERO(&cpuset);
-            CPU_SET(ID % num_cpus, &cpuset);
-            pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-        }
-#endif
 
         CCheckQueue_Internals::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
 
@@ -473,21 +381,18 @@ private:
                 // We reset all the flags we think we'll use (also warms cache)
                 for (size_t i = 1; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
-                status.reset(ID);
                 // Reset master flags too -- if ID == 0, it's not wrong just not needed
                 for (size_t i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
-                status.reset(0);
-                status.nTodo = 0;
+                status.nTodo.store(0);
+                status.fAllOk.store(true);
 
-                // Cleanup Tasks
-                jobs.job_cleanup(prev_total);
-
+                // TODO: Future Mutually Excluded Cleanup Tasks can go here
 
                 // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
                 // because of cleanup occuring after others are running in main section
                 wait_all_finished_cleanup(RT_N_SCRIPTCHECK_THREADS);
-                status.nFinishedCleanup = 2;
+                status.nFinishedCleanup.store(2);
 
                 // We have all the threads wait on their done_round to be reset, so we
                 // Release all the threads
@@ -499,7 +404,6 @@ private:
                 // We reset all the flags we think we'll use (also warms cache)
                 for (size_t i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
-                status.reset(ID);
                 ++status.nFinishedCleanup;
 
                 // Wait till the cleanup process marks us not-done
@@ -508,9 +412,9 @@ private:
                     ;
             }
             for (;;) {
-                if (status.fQuit[ID].load()) {
+                if (status.fQuit.load()) {
                     LogPrintf("Stopping CCheckQueue Worker %q\n", ID);
-                    status.fAllOk[ID].store(false);
+                    status.fAllOk.store(false);
                     done_round.mark_done(ID);
                     return false;
                 }
@@ -532,19 +436,15 @@ private:
                     // If We're the master then no work will be added so reaching this point signals
                     // exit unconditionally.
 
-                    // default-initialize to all false, but put one entry to dismiss compiler warning
-                    typename decltype(done_round)::Cache done_cache{false};
 
                     // Wait until all threads finish reporting errors. Otherwise we may miss
                     // an error
-                    // Hack to prevent master looking up itself at this point...
-                    done_cache[0] = true;
-                    while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS, done_cache))
+                    done_round.mark_done(0);
+                    while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS))
                         ; //boost::this_thread::yield();
 
                     // We return the current status.
-                    bool fRet = fOk && status.fAllOk[ID];
-                    done_round.mark_done(0, done_cache);
+                    bool fRet = fOk && status.fAllOk;
 
                     // Allow workers to exit now
                     // We can mark the master as having left, because all threads have finished
@@ -564,7 +464,7 @@ private:
                         ;
                     break;
                 } else {
-                    fOk = status.fAllOk[ID];
+                    fOk = status.fAllOk;
                     bool fOk_cache = fOk;
 
                     while (!work_queue.empty() && fOk) {
@@ -579,8 +479,7 @@ private:
                     if (!fOk) {
                         work_queue.erase();
                         if (fOk_cache)
-                            for (int i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-                                status.fAllOk[i].store(false);
+                            status.fAllOk.store(false);
                     }
                 }
             }
@@ -639,14 +538,12 @@ public:
     }
     void quit_queue()
     {
-        for (auto i = 0; i < MAX_WORKERS; ++i)
-            status.fQuit[i].store(true);
+        status.fQuit.store(true);
     }
 
     void reset_quit_queue()
     {
-        for (auto i = 0; i < MAX_WORKERS; ++i)
-            status.fQuit[i].store(false);
+        status.fQuit.store(false);
     }
 };
 

@@ -14,31 +14,23 @@
 #include <boost/thread.hpp>
 #include <boost/bind.hpp>
 #include <unordered_set>
+
+#include "random.h"
 boost::thread_group threadGroup;
 BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, BasicTestingSetup)
 
 
 static std::atomic<size_t> n;
 struct FakeJobCheckCompletion {
-    bool operator()(std::function<void()>& z)
-    {
-        ++n;
-        return true;
-    }
     bool operator()()
     {
         ++n;
         return true;
     }
-
     void swap(FakeJobCheckCompletion& x){};
 };
 struct FakeJobNoWork {
     bool operator()()
-    {
-        return true;
-    }
-    bool operator()(std::function<void()>& z)
     {
         return true;
     }
@@ -50,10 +42,6 @@ struct FailingJob {
     FailingJob(bool fails) : f(fails){};
     FailingJob() : f(true){};
     bool operator()()
-    {
-        return !f;
-    }
-    bool operator()(std::function<void()>& z)
     {
         return !f;
     }
@@ -133,9 +121,8 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
     barrier.reset(8);
     for (int i = 0; i < 8; ++i)
         threadGroup.create_thread([=]() {
-            decltype(barrier)::Cache cache;
-            barrier.mark_done(i, cache);
-            while (!barrier.load_done(8, cache))
+            barrier.mark_done(i);
+            while (!barrier.load_done(8))
                 boost::this_thread::yield();
         });
 
@@ -168,7 +155,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
     std::vector<FakeJobNoWork> vChecks;
     vChecks.reserve(100);
     auto start_time = GetTimeMicros();
-    size_t ROUNDS = 1000;
+    size_t ROUNDS = 10000;
     for (size_t i = 0; i < ROUNDS; ++i) {
         size_t total = 0;
         {
@@ -185,7 +172,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
         }
     }
     auto end_time = GetTimeMicros();
-    BOOST_TEST_MESSAGE("Perf Test took " << end_time - start_time << " microseconds for 100 rounds, " << (ROUNDS * 1000000.0) / (end_time - start_time) << "rps");
+    BOOST_TEST_MESSAGE("Perf Test took " << end_time - start_time << " microseconds for "<<ROUNDS << " rounds, " << (ROUNDS * 1000000.0) / (end_time - start_time) << "rps");
     fast_queue.quit_queue();
     threadGroup.join_all();
 }
