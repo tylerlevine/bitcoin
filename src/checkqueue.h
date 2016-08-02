@@ -8,8 +8,9 @@
 #include <algorithm>
 #include <vector>
 #include "util.h"
-#include <boost/thread.hpp>
 #include <atomic>
+#include <mutex>
+#include <condition_variable>
 // This should be ignored eventually, but needs testing to ensure this works on more platforms
 static_assert(ATOMIC_BOOL_LOCK_FREE, "shared_status not lock free");
 static_assert(ATOMIC_LONG_LOCK_FREE, "shared_status not lock free");
@@ -295,9 +296,12 @@ struct status_container {
     /** used to gate the creation of a CCheckQueueControl/master friom entering prematurely and signal when cleanup can occur */
     std::atomic<bool> masterMayEnter;
     /** used to signal when to go into low-cpu usage mode */
-    std::atomic<bool> sleep;
 
-    status_container() : nTodo(0), fAllOk(true), masterJoined(false), fQuit(false), ids(0), nFinishedCleanup(2), masterMayEnter(false), sleep(true) {}
+    bool awake;
+    std::condition_variable sleep_cv;
+    std::mutex sleep_mtx;
+
+    status_container() : nTodo(0), fAllOk(true), masterJoined(false), fQuit(false), ids(0), nFinishedCleanup(2), masterMayEnter(false), awake(false) {}
 };
 }
 
@@ -413,16 +417,9 @@ private:
                 while (done_round.is_done(ID))
                     ;
             }
-            while (!fMaster && status.sleep.load()) {
-
-                if (status.fQuit.load()) {
-                    LogPrintf("Stopping CCheckQueue Worker %q\n", ID);
-                    status.fAllOk.store(false);
-                    done_round.mark_done(ID);
-                    return false;
-                }
-                boost::this_thread::yield();
-
+            if (!fMaster) {
+                    std::unique_lock<std::mutex> lk(status.sleep_mtx);
+                    status.sleep_cv.wait(lk, [this]{return status.awake;});
             }
             for (;;) {
                 if (status.fQuit.load()) {
@@ -459,7 +456,7 @@ private:
                     // We return the current status.
                     bool fRet = fOk && status.fAllOk;
 
-                    status.sleep.store(true);
+                    status.awake = false;
                     // Allow workers to exit now
                     // We can mark the master as having left, because all threads have finished
                     // and are not waiting on the masterJoined signal
@@ -522,7 +519,11 @@ public:
         }
     }
     void wakeup_workers() {
-        status.sleep.store(false);
+        {
+            std::lock_guard<std::mutex> lk(status.sleep_mtx);
+            status.awake = true;
+        }
+        status.sleep_cv.notify_all();
     }
     void reset_jobs()
     {
@@ -555,11 +556,16 @@ public:
     }
     void quit_queue()
     {
+        wakeup_workers();
         status.fQuit.store(true);
     }
 
     void reset_quit_queue()
     {
+        {
+            std::lock_guard<std::mutex> lk(status.sleep_mtx);
+            status.awake = false;
+        }
         status.fQuit.store(false);
     }
 };
