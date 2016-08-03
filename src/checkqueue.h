@@ -347,9 +347,33 @@ private:
             ;
     }
     std::atomic<bool> should_sleep;
+    struct sleeper {
+        std::mutex lk;
+        std::condition_variable cv;
+        bool awake;
+        void sleep() {
+            //std::unique_lock<std::mutex> lg(lk);
+            //awake = false;
+        };
+
+        void wakeup() {
+
+            //{
+                //std::unique_lock<std::mutex> lg(lk);
+                //awake = true;
+            //}
+            //cv.notify_one();
+        };
+
+        void wait() {
+            //std::unique_lock<std::mutex> lg(lk);
+            //while (!cv.wait_for(lg, std::chrono::milliseconds(1),[this](){return awake;}));
+        };
+    };
+    std::array<sleeper, MAX_WORKERS> sleepers;
     void maybe_sleep() {
         while (should_sleep)
-            std::this_thread::sleep_for(std::chrono::microseconds(250));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     /** Internal function that does bulk of the verification work. */
@@ -370,7 +394,8 @@ private:
         work_queues[ID].set(ID, RT_N_SCRIPTCHECK_THREADS);
 
         for (;;) {
-            maybe_sleep();
+            if (ID != 0)
+                sleepers[ID].wait();
             for (;;) {
                 // Note: Must check masterJoined before nTodo, otherwise
                 // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
@@ -501,10 +526,13 @@ public:
         std::swap(t, submaster);
     }
     void wakeup() {
-        should_sleep = false;
+
+        //for (auto& s : sleepers)
+            //s.wakeup();
     }
     void sleep() {
-        should_sleep = true;
+        //for (auto& s : sleepers)
+            //s.sleep();
     }
 };
 
