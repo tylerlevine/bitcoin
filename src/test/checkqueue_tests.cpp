@@ -43,8 +43,6 @@ struct FailingJob {
     FailingJob() : f(true){};
     bool operator()()
     {
-        if (f) 
-            LogPrintf("called the failue\n");
         return !f;
     }
     void swap(FailingJob& x) { std::swap(f, x.f); };
@@ -57,42 +55,32 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
     CCheckQueue_Internals::PriorityWorkQueue<medium_queue::Proto> work(0, 16);
     auto m = 0;
     work.add(100);
-    BOOST_CHECK(!work.empty());
-    size_t x = work.pop();
+    size_t x = 0;
+    work.pop(x);
     BOOST_CHECK(x == 0);
-    size_t x2 = work.pop();
-    BOOST_TEST_MESSAGE("GOT: x2 = " << x2);
-    BOOST_CHECK(x2 == 16);
+    work.pop(x);
+    BOOST_TEST_MESSAGE("GOT: 2nd x = " << x);
+    BOOST_CHECK(x == 16);
     m = 2;
-    while (!work.empty()) {
-        work.pop();
+    while ( work.pop(x)) {
         ++m;
     }
     BOOST_CHECK(m == 100);
     work.add(200);
     std::unordered_set<size_t> results;
-    while (!work.empty()) {
-        results.insert(work.pop());
+    while ( work.pop(x)) {
+        results.insert(x);
         ++m;
     }
-    for (auto i = 100; i < 200; ++i)
+    for (auto i = 100; i < 200; ++i) {
+        BOOST_CHECK(results.count(i));
         results.erase(i);
+    }
     BOOST_CHECK(results.empty());
     BOOST_CHECK(m == 200);
 
     work.reset();
 
-    work.add(1000);
-
-    m = 0;
-    try {
-        for (;;) {
-            work.pop();
-            ++m;
-        }
-    } catch (...) {
-    }
-    BOOST_CHECK(m == 1000);
 }
 
 CCheckQueue_Internals::job_array<big_queue::Proto> jobs;
@@ -137,11 +125,12 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
 {
     static CCheckQueue<FakeJobNoWork, (size_t)100000, 16> fast_queue;
     auto nThreads = 8;
+    fPrintToConsole = true;
 
     std::vector<FakeJobNoWork> vChecks;
     vChecks.reserve(100);
     auto start_time = GetTimeMicros();
-    size_t ROUNDS = 1000;
+    size_t ROUNDS = 10000;
     for (size_t i = 0; i < ROUNDS; ++i) {
         size_t total = 0;
         {

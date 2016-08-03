@@ -175,12 +175,8 @@ class PriorityWorkQueue
     size_t id;
     /** The number of workers that bitcoind started with, eg, RunTime Number ScriptCheck Threads  */
     size_t RT_N_SCRIPTCHECK_THREADS;
-    std::array<std::array<size_t, 1 + (Q::MAX_JOBS )>, Q::MAX_WORKERS> available;
-    /** The tops and bottoms track the egion that has been inserted into or completed */
-    std::array<typename std::array<size_t, 1 + (Q::MAX_JOBS )>::iterator, Q::MAX_WORKERS> tops;
-    std::array<typename std::array<size_t, 1 + (Q::MAX_JOBS )>::iterator, Q::MAX_WORKERS> bottoms;
+    std::array<size_t, Q::MAX_WORKERS> n_done;
     /** Stores the number of elements remaining (ie, --size on pop)*/
-    size_t size;
     /** Stores the total inserted since the last reset (ignores pop) */
     size_t total;
     /** a cache of the last queue we were popping from, reset on adds and (circularly) incremented on pops 
@@ -192,26 +188,21 @@ public:
     struct OUT_OF_WORK {
     };
     PriorityWorkQueue() {};
-    PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_)
+    PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_), n_done(), total(0), id2_cache((id_+1) % RT_N_SCRIPTCHECK_THREADS)
     {
-        reset();
     };
     /** adds entries for execution [total, n)
      * Places entries in the proper bucket
      * Resets the next thread to help (id2_cache) if work was added
      */
-    void add(size_t n)
+    bool add(size_t n)
     {
         if (n > total) {
-            size += n - total;
-            // TODO: More neatly
-            for (; total < n; ++total) {
-                auto worker_select = total % RT_N_SCRIPTCHECK_THREADS;
-                *tops[worker_select] = total;
-                ++tops[worker_select];
-            }
+            total = n;
+            id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
+            return true;
         }
-        id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
+        return false;
     };
     void set(size_t idIn, size_t RT_N_SCRIPTCHECK_THREADS_In) {
         id = idIn;
@@ -222,10 +213,8 @@ public:
     void reset()
     {
         for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i) {
-            tops[i] = available[i].begin();
-            bottoms[i] = available[i].begin();
+            n_done[i] = 0;
         }
-        size = 0;
         total = 0;
         id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
     };
@@ -233,11 +222,7 @@ public:
     void erase()
     {
         for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-            if (i == id)
-                bottoms[i] = tops[i];
-            else
-                tops[i] = bottoms[i];
-        size = 0;
+            n_done[i] = (total / RT_N_SCRIPTCHECK_THREADS)  + ( i < (total % RT_N_SCRIPTCHECK_THREADS) ? 1 : 0);
         id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
     };
 
@@ -251,33 +236,38 @@ public:
     /* Get one first from out own work stack (take the first one) and then try from neighbors sequentially
      * (from the last one on that neighbors stack)
     */
-    size_t pop()
+    enum class popped_from : unsigned char {
+        nowhere, self, other
+    };
+    bool pop(size_t& val, bool allow_stealing = true)
     {
-        if (bottoms[id] < tops[id]) {
-            --size;
-            // post-fix so that we take bottom at current position
-            return *(bottoms[id]++);
+        val = (id + (n_done[id]) * RT_N_SCRIPTCHECK_THREADS);
+        if ( val < total) {
+            ++n_done[id];
+            return true;
         }
 
         // Iterate untill id2 wraps around to id.
-        for (; id2_cache != id; id2_cache = (id2_cache + 1) % RT_N_SCRIPTCHECK_THREADS) {
-            // if the iterators aren't equal, then there is something to be taken from the top
-            if (bottoms[id2_cache] == tops[id2_cache])
-                continue;
-            --size;
-            // pre-fix so that we take top at position one back
-            return *(--tops[id2_cache]);
-        }
+        if (allow_stealing)
+            for (; id2_cache != id; id2_cache = (id2_cache + 1) % RT_N_SCRIPTCHECK_THREADS) {
+                // if the iterators aren't equal, then there is something to be taken from the top
+                //
+                val = (id2_cache + (n_done[id2_cache]) * RT_N_SCRIPTCHECK_THREADS);
+                if ( val < total) {
+                    ++n_done[id2_cache];
+                    return true;
+                }
+            }
 
-        // This should be checked by caller or caught
-        throw OUT_OF_WORK{};
+
+        return false;
+
     };
 
-
-    bool empty()
-    {
-        return size == 0;
+    void put_back_other(size_t val) {
+        --n_done[val % RT_N_SCRIPTCHECK_THREADS];
     }
+
 };
 
 /** status_container stores the 
@@ -336,7 +326,6 @@ private:
     CCheckQueue_Internals::status_container<Proto> status;
     CCheckQueue_Internals::round_barrier<Proto> done_round;
 
-    std::array<CCheckQueue_Internals::PriorityWorkQueue<Proto>, MAX_WORKERS> work_queues;
 
 
     std::thread submaster;
@@ -391,31 +380,26 @@ private:
         else
             RenameThread("bitcoin-scriptcheck");
 
-        work_queues[ID].set(ID, RT_N_SCRIPTCHECK_THREADS);
+        CCheckQueue_Internals::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
 
         for (;;) {
             if (ID != 0)
                 sleepers[ID].wait();
-            for (;;) {
                 // Note: Must check masterJoined before nTodo, otherwise
                 // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
-                bool masterJoined = status.masterJoined.load();
-                // Add the new work to the queue.
-                work_queues[ID].add(status.nTodo.load());
-
-                while (!work_queues[ID].empty() && status.fAllOk.load()) {
-                    size_t i = work_queues[ID].pop();
-                    // Immediately make a failure such that everyone quits on their next read of fOk
-                    if (jobs.reserve(i) && !jobs.eval(i) )
-                        status.fAllOk.store(false);
+                size_t job_id = 0;
+                while (status.fAllOk.load()) {
+                    bool allow_stealing = status.masterJoined.load();
+                    if (work_queue.pop(job_id, allow_stealing)) {
+                        // Immediately make a failure such that everyone quits on their next read of fOk
+                        if (jobs.reserve(job_id) && !jobs.eval(job_id) )
+                            status.fAllOk.store(false);
+                    } else if (allow_stealing && !work_queue.add(status.nTodo.load()))
+                        break;
                 }
 
                 
-                // We break if masterJoined and there is no work left to do
-                if (masterJoined)
-                    break;
 
-            }
 
             // We only break out of the loop when there is no more work and the master had joined.
             // We won't find more work later, so mark ourselves as completed
@@ -440,7 +424,7 @@ private:
             while (status.masterJoined.load())
                 ;
 
-            size_t prev_total = work_queues[ID].get_total();
+            size_t prev_total = work_queue.get_total();
             // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
             // This frees the master to return with the result before the cleanup occurs
             // And allows for the ID == 1 to do the master's cleanup for it
@@ -472,7 +456,7 @@ private:
                 done_round.reset(0);
             } else {
                 ++status.nFinishedCleanup;
-                work_queues[ID].reset();
+                work_queue.reset();
                 while (done_round.is_done(ID))
                     ;
             }
