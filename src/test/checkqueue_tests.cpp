@@ -43,16 +43,18 @@ struct FailingJob {
     FailingJob() : f(true){};
     bool operator()()
     {
+        if (f) 
+            LogPrintf("called the failue\n");
         return !f;
     }
     void swap(FailingJob& x) { std::swap(f, x.f); };
 };
 typedef CCheckQueue<FakeJobCheckCompletion, (size_t)100000, 16> big_queue;
+typedef CCheckQueue<FakeJobCheckCompletion, (size_t)2000, 16> medium_queue;
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
 {
-    fPrintToConsole = true;
-    CCheckQueue_Internals::PriorityWorkQueue<big_queue::Proto> work(0, 16);
+    CCheckQueue_Internals::PriorityWorkQueue<medium_queue::Proto> work(0, 16);
     auto m = 0;
     work.add(100);
     BOOST_CHECK(!work.empty());
@@ -97,7 +99,6 @@ CCheckQueue_Internals::job_array<big_queue::Proto> jobs;
 static std::atomic<size_t> m;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
 {
-    fPrintToConsole = true;
     for (size_t i = 0; i < big_queue::MAX_JOBS; ++i)
         jobs.reset_flag(i);
     m = 0;
@@ -117,7 +118,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
 BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 {
     static CCheckQueue_Internals::round_barrier<big_queue::Proto> barrier;
-    fPrintToConsole = true;
     barrier.reset(8);
     for (int i = 0; i < 8; ++i)
         threadGroup.create_thread([=]() {
@@ -132,30 +132,16 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 }
 
 
-BOOST_AUTO_TEST_CASE(test_CheckQueue_quit)
-{
-    static CCheckQueue<FakeJobCheckCompletion, (size_t)100, 16> small_queue;
-
-    fPrintToConsole = true;
-    auto nThreads = 8;
-    for (auto i = 0; i < nThreads - 1; ++i)
-        threadGroup.create_thread([=]() {small_queue.Thread(nThreads); });
-    small_queue.quit_queue();
-    threadGroup.join_all();
-}
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
 {
     static CCheckQueue<FakeJobNoWork, (size_t)100000, 16> fast_queue;
-    fPrintToConsole = true;
     auto nThreads = 8;
-    for (auto i = 0; i < nThreads - 1; ++i)
-        threadGroup.create_thread([=]() {fast_queue.Thread(nThreads); });
 
     std::vector<FakeJobNoWork> vChecks;
     vChecks.reserve(100);
     auto start_time = GetTimeMicros();
-    size_t ROUNDS = 10000;
+    size_t ROUNDS = 1000;
     for (size_t i = 0; i < ROUNDS; ++i) {
         size_t total = 0;
         {
@@ -173,17 +159,12 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
     }
     auto end_time = GetTimeMicros();
     BOOST_TEST_MESSAGE("Perf Test took " << end_time - start_time << " microseconds for "<<ROUNDS << " rounds, " << (ROUNDS * 1000000.0) / (end_time - start_time) << "rps");
-    fast_queue.quit_queue();
-    threadGroup.join_all();
 }
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
 {
     static CCheckQueue<FailingJob, (size_t)100, 16> fail_queue;
-    fPrintToConsole = true;
     auto nThreads = 8;
-    for (auto i = 0; i < nThreads - 1; ++i)
-        threadGroup.create_thread([=]() {fail_queue.Thread(nThreads); });
 
     size_t count = 0;
     for (size_t i = 0; i < 101; ++i) {
@@ -203,22 +184,18 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
         BOOST_CHECK(control.Wait() == (i == 0));
         ++count;
     }
-    fail_queue.quit_queue();
-    threadGroup.join_all();
 }
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
 {
     static CCheckQueue<FakeJobCheckCompletion, (size_t)100, 16> small_queue;
     fPrintToConsole = true;
     auto nThreads = 8;
-    for (auto i = 0; i < nThreads - 1; ++i)
-        threadGroup.create_thread([=]() {small_queue.Thread(nThreads); });
 
     size_t count = 0;
     for (size_t i = 0; i < 101; ++i) {
         size_t total = i;
+        n = 0;
         {
-            n = 0;
             CCheckQueueControl<decltype(small_queue)> control(&small_queue, nThreads);
             while (total) {
                 size_t r = GetRand(10);
@@ -233,11 +210,10 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
         }
         ++count;
         if (n != i) {
-            BOOST_TEST_MESSAGE("Failure on trial " << count - 1);
+            BOOST_CHECK(n == i);
+            BOOST_TEST_MESSAGE("Failure on trial " << count - 1 << " expected, got " << n);
         }
     }
-    small_queue.quit_queue();
-    threadGroup.join_all();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
