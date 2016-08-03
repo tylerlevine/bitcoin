@@ -349,7 +349,7 @@ private:
     std::atomic<bool> should_sleep;
     void maybe_sleep() {
         while (should_sleep)
-            std::chrono::microseconds(250);
+            std::this_thread::sleep_for(std::chrono::microseconds(250));
     }
 
     /** Internal function that does bulk of the verification work. */
