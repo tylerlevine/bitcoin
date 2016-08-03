@@ -170,6 +170,7 @@ void Interrupt(boost::thread_group& threadGroup)
     InterruptRPC();
     InterruptREST();
     InterruptTorControl();
+    threadGroup.interrupt_all();
 }
 
 void Shutdown()
