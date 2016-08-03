@@ -12,7 +12,8 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
-#include <boost/thread.hpp>
+#include <thread>
+#include <chrono>
 // This should be ignored eventually, but needs testing to ensure this works on more platforms
 static_assert(ATOMIC_BOOL_LOCK_FREE, "shared_status not lock free");
 static_assert(ATOMIC_LONG_LOCK_FREE, "shared_status not lock free");
@@ -124,12 +125,11 @@ public:
         return x;
     };
 
-    /** resets all the bools. Can be used to coordinate cleanup processes.
+    /** resets one bool
      *
      */
-    void reset(size_t upto)
+    void reset(size_t i)
     {
-        for (auto i = 0; i < upto; ++i)
             state[i] = false;
     }
 
@@ -294,13 +294,10 @@ struct status_container {
     std::atomic<bool> masterJoined;
     /** used to count how many threads have finished cleanup operations */
     std::atomic_uint nFinishedCleanup;
-    /** used to gate the creation of a CCheckQueueControl/master friom entering prematurely and signal when cleanup can occur */
-    std::atomic_flag masterMayEnter;
-    /** used to signal when to go into low-cpu usage mode */
+
 
 
     status_container() : nTodo(0), fAllOk(true), masterJoined(false), nFinishedCleanup(2) {
-        masterMayEnter.clear();
     }
 };
 }
@@ -340,126 +337,130 @@ private:
     CCheckQueue_Internals::round_barrier<Proto> done_round;
 
     std::array<CCheckQueue_Internals::PriorityWorkQueue<Proto>, MAX_WORKERS> work_queues;
+
+
+    std::thread submaster;
+    bool init;
     void wait_all_finished_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
     {
         while (status.nFinishedCleanup.load() != RT_N_SCRIPTCHECK_THREADS)
             ;
     }
+    std::atomic<bool> should_sleep;
+    void maybe_sleep() {
+        while (should_sleep)
+            std::chrono::microseconds(250);
+    }
 
     /** Internal function that does bulk of the verification work. */
     bool Loop(const size_t ID, const size_t RT_N_SCRIPTCHECK_THREADS)
     {
-        // If we are at 1 then CheckQueue should be disabled
-        // Keep master always at 0 id -- maybe we should manually assign id's rather than this way, but this works.
-        boost::thread_group threadGroup;
-        if (ID == 1)
-            for (size_t id = 2; id < RT_N_SCRIPTCHECK_THREADS; ++id)
-                threadGroup.create_thread([=](){Loop(id, RT_N_SCRIPTCHECK_THREADS); });
-        bool fMaster = ID == 0;
-        if (fMaster) 
-            status.masterJoined.store(true);
 
+        if (ID == 1)
+            for (size_t id = 2; id < RT_N_SCRIPTCHECK_THREADS; ++id) {
+                std::thread t([=](){Loop(id, RT_N_SCRIPTCHECK_THREADS); });
+                t.detach();
+            }
+        // Keep master always at 0 id -- maybe we should manually assign id's rather than this way, but this works.
+        if (ID == 0)
+            status.masterJoined.store(true);
+        else
+            RenameThread("bitcoin-scriptcheck");
 
         work_queues[ID].set(ID, RT_N_SCRIPTCHECK_THREADS);
 
-        size_t did = 0;
-        size_t skipped = 0;
         for (;;) {
-            // Note: Must check masterJoined before nTodo, otherwise
-            // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
-            bool masterJoined = status.masterJoined.load();
-            size_t nTodo = status.nTodo.load();
+            maybe_sleep();
+            for (;;) {
+                // Note: Must check masterJoined before nTodo, otherwise
+                // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
+                bool masterJoined = status.masterJoined.load();
+                // Add the new work to the queue.
+                work_queues[ID].add(status.nTodo.load());
 
-            // Add the new work to the queue.
-            work_queues[ID].add(nTodo);
+                while (!work_queues[ID].empty() && status.fAllOk.load()) {
+                    size_t i = work_queues[ID].pop();
+                    // Immediately make a failure such that everyone quits on their next read of fOk
+                    if (jobs.reserve(i) && !jobs.eval(i) )
+                        status.fAllOk.store(false);
+                }
 
-            bool fOk = status.fAllOk.load();
+                
+                // We break if masterJoined and there is no work left to do
+                if (masterJoined)
+                    break;
 
-            while (!work_queues[ID].empty() && fOk) {
-                size_t i = work_queues[ID].pop();
-                if (jobs.reserve(i)) {
-                    fOk = jobs.eval(i);
-                    ++did;
-                } else 
-                    ++ skipped;
             }
 
-            // Immediately make a failure such that everyone quits on their next read of fOk
-            // TODO: This code isn't very hot, but this could be made faster if the quitter tries to reserve all the jobs or
-            // something similar
-            if (!fOk) {
-                status.fAllOk.store(false);
-            }
-            // We break if masterJoined and there is no work left to do
-            if (masterJoined)
-                break;
+            // We only break out of the loop when there is no more work and the master had joined.
+            // We won't find more work later, so mark ourselves as completed
+            // Any error would have already been reported
+            done_round.mark_done(ID);
 
+            // If we are the master:
+            //  1) Wait till all threads finish
+            //  2) read fAllOk
+            //  3) Mark master as gone
+            //  4) return
+            if (ID == 0) {
+                while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS))
+                    ;
+                bool fRet = status.fAllOk;
+                sleep();
+                status.masterJoined.store(false);
+                return fRet;
+            } 
 
-        }
-
-        // We only break out of the loop when there is no more work and the master had joined.
-        // We won't find more work later, so mark ourselves as completed
-        // Any error would have already been reported
-        done_round.mark_done(ID);
-
-        // If we are the master:
-        //  1) Wait till all threads finish
-        //  2) read fAllOk
-        //  3) Mark master as gone
-        //  4) return
-        if ( fMaster) {
-            while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS))
+            // We wait until the master reports leaving explicitly
+            while (status.masterJoined.load())
                 ;
-            bool fRet = status.fAllOk;
-            status.masterJoined.store(false);
-            return fRet;
-        } 
 
-        // We wait until the master reports leaving explicitly
-        while (status.masterJoined.load())
-            ;
+            size_t prev_total = work_queues[ID].get_total();
+            // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
+            // This frees the master to return with the result before the cleanup occurs
+            // And allows for the ID == 1 to do the master's cleanup for it
+            // We can immediately begin cleanup because all threads waited for master to
+            // exit on previous round and master waited for all workers.
 
-        size_t prev_total = work_queues[ID].get_total();
-        // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
-        // This frees the master to return with the result before the cleanup occurs
-        // And allows for the ID == 1 to do the master's cleanup for it
-        // We can immediately begin cleanup because all threads waited for master to
-        // exit on previous round and master waited for all workers.
-        
 
 
             // We reset all the flags we think we'll use (also warms cache)
-        for (size_t i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
-            jobs.reset_flag(i);
-        if (ID == 1) {
-            // Reset master flags too -- if ID == 0, it's not wrong just not needed
-            for (size_t i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
+            for (size_t i = ID; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                 jobs.reset_flag(i);
-            status.nTodo.store(0);
-            status.fAllOk.store(true);
+            if (ID == 1) {
+                // Reset master flags too -- if ID == 0, it's not wrong just not needed
+                for (size_t i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
+                    jobs.reset_flag(i);
+                status.nTodo.store(0);
+                status.fAllOk.store(true);
 
-            // TODO: Future Mutually Excluded Cleanup Tasks can go here
+                // TODO: Future Mutually Excluded Cleanup Tasks can go here
 
-            // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
-            // because of cleanup occuring after others are running in main section
-            wait_all_finished_cleanup(RT_N_SCRIPTCHECK_THREADS);
-            status.nFinishedCleanup.store(2);
-            // We have all the threads wait on their done_round to be reset, so we
-            // Release all the threads
-            done_round.reset(RT_N_SCRIPTCHECK_THREADS);
-            status.masterMayEnter.clear();
-        } else 
-            ++status.nFinishedCleanup;
-        return true;
+                // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
+                // because of cleanup occuring after others are running in main section
+                wait_all_finished_cleanup(RT_N_SCRIPTCHECK_THREADS);
+                status.nFinishedCleanup.store(2);
+                // We have all the threads wait on their done_round to be reset, so we
+                // Release all the threads, master last
+                for (auto i = 1; i < RT_N_SCRIPTCHECK_THREADS; ++i)
+                    done_round.reset(i);
+                done_round.reset(0);
+            } else {
+                ++status.nFinishedCleanup;
+                work_queues[ID].reset();
+                while (done_round.is_done(ID))
+                    ;
+            }
+        }
     }
 
 public:
-    CCheckQueue() : jobs(), status(), done_round() {
+    CCheckQueue() : jobs(), status(), done_round(), init(false), should_sleep(true) {
     }
 
     void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS)
     {
-        while (status.masterMayEnter.test_and_set()) {
+        while (done_round.is_done(0)) {
         }
     }
     void reset_jobs()
@@ -490,6 +491,21 @@ public:
     ~CCheckQueue()
     {
     }
+
+    void thread_init(const size_t RT_N_SCRIPTCHECK_THREADS) {
+
+        if (init)
+            return;
+        init = true;
+        std::thread t([=](){Thread(1, RT_N_SCRIPTCHECK_THREADS); });
+        std::swap(t, submaster);
+    }
+    void wakeup() {
+        should_sleep = false;
+    }
+    void sleep() {
+        should_sleep = true;
+    }
 };
 
 /** 
@@ -503,16 +519,17 @@ private:
     Q* pqueue;
     bool fDone;
     size_t RT_N_SCRIPTCHECK_THREADS;
-    boost::thread_group threadGroup;
 
 public:
     CCheckQueueControl(Q* pqueueIn, size_t RT_N_SCRIPTCHECK_THREADS_) : pqueue(pqueueIn), fDone(false), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_)
     {
         
         if (pqueue) {
+            pqueue->wakeup();
             assert(RT_N_SCRIPTCHECK_THREADS != 1);
+            // Only done once on the first creation
+            pqueue->thread_init(RT_N_SCRIPTCHECK_THREADS);
             pqueue->wait_for_cleanup(RT_N_SCRIPTCHECK_THREADS);
-            threadGroup.create_thread([=](){pqueue->Thread(1, RT_N_SCRIPTCHECK_THREADS); });
             pqueue->reset_jobs();
         }
     }
