@@ -14,6 +14,8 @@
 #include <condition_variable>
 #include <thread>
 #include <chrono>
+#include <sstream>
+#include <iostream>
 // This should be ignored eventually, but needs testing to ensure this works on more platforms
 static_assert(ATOMIC_BOOL_LOCK_FREE, "shared_status not lock free");
 static_assert(ATOMIC_LONG_LOCK_FREE, "shared_status not lock free");
@@ -87,6 +89,11 @@ public:
     {
         next_free_index = checks.begin();
     };
+
+    decltype(&checks) TEST_get_checks() {
+        return Q::TEST ? &checks : nullptr;
+
+    }
 
 };
 /* round_barrier is used to communicate that a thread has finished
@@ -193,14 +200,12 @@ public:
      * Places entries in the proper bucket
      * Resets the next thread to help (id2_cache) if work was added
      */
-    bool add(size_t n)
+    void add(size_t n)
     {
         if (n > total) {
             total = n;
             id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
-            return true;
         }
-        return false;
     };
     size_t get_total()
     {
@@ -283,95 +288,86 @@ struct status_container {
  * @tparam W the maximum number of workers possible
  */
 
-template <typename T, size_t J, size_t W, bool TEST=false>
+enum testing_level : int {
+    disabled = 0, enable_functions = 1, enable_logging = 2
+};
+constexpr testing_level operator&(testing_level a, testing_level b){
+    return static_cast<testing_level>(static_cast<int>(a) & static_cast<int>(b));
+}
+
+constexpr testing_level operator|(testing_level a, testing_level b){
+    return static_cast<testing_level>(static_cast<int>(a) | static_cast<int>(b));
+}
+template <typename T, size_t J, size_t W, testing_level TEST_ENABLE=testing_level::disabled>
 class CCheckQueue;
-template <typename T, size_t J, size_t W, bool TEST>
+template <typename T, size_t J, size_t W, testing_level TEST_ENABLE>
 class CCheckQueue
 {
 public:
     typedef T JOB_TYPE;
     static const size_t MAX_JOBS = J;
     static const size_t MAX_WORKERS = W;
+    static const testing_level TEST = TEST_ENABLE;
     // We use the Proto version so that we can pass it to job_array, status_container, etc
 
 private:
     CCheckQueue_Internals::job_array<CCheckQueue<T, J, W, TEST>> jobs;
     CCheckQueue_Internals::status_container<CCheckQueue<T, J, W, TEST>> status;
     CCheckQueue_Internals::round_barrier<CCheckQueue<T, J, W, TEST>> done_round;
-
-
-
-    std::thread submaster;
+    std::array<std::ostringstream, MAX_WORKERS> test_log;
     bool init;
+    std::atomic<bool> should_sleep;
+    std::atomic_uint test_log_seq;
+
+
+
     void wait_all_finished_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
     {
         while (status.nFinishedCleanup.load() != RT_N_SCRIPTCHECK_THREADS)
             ;
     }
-    std::atomic<bool> should_sleep;
-    struct sleeper {
-        std::mutex lk;
-        std::condition_variable cv;
-        bool awake;
-        void sleep() {
-            //std::unique_lock<std::mutex> lg(lk);
-            //awake = false;
-        };
-
-        void wakeup() {
-
-            //{
-                //std::unique_lock<std::mutex> lg(lk);
-                //awake = true;
-            //}
-            //cv.notify_one();
-        };
-
-        void wait() {
-            //std::unique_lock<std::mutex> lg(lk);
-            //while (!cv.wait_for(lg, std::chrono::milliseconds(1),[this](){return awake;}));
-        };
-    };
-    std::array<sleeper, MAX_WORKERS> sleepers;
     void maybe_sleep() {
         while (should_sleep)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     size_t consume(size_t ID, size_t RT_N_SCRIPTCHECK_THREADS) {
-            CCheckQueue_Internals::PriorityWorkQueue<CCheckQueue<T, J, W, TEST>> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
-            // Note: Must check masterJoined before nTodo, otherwise
-            // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
-            size_t job_id = 0;
-            while (status.fAllOk.load()) {
-                bool allow_stealing = status.masterJoined.load();
-                if (work_queue.pop(job_id, allow_stealing)) {
-                    // Immediately make a failure such that everyone quits on their next read of fOk
-                    if (jobs.reserve(job_id) && !jobs.eval(job_id) )
-                        status.fAllOk.store(false);
-                    continue;
-                } 
-                bool added_none = !work_queue.add(status.nTodo.load());
-                if (allow_stealing && added_none)
-                    break;
-            }
-            return work_queue.get_total();
+
+        if (TEST & testing_level::enable_logging)
+            test_log[ID] << "[["<<++test_log_seq <<"]] " << "Worker ID [" << ID << "] in consume\n";
+        CCheckQueue_Internals::PriorityWorkQueue<CCheckQueue<T, J, W, TEST>> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
+        // Note: Must check masterJoined before nTodo, otherwise
+        // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
+        size_t job_id = 0;
+        while (status.fAllOk.load()) {
+            bool allow_stealing = status.masterJoined.load();
+            work_queue.add(status.nTodo.load());
+            bool got_data = work_queue.pop(job_id, allow_stealing);
+            // Immediately make a failure such that everyone quits on their next read of fOk
+            got_data && jobs.reserve(job_id) && (jobs.eval(job_id) ||  (status.fAllOk.store(false), false));
+            if ((TEST & testing_level::enable_logging) && got_data)
+                test_log[ID] << "[["<<++test_log_seq <<"]] "<< "Job ID was " << job_id << '\n';
+            if (allow_stealing && !got_data)
+                break;
+        }
+        if (TEST & testing_level::enable_logging)
+            test_log[ID] << "[["<<++test_log_seq <<"]] " << "Worker ID [" << ID << "] leaving consume. fAllOk was "<<status.fAllOk.load() <<"\n";
+        return work_queue.get_total();
     }
     /** Internal function that does bulk of the verification work. */
     bool Loop(const size_t ID, const size_t RT_N_SCRIPTCHECK_THREADS)
     {
 
-        // Keep master always at 0 id -- maybe we should manually assign id's rather than this way, but this works.
-        if (ID == 0)
-            status.masterJoined.store(true);
-        else
-            RenameThread("bitcoin-scriptcheck");
 
         for (;;) {
             if (ID != 0)
                 maybe_sleep();
 
+            if (TEST & testing_level::enable_logging)
+                test_log[ID] << "[["<<++test_log_seq <<"]] " << "Worker ID [" << ID << "] starting\n";
             size_t prev_total = consume(ID, RT_N_SCRIPTCHECK_THREADS);
+            if (TEST & testing_level::enable_logging)
+                test_log[ID] << "[["<<++test_log_seq <<"]] "<< "Worker ID [" << ID << "] saw up to " <<prev_total << " master was "<< status.masterJoined.load() << " nTodo " << status.nTodo.load() << '\n';
 
             // We only break out of the loop when there is no more work and the master had joined.
             // We won't find more work later, so mark ourselves as completed
@@ -386,6 +382,8 @@ private:
             if (ID == 0) {
                 while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS))
                     ;
+                if (TEST & testing_level::enable_logging)
+                    test_log[ID] << "[["<<++test_log_seq <<"]] "<< "Worker ID [" << ID << "] saw all threads finished\n";
                 bool fRet = status.fAllOk;
                 sleep();
                 status.masterJoined.store(false);
@@ -395,6 +393,8 @@ private:
             // We wait until the master reports leaving explicitly
             while (status.masterJoined.load())
                 ;
+            if (TEST & testing_level::enable_logging)
+                test_log[ID] << "[["<<++test_log_seq <<"]] "<< "Worker ID [" << ID << "] saw master leave\n";
 
             // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
             // This frees the master to return with the result before the cleanup occurs
@@ -411,6 +411,9 @@ private:
                 // Reset master flags too -- if ID == 0, it's not wrong just not needed
                 for (size_t i = 0; i < prev_total; i += RT_N_SCRIPTCHECK_THREADS)
                     jobs.reset_flag(i);
+                
+                if (TEST & testing_level::enable_logging)
+                    test_log[ID] << "[["<<++test_log_seq <<"]] "<< "Resetting nTodo" <<'\n';
                 status.nTodo.store(0);
                 status.fAllOk.store(true);
 
@@ -435,13 +438,15 @@ private:
     }
 
 public:
-    CCheckQueue() : jobs(), status(), done_round(), init(false), should_sleep(true) {
+    CCheckQueue() : jobs(), status(), done_round(), init(false), should_sleep(true), test_log_seq(0) {
     }
 
     void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS)
     {
         while (done_round.is_done(0)) {
         }
+        if (TEST & testing_level::enable_logging)
+            test_log[0] << "[["<<++test_log_seq <<"]] "<< "Worker ID [" << 0 <<"] cleanup waiting done!\n";
     }
     void reset_jobs()
     {
@@ -450,6 +455,7 @@ public:
     //! Worker thread
     void Thread(size_t ID, size_t RT_N_SCRIPTCHECK_THREADS)
     {
+        RenameThread("bitcoin-scriptcheck");
         Loop(ID, RT_N_SCRIPTCHECK_THREADS);
     }
 
@@ -457,6 +463,9 @@ public:
     //! Wait until execution finishes, and return whether all evaluations were successful.
     bool Wait(size_t RT_N_SCRIPTCHECK_THREADS)
     {
+        status.masterJoined.store(true);
+        if (TEST & testing_level::enable_logging)
+            test_log[0] << "[["<<++test_log_seq <<"]] "<< "Master Just Set masterJoined\n";
         return Loop(0, RT_N_SCRIPTCHECK_THREADS);
     }
 
@@ -465,7 +474,9 @@ public:
     {
         jobs.add(vChecks);
         size_t vs = vChecks.size();
-        status.nTodo += vs;
+        status.nTodo.fetch_add(vs);
+        if (TEST & testing_level::enable_logging)
+            test_log[0] << "[["<<++test_log_seq <<"]] "<< "Added "<<vs<<" values. nTodo was "<< status.nTodo.load() - vs << " now is " << status.nTodo.load()  << " \n";
     }
 
     ~CCheckQueue()
@@ -491,25 +502,45 @@ public:
     }
 
     size_t TEST_consume(size_t ID, size_t RT_N_SCRIPTCHECK_THREADS) {
-        return TEST ? consume(ID, RT_N_SCRIPTCHECK_THREADS) : 0;
+        return TEST & testing_level::enable_functions ? consume(ID, RT_N_SCRIPTCHECK_THREADS) : 0;
     }
     void TEST_set_masterJoined(bool b) {
-        if (TEST)
+        if (TEST & testing_level::enable_functions)
             status.masterJoined.store(b);
     }
 
     size_t TEST_count_set_flags() {
         auto count = 0;
-        if (TEST)
+        if (TEST & testing_level::enable_functions)
             for (auto t = 0; t < MAX_JOBS; ++t)
                 count += jobs.reserve(t) ? 0 : 1;
         return count;
     }
     void TEST_reset_all_flags() {
-        if (TEST)
+        if (TEST & testing_level::enable_functions)
             for (auto t = 0; t < MAX_JOBS; ++t)
                 jobs.reset_flag(t);
 
+    }
+    void TEST_dump_log(size_t upto) {
+
+        if (TEST & testing_level::enable_functions & testing_level::enable_logging)
+            for (auto i = 0; i < upto; ++i)
+                LogPrintf("\n------------------\n%s\n------------------\n\n", test_log[i].str());
+    };
+
+    void TEST_erase_log() {
+        if (TEST & testing_level::enable_functions & testing_level::enable_logging)
+            for (auto i = 0; i < MAX_WORKERS; ++i){
+                test_log[i].str("");
+                test_log[i].clear();
+            }
+    };
+    decltype(&status) TEST_introspect_status() {
+        return TEST & testing_level::enable_functions ? &status : nullptr;
+    }
+    decltype(&jobs) TEST_introspect_jobs() {
+        return TEST & testing_level::enable_functions ? &jobs : nullptr;
     }
 };
 

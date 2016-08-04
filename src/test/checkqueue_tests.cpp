@@ -18,43 +18,89 @@
 #include "random.h"
 BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, BasicTestingSetup)
 
-static const bool TEST = true;
+// Logging off by default because of memory leak
+static const testing_level TEST = testing_level::enable_functions;
 
-static std::atomic<size_t> n;
-struct FakeJobCheckCompletion {
-    bool operator()()
-    {
-        ++n;
-        return true;
-    }
-    void swap(FakeJobCheckCompletion& x){};
-};
-struct FakeJobNoWork {
-    bool operator()()
-    {
-        return true;
-    }
-    void swap(FakeJobNoWork& x){};
-};
+struct FakeJob {};
 
-struct FailingJob {
-    bool f;
-    FailingJob(bool fails) : f(fails){};
-    FailingJob() : f(true){};
-    bool operator()()
-    {
-        return !f;
-    }
-    void swap(FailingJob& x) { std::swap(f, x.f); };
-};
-typedef CCheckQueue<FakeJobCheckCompletion, (size_t)100000, 16, TEST> big_queue;
-typedef CCheckQueue<FakeJobCheckCompletion, (size_t)2000, 16, TEST> medium_queue;
+typedef CCheckQueue<FakeJob, (size_t)100000, 16, TEST> big_queue;
+typedef CCheckQueue<FakeJob, (size_t)2000, 16, TEST> medium_queue;
 
 struct big_queue_proto {
     typedef big_queue::JOB_TYPE JOB_TYPE;
     static const size_t MAX_JOBS = big_queue::MAX_JOBS;
     static const size_t MAX_WORKERS = big_queue::MAX_WORKERS;
 };
+
+BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
+{
+
+    fPrintToConsole = true;
+    static std::atomic<size_t> n_calls;
+    struct FailingJob {
+        bool f;
+        bool call_state;
+        size_t tag;
+        FailingJob(bool fails) : f(fails), call_state(false), tag(0xdeadbeef){};
+        FailingJob() : f(true), call_state(false) {};
+        bool operator()()
+        {
+            n_calls++;
+            call_state = true;
+            return !f;
+        }
+        void swap(FailingJob& x) { 
+            std::swap(f, x.f);
+
+            std::swap(call_state, x.call_state);
+            std::swap(tag, x.tag);};
+    };
+    static CCheckQueue<FailingJob, (size_t)1000, 16, testing_level::enable_functions> fail_queue;
+    auto nThreads = 8;
+
+    for (size_t i = 10; i < 1001; ++i) {
+        n_calls = 0;
+        CCheckQueueControl<decltype(fail_queue)> control(&fail_queue, nThreads);
+        size_t checksum = 0;
+
+        std::vector<FailingJob> vChecks;
+        vChecks.reserve(i);
+        for (size_t x =0; x < i; ++x)
+            vChecks.push_back(FailingJob{});
+        if (i > 0)
+            vChecks[0].f = true;
+        while (!vChecks.empty()) {
+            size_t r = GetRand(10);
+            std::vector<FailingJob> vChecks2;
+            vChecks2.reserve(r);
+            for (size_t k = 0; k < r && !vChecks.empty(); k++) {
+                vChecks2.emplace_back(vChecks.back());
+                vChecks.pop_back();
+            }
+            checksum += vChecks2.size();
+            control.Add(vChecks2);
+        }
+        BOOST_REQUIRE(checksum == i);
+        bool success = control.Wait();
+        if (success && i > 0) {
+            size_t nChecked = 0;
+            auto jobs = fail_queue.TEST_introspect_jobs()->TEST_get_checks();
+            for (size_t x = 0; x < i; ++x)
+                if ((*jobs)[x].call_state)
+                    nChecked++;
+            fail_queue.TEST_dump_log(nThreads);
+            fail_queue.TEST_erase_log();
+            BOOST_MESSAGE("Failed to see failure on round " << i  << " only counted " << nChecked << " flags (by job_array).");
+            BOOST_MESSAGE("Failed to see failure on round " << i  << " only counted " << n_calls << " flags (by atomic).");
+            BOOST_REQUIRE(!success);
+        } else if (i == 0) {
+            fail_queue.TEST_erase_log();
+            BOOST_REQUIRE(success);
+        }
+        fail_queue.TEST_erase_log();
+    }
+    fPrintToConsole = false;
+}
 BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
 {
     CCheckQueue_Internals::PriorityWorkQueue<medium_queue> work(0, 16);
@@ -138,7 +184,15 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
 {
-    static CCheckQueue<FakeJobNoWork, (size_t)100000, 10, true> fast_queue{};
+
+    struct FakeJobNoWork {
+        bool operator()()
+        {
+            return true;
+        }
+        void swap(FakeJobNoWork& x){};
+    };
+    static CCheckQueue<FakeJobNoWork, (size_t)100000, 10, testing_level::enable_functions> fast_queue{};
     std::array<std::atomic<size_t>, 8> results;
     std::atomic<size_t> spawned  {0};
 
@@ -147,7 +201,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
     for (auto& a : results)
         a = 0;
     for(auto i = 0; i < 8; ++i)
-        threadGroup.create_thread([&](){
+        threadGroup.create_thread([&,i](){
             ++spawned;
             results[i] = fast_queue.TEST_consume(i, 8); 
         });
@@ -182,9 +236,15 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
 {
+    struct FakeJobNoWork {
+        bool operator()()
+        {
+            return true;
+        }
+        void swap(FakeJobNoWork& x){};
+    };
     static CCheckQueue<FakeJobNoWork, (size_t)100000, 16> fast_queue;
     auto nThreads = 8;
-    fPrintToConsole = true;
 
     std::vector<FakeJobNoWork> vChecks;
     vChecks.reserve(100);
@@ -193,7 +253,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
     for (size_t i = 0; i < ROUNDS; ++i) {
         size_t total = 0;
         {
-            n = 0;
             CCheckQueueControl<decltype(fast_queue)> control(&fast_queue, nThreads);
             for (size_t j = 0; j < 101; ++j) {
                 size_t r = 30;
@@ -209,40 +268,24 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
     BOOST_TEST_MESSAGE("Perf Test took " << end_time - start_time << " microseconds for "<<ROUNDS << " rounds, " << (ROUNDS * 1000000.0) / (end_time - start_time) << "rps");
 }
 
-BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
-{
-    static CCheckQueue<FailingJob, (size_t)100, 16> fail_queue;
-    auto nThreads = 8;
-
-    size_t count = 0;
-    for (size_t i = 0; i < 101; ++i) {
-        size_t total = i;
-        n = 0;
-        CCheckQueueControl<decltype(fail_queue)> control(&fail_queue, nThreads);
-        while (total) {
-            size_t r = GetRand(10);
-            std::vector<FailingJob> vChecks;
-            vChecks.reserve(r);
-            for (size_t k = 0; k < r && total; k++) {
-                total--;
-                vChecks.push_back(FailingJob{total == 0});
-            }
-            control.Add(vChecks);
-        }
-        BOOST_REQUIRE(!control.Wait());
-        ++count;
-    }
-}
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
 {
+
+    static std::atomic<size_t> n_calls;
+    struct FakeJobCheckCompletion {
+        bool operator()()
+        {
+            ++n_calls;
+            return true;
+        }
+        void swap(FakeJobCheckCompletion& x){};
+    };
     static CCheckQueue<FakeJobCheckCompletion, (size_t)100, 16> small_queue;
-    fPrintToConsole = true;
     auto nThreads = 8;
 
-    size_t count = 0;
     for (size_t i = 0; i < 101; ++i) {
         size_t total = i;
-        n = 0;
+        n_calls = 0;
         {
             CCheckQueueControl<decltype(small_queue)> control(&small_queue, nThreads);
             while (total) {
@@ -256,10 +299,9 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
                 control.Add(vChecks);
             }
         }
-        ++count;
-        if (n != i) {
-            BOOST_REQUIRE(n == i);
-            BOOST_TEST_MESSAGE("Failure on trial " << count - 1 << " expected, got " << n);
+        if (n_calls != i) {
+            BOOST_REQUIRE(n_calls == i);
+            BOOST_TEST_MESSAGE("Failure on trial " << i << " expected, got " << n_calls);
         }
     }
 }
