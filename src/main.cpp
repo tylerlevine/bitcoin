@@ -2241,6 +2241,12 @@ void static FlushBlockFile(bool fFinalize = false)
 bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigned int nAddSize);
 
 static CCheckQueue<CScriptCheck, MAX_SCRIPTCHECKS, MAX_SCRIPTCHECK_THREADS> scriptcheckqueue;
+void StopCCheckQueue() {
+
+};
+void SetupCCheckQueue(size_t RT_N_SCRIPTCHECK_THREADS) {
+    scriptcheckqueue.init(RT_N_SCRIPTCHECK_THREADS);
+};
 
 // Protected by cs_main
 VersionBitsCache versionbitscache;
@@ -2398,7 +2404,7 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
 
     CBlockUndo blockundo;
 
-    CCheckQueueControl<decltype(scriptcheckqueue)> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : NULL, nScriptCheckThreads);
+    CCheckQueueControl<decltype(scriptcheckqueue)> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : NULL);
 
     std::vector<uint256> vOrphanErase;
     std::vector<int> prevheights;

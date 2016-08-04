@@ -56,11 +56,12 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
             std::swap(tag, x.tag);};
     };
     static CCheckQueue<FailingJob, (size_t)1000, 16, testing_level::enable_functions> fail_queue;
-    auto nThreads = 8;
+    size_t nThreads = 8;
+    fail_queue.init(nThreads);
 
     for (size_t i = 10; i < 1001; ++i) {
         n_calls = 0;
-        CCheckQueueControl<decltype(fail_queue)> control(&fail_queue, nThreads);
+        CCheckQueueControl<decltype(fail_queue)> control(&fail_queue);
         size_t checksum = 0;
 
         std::vector<FailingJob> vChecks;
@@ -172,11 +173,14 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 {
     boost::thread_group threadGroup;
     static CCheckQueue_Internals::round_barrier<big_queue> barrier;
-    barrier.reset(8);
-    for (int i = 0; i < 8; ++i)
+    size_t nThreads = 8;
+    barrier.init(nThreads);
+    for (size_t i = 0; i < nThreads; ++i)
+        barrier.reset(i);
+    for (size_t i = 0; i < nThreads; ++i)
         threadGroup.create_thread([=]() {
             barrier.mark_done(i);
-            while (!barrier.load_done(8));
+            while (!barrier.load_done());
         });
 
     threadGroup.join_all();
@@ -193,6 +197,8 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
         void swap(FakeJobNoWork& x){};
     };
     static CCheckQueue<FakeJobNoWork, (size_t)100000, 10, testing_level::enable_functions> fast_queue{};
+    size_t nThreads = 8;
+    fast_queue.init(nThreads);
     std::array<std::atomic<size_t>, 8> results;
     std::atomic<size_t> spawned  {0};
 
@@ -200,20 +206,20 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
 
     for (auto& a : results)
         a = 0;
-    for(auto i = 0; i < 8; ++i)
+    for(size_t i = 0; i < nThreads; ++i)
         threadGroup.create_thread([&,i](){
             ++spawned;
-            results[i] = fast_queue.TEST_consume(i, 8); 
+            results[i] = fast_queue.TEST_consume(i); 
         });
 
     threadGroup.create_thread([&](){
-        while (spawned != 8);
+        while (spawned != nThreads);
         for (auto y = 0; y < 10; ++y) {
             std::vector<FakeJobNoWork> w;
             for (auto x = 0; x< 100; ++x) {
                 w.push_back(FakeJobNoWork{});
             }
-            fast_queue.Add(w, 8);
+            fast_queue.Add(w);
             MilliSleep(1);
         }
         fast_queue.TEST_set_masterJoined(true);
@@ -244,7 +250,8 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
         void swap(FakeJobNoWork& x){};
     };
     static CCheckQueue<FakeJobNoWork, (size_t)100000, 16> fast_queue;
-    auto nThreads = 8;
+    size_t nThreads = 8;
+    fast_queue.init(nThreads);
 
     std::vector<FakeJobNoWork> vChecks;
     vChecks.reserve(100);
@@ -253,7 +260,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
     for (size_t i = 0; i < ROUNDS; ++i) {
         size_t total = 0;
         {
-            CCheckQueueControl<decltype(fast_queue)> control(&fast_queue, nThreads);
+            CCheckQueueControl<decltype(fast_queue)> control(&fast_queue);
             for (size_t j = 0; j < 101; ++j) {
                 size_t r = 30;
                 total += r;
@@ -281,13 +288,14 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
         void swap(FakeJobCheckCompletion& x){};
     };
     static CCheckQueue<FakeJobCheckCompletion, (size_t)100, 16> small_queue;
-    auto nThreads = 8;
+    size_t nThreads = 8;
+    small_queue.init(nThreads);
 
     for (size_t i = 0; i < 101; ++i) {
         size_t total = i;
         n_calls = 0;
         {
-            CCheckQueueControl<decltype(small_queue)> control(&small_queue, nThreads);
+            CCheckQueueControl<decltype(small_queue)> control(&small_queue);
             while (total) {
                 size_t r = GetRand(10);
                 std::vector<FakeJobCheckCompletion> vChecks;

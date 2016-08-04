@@ -1069,6 +1069,7 @@ bool AppInit2(boost::thread_group& threadGroup, CScheduler& scheduler)
     std::ostringstream strErrors;
 
     LogPrintf("Using %u threads for script verification\n", nScriptCheckThreads);
+    SetupCCheckQueue(nScriptCheckThreads);
 
     // Start the lightweight task scheduler thread
     CScheduler::Function serviceLoop = boost::bind(&CScheduler::serviceQueue, &scheduler);

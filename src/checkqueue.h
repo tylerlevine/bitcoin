@@ -107,12 +107,17 @@ template <typename Q>
 class round_barrier
 {
     std::array<std::atomic_bool, Q::MAX_WORKERS> state;
+    size_t RT_N_SCRIPTCHECK_THREADS;
 
 public:
     /** Default state is false so that first round looks like no prior round*/
-    round_barrier()
+    round_barrier() : RT_N_SCRIPTCHECK_THREADS(0)
     {
     }
+
+    void init(size_t rt) {
+        RT_N_SCRIPTCHECK_THREADS = rt;
+    };
 
     void mark_done(size_t id)
     {
@@ -123,10 +128,10 @@ public:
      *
      * @param upto 
      * @returns if all entries up to upto were true*/
-    bool load_done(size_t upto)
+    bool load_done()
     {
         bool x = true;
-        for (auto i = 0; i < upto; i++) {
+        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; i++) {
             x = x && state[i].load();
         }
         return x;
@@ -315,13 +320,13 @@ private:
     CCheckQueue_Internals::status_container<CCheckQueue<T, J, W, TEST>> status;
     CCheckQueue_Internals::round_barrier<CCheckQueue<T, J, W, TEST>> done_round;
     std::array<std::ostringstream, MAX_WORKERS> test_log;
-    bool init;
     std::atomic<bool> should_sleep;
     std::atomic_uint test_log_seq;
+    size_t RT_N_SCRIPTCHECK_THREADS;
 
 
 
-    void wait_all_finished_cleanup(size_t RT_N_SCRIPTCHECK_THREADS) const
+    void wait_all_finished_cleanup() const
     {
         while (status.nFinishedCleanup.load() != RT_N_SCRIPTCHECK_THREADS)
             ;
@@ -331,7 +336,7 @@ private:
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    size_t consume(size_t ID, size_t RT_N_SCRIPTCHECK_THREADS) {
+    size_t consume(size_t ID) {
 
         if (TEST & testing_level::enable_logging)
             test_log[ID] << "[["<<++test_log_seq <<"]] " << "Worker ID [" << ID << "] in consume\n";
@@ -355,7 +360,7 @@ private:
         return work_queue.get_total();
     }
     /** Internal function that does bulk of the verification work. */
-    bool Loop(const size_t ID, const size_t RT_N_SCRIPTCHECK_THREADS)
+    bool Loop(const size_t ID)
     {
 
 
@@ -365,7 +370,7 @@ private:
 
             if (TEST & testing_level::enable_logging)
                 test_log[ID] << "[["<<++test_log_seq <<"]] " << "Worker ID [" << ID << "] starting\n";
-            size_t prev_total = consume(ID, RT_N_SCRIPTCHECK_THREADS);
+            size_t prev_total = consume(ID);
             if (TEST & testing_level::enable_logging)
                 test_log[ID] << "[["<<++test_log_seq <<"]] "<< "Worker ID [" << ID << "] saw up to " <<prev_total << " master was "<< status.masterJoined.load() << " nTodo " << status.nTodo.load() << '\n';
 
@@ -383,7 +388,7 @@ private:
             //  3) Mark master as gone
             //  4) return
             if (ID == 0) {
-                while (!done_round.load_done(RT_N_SCRIPTCHECK_THREADS))
+                while (!done_round.load_done())
                     ;
                 if (TEST & testing_level::enable_logging)
                     test_log[ID] << "[["<<++test_log_seq <<"]] "<< "Worker ID [" << ID << "] saw all threads finished\n";
@@ -424,7 +429,7 @@ private:
 
                 // Wait until all threads are either master or idle, otherwise resetting could prevent finishing
                 // because of cleanup occuring after others are running in main section
-                wait_all_finished_cleanup(RT_N_SCRIPTCHECK_THREADS);
+                wait_all_finished_cleanup();
                 status.nFinishedCleanup.store(2);
                 // We have all the threads wait on their done_round to be reset, so we
                 // Release all the threads, master last
@@ -441,10 +446,10 @@ private:
     }
 
 public:
-    CCheckQueue() : jobs(), status(), done_round(), init(false), should_sleep(true), test_log_seq(0) {
+    CCheckQueue() : jobs(), status(), done_round(), should_sleep(true), test_log_seq(0), RT_N_SCRIPTCHECK_THREADS(0) {
     }
 
-    void wait_for_cleanup(size_t RT_N_SCRIPTCHECK_THREADS)
+    void wait_for_cleanup()
     {
         while (done_round.is_done(0)) {
         }
@@ -456,24 +461,24 @@ public:
         jobs.reset_jobs();
     };
     //! Worker thread
-    void Thread(size_t ID, size_t RT_N_SCRIPTCHECK_THREADS)
+    void Thread(size_t ID)
     {
         RenameThread("bitcoin-scriptcheck");
-        Loop(ID, RT_N_SCRIPTCHECK_THREADS);
+        Loop(ID);
     }
 
 
     //! Wait until execution finishes, and return whether all evaluations were successful.
-    bool Wait(size_t RT_N_SCRIPTCHECK_THREADS)
+    bool Wait()
     {
         status.masterJoined.store(true);
         if (TEST & testing_level::enable_logging)
             test_log[0] << "[["<<++test_log_seq <<"]] "<< "Master Just Set masterJoined\n";
-        return Loop(0, RT_N_SCRIPTCHECK_THREADS);
+        return Loop(0);
     }
 
     //! Add a batch of checks to the queue
-    void Add(std::vector<T>& vChecks, size_t RT_N_SCRIPTCHECK_THREADS)
+    void Add(std::vector<T>& vChecks)
     {
         jobs.add(vChecks);
         size_t vs = vChecks.size();
@@ -486,13 +491,15 @@ public:
     {
     }
 
-    void thread_init(const size_t RT_N_SCRIPTCHECK_THREADS) {
+    void init(const size_t RT_N_SCRIPTCHECK_THREADS_) {
 
-        if (init)
-            return;
-        init = true;
-        std::thread t([=](){Thread(1, RT_N_SCRIPTCHECK_THREADS); });
-        std::swap(t, submaster);
+        RT_N_SCRIPTCHECK_THREADS = RT_N_SCRIPTCHECK_THREADS_;
+        done_round.init(RT_N_SCRIPTCHECK_THREADS);
+
+        for (size_t id = 1; id < RT_N_SCRIPTCHECK_THREADS; ++id) {
+            std::thread t([=](){Loop(id); });
+            t.detach();
+        }
     }
     void wakeup() {
 
@@ -504,8 +511,8 @@ public:
             //s.sleep();
     }
 
-    size_t TEST_consume(size_t ID, size_t RT_N_SCRIPTCHECK_THREADS) {
-        return TEST & testing_level::enable_functions ? consume(ID, RT_N_SCRIPTCHECK_THREADS) : 0;
+    size_t TEST_consume(size_t ID) {
+        return TEST & testing_level::enable_functions ? consume(ID) : 0;
     }
     void TEST_set_masterJoined(bool b) {
         if (TEST & testing_level::enable_functions)
@@ -557,18 +564,14 @@ class CCheckQueueControl
 private:
     Q* pqueue;
     bool fDone;
-    size_t RT_N_SCRIPTCHECK_THREADS;
 
 public:
-    CCheckQueueControl(Q* pqueueIn, size_t RT_N_SCRIPTCHECK_THREADS_) : pqueue(pqueueIn), fDone(false), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_)
+    CCheckQueueControl(Q* pqueueIn) : pqueue(pqueueIn), fDone(false)
     {
         
         if (pqueue) {
             pqueue->wakeup();
-            assert(RT_N_SCRIPTCHECK_THREADS != 1);
-            // Only done once on the first creation
-            pqueue->thread_init(RT_N_SCRIPTCHECK_THREADS);
-            pqueue->wait_for_cleanup(RT_N_SCRIPTCHECK_THREADS);
+            pqueue->wait_for_cleanup();
             pqueue->reset_jobs();
         }
     }
@@ -577,7 +580,7 @@ public:
     {
         if (pqueue == NULL)
             return true;
-        bool fRet = pqueue->Wait(RT_N_SCRIPTCHECK_THREADS);
+        bool fRet = pqueue->Wait();
         fDone = true;
         return fRet;
     }
@@ -585,7 +588,7 @@ public:
     void Add(std::vector<typename Q::JOB_TYPE>& vChecks)
     {
         if (pqueue != NULL)
-            pqueue->Add(vChecks, RT_N_SCRIPTCHECK_THREADS);
+            pqueue->Add(vChecks);
     }
 
     ~CCheckQueueControl()

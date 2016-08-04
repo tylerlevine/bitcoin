@@ -519,6 +519,8 @@ extern CBlockTreeDB *pblocktree;
 
 /** Make global checkqueue destructor visible */
 void StopCCheckQueue();
+/** Make global checkqueue thread-adder visible */
+void SetupCCheckQueue(size_t RT_N_SCRIPTCHECK_THREADS);
 
 /**
  * Return the spend height, which is one more than the inputs.GetBestBlock().
