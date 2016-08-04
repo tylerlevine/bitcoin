@@ -108,18 +108,18 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
     auto m = 0;
     work.add(100);
     size_t x = 0;
-    work.pop(x);
+    work.pop(x, false);
     BOOST_REQUIRE(x == 0);
-    work.pop(x);
+    work.pop(x, false);
     BOOST_REQUIRE(x == 16);
     m = 2;
-    while ( work.pop(x)) {
+    while ( work.pop(x, false)) {
         ++m;
     }
     BOOST_REQUIRE(m == 100);
     work.add(200);
     std::unordered_set<size_t> results;
-    while ( work.pop(x)) {
+    while ( work.pop(x, false)) {
         results.insert(x);
         ++m;
     }
@@ -131,12 +131,12 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
     BOOST_REQUIRE(m == 200);
 
     work.add(300);
-    work.pop(x);
+    work.pop(x, false);
     work.add(400);
     do {
         results.insert(x);
         ++m;
-    } while ( work.pop(x));
+    } while ( work.pop(x, false));
     for (auto i = 200; i < 400; ++i) {
         BOOST_REQUIRE(results.count(i));
         results.erase(i);
