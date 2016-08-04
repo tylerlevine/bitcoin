@@ -372,6 +372,9 @@ private:
             // We only break out of the loop when there is no more work and the master had joined.
             // We won't find more work later, so mark ourselves as completed
             // Any error would have already been reported
+            if (!status.fAllOk.load())
+                while (!status.masterJoined.load())
+                    ;
             done_round.mark_done(ID);
 
             // If we are the master:
