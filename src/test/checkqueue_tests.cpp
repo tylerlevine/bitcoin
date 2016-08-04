@@ -16,9 +16,9 @@
 #include <unordered_set>
 
 #include "random.h"
-boost::thread_group threadGroup;
 BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, BasicTestingSetup)
 
+static const bool TEST = true;
 
 static std::atomic<size_t> n;
 struct FakeJobCheckCompletion {
@@ -47,25 +47,29 @@ struct FailingJob {
     }
     void swap(FailingJob& x) { std::swap(f, x.f); };
 };
-typedef CCheckQueue<FakeJobCheckCompletion, (size_t)100000, 16> big_queue;
-typedef CCheckQueue<FakeJobCheckCompletion, (size_t)2000, 16> medium_queue;
+typedef CCheckQueue<FakeJobCheckCompletion, (size_t)100000, 16, TEST> big_queue;
+typedef CCheckQueue<FakeJobCheckCompletion, (size_t)2000, 16, TEST> medium_queue;
 
+struct big_queue_proto {
+    typedef big_queue::JOB_TYPE JOB_TYPE;
+    static const size_t MAX_JOBS = big_queue::MAX_JOBS;
+    static const size_t MAX_WORKERS = big_queue::MAX_WORKERS;
+};
 BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
 {
-    CCheckQueue_Internals::PriorityWorkQueue<medium_queue::Proto> work(0, 16);
+    CCheckQueue_Internals::PriorityWorkQueue<medium_queue> work(0, 16);
     auto m = 0;
     work.add(100);
     size_t x = 0;
     work.pop(x);
-    BOOST_CHECK(x == 0);
+    BOOST_REQUIRE(x == 0);
     work.pop(x);
-    BOOST_TEST_MESSAGE("GOT: 2nd x = " << x);
-    BOOST_CHECK(x == 16);
+    BOOST_REQUIRE(x == 16);
     m = 2;
     while ( work.pop(x)) {
         ++m;
     }
-    BOOST_CHECK(m == 100);
+    BOOST_REQUIRE(m == 100);
     work.add(200);
     std::unordered_set<size_t> results;
     while ( work.pop(x)) {
@@ -73,19 +77,35 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
         ++m;
     }
     for (auto i = 100; i < 200; ++i) {
-        BOOST_CHECK(results.count(i));
+        BOOST_REQUIRE(results.count(i));
         results.erase(i);
     }
-    BOOST_CHECK(results.empty());
-    BOOST_CHECK(m == 200);
+    BOOST_REQUIRE(results.empty());
+    BOOST_REQUIRE(m == 200);
 
+    work.add(300);
+    work.pop(x);
+    work.add(400);
+    do {
+        results.insert(x);
+        ++m;
+    } while ( work.pop(x));
+    for (auto i = 200; i < 400; ++i) {
+        BOOST_REQUIRE(results.count(i));
+        results.erase(i);
+    }
+    for (auto i : results)
+        BOOST_TEST_MESSAGE("" << i);
 
+    BOOST_REQUIRE(results.empty());
+    BOOST_REQUIRE(m == 400);
 }
 
-CCheckQueue_Internals::job_array<big_queue::Proto> jobs;
-static std::atomic<size_t> m;
 BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
 {
+    boost::thread_group threadGroup;
+    static CCheckQueue_Internals::job_array<big_queue_proto> jobs;
+    static std::atomic<size_t> m;
     for (size_t i = 0; i < big_queue::MAX_JOBS; ++i)
         jobs.reset_flag(i);
     m = 0;
@@ -100,24 +120,64 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_job_array)
     });
     threadGroup.join_all();
 
-    BOOST_CHECK(m == big_queue::MAX_JOBS);
+    BOOST_REQUIRE(m == big_queue::MAX_JOBS);
 }
 BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 {
-    static CCheckQueue_Internals::round_barrier<big_queue::Proto> barrier;
+    boost::thread_group threadGroup;
+    static CCheckQueue_Internals::round_barrier<big_queue> barrier;
     barrier.reset(8);
     for (int i = 0; i < 8; ++i)
         threadGroup.create_thread([=]() {
             barrier.mark_done(i);
-            while (!barrier.load_done(8))
-                boost::this_thread::yield();
+            while (!barrier.load_done(8));
         });
 
-    threadGroup.create_thread([]() {
-    });
     threadGroup.join_all();
 }
 
+BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
+{
+    static CCheckQueue<FakeJobNoWork, (size_t)100000, 10, true> fast_queue{};
+    std::array<std::atomic<size_t>, 8> results;
+    std::atomic<size_t> spawned  {0};
+
+    boost::thread_group threadGroup;
+
+    for (auto& a : results)
+        a = 0;
+    for(auto i = 0; i < 8; ++i)
+        threadGroup.create_thread([&](){
+            ++spawned;
+            results[i] = fast_queue.TEST_consume(i, 8); 
+        });
+
+    threadGroup.create_thread([&](){
+        while (spawned != 8);
+        for (auto y = 0; y < 10; ++y) {
+            std::vector<FakeJobNoWork> w;
+            for (auto x = 0; x< 100; ++x) {
+                w.push_back(FakeJobNoWork{});
+            }
+            fast_queue.Add(w, 8);
+            MilliSleep(1);
+        }
+        fast_queue.TEST_set_masterJoined(true);
+    });
+
+    threadGroup.join_all();
+
+
+    for (auto& a : results) {
+        if (a != 1000) {
+            BOOST_TEST_MESSAGE("Error, Got: "<< a);
+            BOOST_REQUIRE(a == 1000);
+        }
+    }
+    size_t count = fast_queue.TEST_count_set_flags();
+    BOOST_TEST_MESSAGE("Got: "<<count);
+    BOOST_REQUIRE( count == 1000);
+}
 
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
@@ -169,7 +229,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
             }
             control.Add(vChecks);
         }
-        BOOST_CHECK(control.Wait() == (i == 0));
+        BOOST_REQUIRE(!control.Wait());
         ++count;
     }
 }
@@ -198,7 +258,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
         }
         ++count;
         if (n != i) {
-            BOOST_CHECK(n == i);
+            BOOST_REQUIRE(n == i);
             BOOST_TEST_MESSAGE("Failure on trial " << count - 1 << " expected, got " << n);
         }
     }

@@ -188,9 +188,7 @@ public:
     struct OUT_OF_WORK {
     };
     PriorityWorkQueue() {};
-    PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : n_done(), total(0), id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_), id2_cache((id_+1) % RT_N_SCRIPTCHECK_THREADS)
-    {
-    };
+    PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : n_done(), total(0), id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_), id2_cache((id_+1) % RT_N_SCRIPTCHECK_THREADS) {};
     /** adds entries for execution [total, n)
      * Places entries in the proper bucket
      * Resets the next thread to help (id2_cache) if work was added
@@ -284,7 +282,10 @@ struct status_container {
  * @tparam J the maximum number of jobs possible 
  * @tparam W the maximum number of workers possible
  */
-template <typename T, size_t J, size_t W>
+
+template <typename T, size_t J, size_t W, bool TEST=false>
+class CCheckQueue;
+template <typename T, size_t J, size_t W, bool TEST>
 class CCheckQueue
 {
 public:
@@ -292,16 +293,11 @@ public:
     static const size_t MAX_JOBS = J;
     static const size_t MAX_WORKERS = W;
     // We use the Proto version so that we can pass it to job_array, status_container, etc
-    struct Proto {
-        typedef T JOB_TYPE;
-        static const size_t MAX_JOBS = J;
-        static const size_t MAX_WORKERS = W;
-    };
 
 private:
-    CCheckQueue_Internals::job_array<Proto> jobs;
-    CCheckQueue_Internals::status_container<Proto> status;
-    CCheckQueue_Internals::round_barrier<Proto> done_round;
+    CCheckQueue_Internals::job_array<CCheckQueue<T, J, W, TEST>> jobs;
+    CCheckQueue_Internals::status_container<CCheckQueue<T, J, W, TEST>> status;
+    CCheckQueue_Internals::round_barrier<CCheckQueue<T, J, W, TEST>> done_round;
 
 
 
@@ -342,41 +338,40 @@ private:
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
+    size_t consume(size_t ID, size_t RT_N_SCRIPTCHECK_THREADS) {
+            CCheckQueue_Internals::PriorityWorkQueue<CCheckQueue<T, J, W, TEST>> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
+            // Note: Must check masterJoined before nTodo, otherwise
+            // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
+            size_t job_id = 0;
+            while (status.fAllOk.load()) {
+                bool allow_stealing = status.masterJoined.load();
+                if (work_queue.pop(job_id, allow_stealing)) {
+                    // Immediately make a failure such that everyone quits on their next read of fOk
+                    if (jobs.reserve(job_id) && !jobs.eval(job_id) )
+                        status.fAllOk.store(false);
+                    continue;
+                } 
+                bool added_none = !work_queue.add(status.nTodo.load());
+                if (allow_stealing && added_none)
+                    break;
+            }
+            return work_queue.get_total();
+    }
     /** Internal function that does bulk of the verification work. */
     bool Loop(const size_t ID, const size_t RT_N_SCRIPTCHECK_THREADS)
     {
 
-        if (ID == 1)
-            for (size_t id = 2; id < RT_N_SCRIPTCHECK_THREADS; ++id) {
-                std::thread t([=](){Loop(id, RT_N_SCRIPTCHECK_THREADS); });
-                t.detach();
-            }
         // Keep master always at 0 id -- maybe we should manually assign id's rather than this way, but this works.
         if (ID == 0)
             status.masterJoined.store(true);
         else
             RenameThread("bitcoin-scriptcheck");
 
-
         for (;;) {
-            CCheckQueue_Internals::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
             if (ID != 0)
-                sleepers[ID].wait();
-                // Note: Must check masterJoined before nTodo, otherwise
-                // {Thread A: nTodo.load();} {Thread B:nTodo++; masterJoined = true;} {Thread A: masterJoined.load()}
-                size_t job_id = 0;
-                while (status.fAllOk.load()) {
-                    bool allow_stealing = status.masterJoined.load();
-                    if (work_queue.pop(job_id, allow_stealing)) {
-                        // Immediately make a failure such that everyone quits on their next read of fOk
-                        if (jobs.reserve(job_id) && !jobs.eval(job_id) )
-                            status.fAllOk.store(false);
-                    } else if (allow_stealing && !work_queue.add(status.nTodo.load()))
-                        break;
-                }
+                maybe_sleep();
 
-                
-
+            size_t prev_total = consume(ID, RT_N_SCRIPTCHECK_THREADS);
 
             // We only break out of the loop when there is no more work and the master had joined.
             // We won't find more work later, so mark ourselves as completed
@@ -401,7 +396,6 @@ private:
             while (status.masterJoined.load())
                 ;
 
-            size_t prev_total = work_queue.get_total();
             // Have ID == 1 perform cleanup as the "slave master slave" as ID == 1 is always there if multicore
             // This frees the master to return with the result before the cleanup occurs
             // And allows for the ID == 1 to do the master's cleanup for it
@@ -494,6 +488,28 @@ public:
     void sleep() {
         //for (auto& s : sleepers)
             //s.sleep();
+    }
+
+    size_t TEST_consume(size_t ID, size_t RT_N_SCRIPTCHECK_THREADS) {
+        return TEST ? consume(ID, RT_N_SCRIPTCHECK_THREADS) : 0;
+    }
+    void TEST_set_masterJoined(bool b) {
+        if (TEST)
+            status.masterJoined.store(b);
+    }
+
+    size_t TEST_count_set_flags() {
+        auto count = 0;
+        if (TEST)
+            for (auto t = 0; t < MAX_JOBS; ++t)
+                count += jobs.reserve(t) ? 0 : 1;
+        return count;
+    }
+    void TEST_reset_all_flags() {
+        if (TEST)
+            for (auto t = 0; t < MAX_JOBS; ++t)
+                jobs.reset_flag(t);
+
     }
 };
 
