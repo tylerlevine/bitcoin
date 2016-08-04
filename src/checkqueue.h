@@ -171,14 +171,14 @@ public:
 template <typename Q>
 class PriorityWorkQueue
 {
-    /** The Worker's ID */
-    size_t id;
-    /** The number of workers that bitcoind started with, eg, RunTime Number ScriptCheck Threads  */
-    size_t RT_N_SCRIPTCHECK_THREADS;
     std::array<size_t, Q::MAX_WORKERS> n_done;
     /** Stores the number of elements remaining (ie, --size on pop)*/
     /** Stores the total inserted since the last reset (ignores pop) */
     size_t total;
+    /** The Worker's ID */
+    const size_t id;
+    /** The number of workers that bitcoind started with, eg, RunTime Number ScriptCheck Threads  */
+    const size_t RT_N_SCRIPTCHECK_THREADS;
     /** a cache of the last queue we were popping from, reset on adds and (circularly) incremented on pops 
      * Otherwise pops have an O(workers) term, this keeps pop amortized constant */
     size_t id2_cache;
@@ -188,7 +188,7 @@ public:
     struct OUT_OF_WORK {
     };
     PriorityWorkQueue() {};
-    PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_), n_done(), total(0), id2_cache((id_+1) % RT_N_SCRIPTCHECK_THREADS)
+    PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : n_done(), total(0), id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_), id2_cache((id_+1) % RT_N_SCRIPTCHECK_THREADS)
     {
     };
     /** adds entries for execution [total, n)
@@ -204,29 +204,6 @@ public:
         }
         return false;
     };
-    void set(size_t idIn, size_t RT_N_SCRIPTCHECK_THREADS_In) {
-        id = idIn;
-        RT_N_SCRIPTCHECK_THREADS = RT_N_SCRIPTCHECK_THREADS_In;
-        reset();
-    }
-    /** Completely reset the state */
-    void reset()
-    {
-        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i) {
-            n_done[i] = 0;
-        }
-        total = 0;
-        id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
-    };
-    /** as if all elements had been processed via pop */
-    void erase()
-    {
-        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS; ++i)
-            n_done[i] = (total / RT_N_SCRIPTCHECK_THREADS)  + ( i < (total % RT_N_SCRIPTCHECK_THREADS) ? 1 : 0);
-        id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
-    };
-
-    /** accesses the highest id added, needed for external cleanup operations */
     size_t get_total()
     {
         return total;
@@ -380,9 +357,9 @@ private:
         else
             RenameThread("bitcoin-scriptcheck");
 
-        CCheckQueue_Internals::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
 
         for (;;) {
+            CCheckQueue_Internals::PriorityWorkQueue<Proto> work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
             if (ID != 0)
                 sleepers[ID].wait();
                 // Note: Must check masterJoined before nTodo, otherwise

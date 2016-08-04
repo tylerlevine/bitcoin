@@ -79,7 +79,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
     BOOST_CHECK(results.empty());
     BOOST_CHECK(m == 200);
 
-    work.reset();
 
 }
 
