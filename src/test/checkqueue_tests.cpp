@@ -21,7 +21,8 @@ BOOST_FIXTURE_TEST_SUITE(checkqueue_tests, BasicTestingSetup)
 // Logging off by default because of memory leak
 static const testing_level TEST = testing_level::enable_functions;
 
-struct FakeJob {};
+struct FakeJob {
+};
 
 typedef CCheckQueue<FakeJob, (size_t)100000, 16, TEST> big_queue;
 typedef CCheckQueue<FakeJob, (size_t)2000, 16, TEST> medium_queue;
@@ -34,7 +35,6 @@ struct big_queue_proto {
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
 {
-
     fPrintToConsole = true;
     static std::atomic<size_t> n_calls;
     struct FailingJob {
@@ -42,18 +42,20 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
         bool call_state;
         size_t tag;
         FailingJob(bool fails) : f(fails), call_state(false), tag(0xdeadbeef){};
-        FailingJob() : f(true), call_state(false) {};
+        FailingJob() : f(true), call_state(false){};
         bool operator()()
         {
             n_calls++;
             call_state = true;
             return !f;
         }
-        void swap(FailingJob& x) { 
+        void swap(FailingJob& x)
+        {
             std::swap(f, x.f);
 
             std::swap(call_state, x.call_state);
-            std::swap(tag, x.tag);};
+            std::swap(tag, x.tag);
+        };
     };
     static CCheckQueue<FailingJob, (size_t)1000, 16, testing_level::enable_functions> fail_queue;
     size_t nThreads = 8;
@@ -66,7 +68,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
 
         std::vector<FailingJob> vChecks;
         vChecks.reserve(i);
-        for (size_t x =0; x < i; ++x)
+        for (size_t x = 0; x < i; ++x)
             vChecks.push_back(FailingJob{});
         if (i > 0)
             vChecks[0].f = true;
@@ -91,8 +93,8 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
                     nChecked++;
             fail_queue.TEST_dump_log(nThreads);
             fail_queue.TEST_erase_log();
-            BOOST_MESSAGE("Failed to see failure on round " << i  << " only counted " << nChecked << " flags (by job_array).");
-            BOOST_MESSAGE("Failed to see failure on round " << i  << " only counted " << n_calls << " flags (by atomic).");
+            BOOST_MESSAGE("Failed to see failure on round " << i << " only counted " << nChecked << " flags (by job_array).");
+            BOOST_MESSAGE("Failed to see failure on round " << i << " only counted " << n_calls << " flags (by atomic).");
             BOOST_REQUIRE(!success);
         } else if (i == 0) {
             fail_queue.TEST_erase_log();
@@ -113,13 +115,13 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
     work.pop(x, false);
     BOOST_REQUIRE(x == 16);
     m = 2;
-    while ( work.pop(x, false)) {
+    while (work.pop(x, false)) {
         ++m;
     }
     BOOST_REQUIRE(m == 100);
     work.add(200);
     std::unordered_set<size_t> results;
-    while ( work.pop(x, false)) {
+    while (work.pop(x, false)) {
         results.insert(x);
         ++m;
     }
@@ -136,7 +138,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_PriorityWorkQueue)
     do {
         results.insert(x);
         ++m;
-    } while ( work.pop(x, false));
+    } while (work.pop(x, false));
     for (auto i = 200; i < 400; ++i) {
         BOOST_REQUIRE(results.count(i));
         results.erase(i);
@@ -188,7 +190,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_round_barrier)
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
 {
-
     struct FakeJobNoWork {
         bool operator()()
         {
@@ -200,19 +201,19 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
     size_t nThreads = 8;
     fast_queue.init(nThreads);
     std::array<std::atomic<size_t>, 8> results;
-    std::atomic<size_t> spawned  {0};
+    std::atomic<size_t> spawned{0};
 
     boost::thread_group threadGroup;
 
     for (auto& a : results)
         a = 0;
-    for(size_t i = 0; i < nThreads; ++i)
-        threadGroup.create_thread([&,i](){
+    for (size_t i = 0; i < nThreads; ++i)
+        threadGroup.create_thread([&, i]() {
             ++spawned;
-            results[i] = fast_queue.TEST_consume(i); 
+            results[i] = fast_queue.TEST_consume(i);
         });
 
-    threadGroup.create_thread([&](){
+    threadGroup.create_thread([&]() {
         while (spawned != nThreads);
         for (auto y = 0; y < 10; ++y) {
             std::vector<FakeJobNoWork> w;
@@ -230,13 +231,13 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
 
     for (auto& a : results) {
         if (a != 1000) {
-            BOOST_TEST_MESSAGE("Error, Got: "<< a);
+            BOOST_TEST_MESSAGE("Error, Got: " << a);
             BOOST_REQUIRE(a == 1000);
         }
     }
     size_t count = fast_queue.TEST_count_set_flags();
-    BOOST_TEST_MESSAGE("Got: "<<count);
-    BOOST_REQUIRE( count == 1000);
+    BOOST_TEST_MESSAGE("Got: " << count);
+    BOOST_REQUIRE(count == 1000);
 }
 
 
@@ -272,12 +273,11 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Performance)
         }
     }
     auto end_time = GetTimeMicros();
-    BOOST_TEST_MESSAGE("Perf Test took " << end_time - start_time << " microseconds for "<<ROUNDS << " rounds, " << (ROUNDS * 1000000.0) / (end_time - start_time) << "rps");
+    BOOST_TEST_MESSAGE("Perf Test took " << end_time - start_time << " microseconds for " << ROUNDS << " rounds, " << (ROUNDS * 1000000.0) / (end_time - start_time) << "rps");
 }
 
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Correct)
 {
-
     static std::atomic<size_t> n_calls;
     struct FakeJobCheckCompletion {
         bool operator()()
