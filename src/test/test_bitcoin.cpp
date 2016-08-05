@@ -66,6 +66,7 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
             BOOST_CHECK(ok);
         }
         nScriptCheckThreads = 3;
+        SetupCCheckQueue(nScriptCheckThreads);
         RegisterNodeSignals(GetNodeSignals());
 }
 
