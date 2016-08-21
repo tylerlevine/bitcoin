@@ -132,19 +132,17 @@ BOOST_AUTO_TEST_CASE(existing_data_no_obfuscate)
     // We're going to share this path between two wrappers
     path ph = temp_directory_path() / unique_path();
     create_directories(ph);
-
-    // Set up a non-obfuscated wrapper to write some initial data.
-    CDBWrapper* dbw = new CDBWrapper(ph, (1 << 10), false, false, false);
     char key = 'k';
     uint256 in = GetRandHash();
     uint256 res;
-
-    BOOST_CHECK(dbw->Write(key, in));
-    BOOST_CHECK(dbw->Read(key, res));
-    BOOST_CHECK_EQUAL(res.ToString(), in.ToString());
-
-    // Call the destructor to free leveldb LOCK
-    delete dbw;
+    {
+        // Set up a non-obfuscated wrapper to write some initial data.
+        // leveldb LOCK freed on destruction
+        CDBWrapper dbw(ph, (1 << 10), false, false, false);
+        BOOST_CHECK(dbw.Write(key, in));
+        BOOST_CHECK(dbw.Read(key, res));
+        BOOST_CHECK_EQUAL(res.ToString(), in.ToString());
+    }
 
     // Now, set up another wrapper that wants to obfuscate the same directory
     CDBWrapper odbw(ph, (1 << 10), false, false, true);
@@ -174,18 +172,17 @@ BOOST_AUTO_TEST_CASE(existing_data_reindex)
     path ph = temp_directory_path() / unique_path();
     create_directories(ph);
 
-    // Set up a non-obfuscated wrapper to write some initial data.
-    CDBWrapper* dbw = new CDBWrapper(ph, (1 << 10), false, false, false);
     char key = 'k';
     uint256 in = GetRandHash();
     uint256 res;
-
-    BOOST_CHECK(dbw->Write(key, in));
-    BOOST_CHECK(dbw->Read(key, res));
-    BOOST_CHECK_EQUAL(res.ToString(), in.ToString());
-
-    // Call the destructor to free leveldb LOCK
-    delete dbw;
+    {
+        // Set up a non-obfuscated wrapper to write some initial data.
+        // leveldb LOCK freed on destruction
+        CDBWrapper dbw(ph, (1 << 10), false, false, false);
+        BOOST_CHECK(dbw.Write(key, in));
+        BOOST_CHECK(dbw.Read(key, res));
+        BOOST_CHECK_EQUAL(res.ToString(), in.ToString());
+    }
 
     // Simulate a -reindex by wiping the existing data store
     CDBWrapper odbw(ph, (1 << 10), false, true, true);

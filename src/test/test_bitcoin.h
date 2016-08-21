@@ -28,7 +28,9 @@ struct BasicTestingSetup {
  * Included are data directory, coins database, script check threads setup.
  */
 struct TestingSetup: public BasicTestingSetup {
-    CCoinsViewDB *pcoinsdbview;
+    std::unique_ptr<CCoinsViewDB> pcoinsdbview;
+    std::unique_ptr<CBlockTreeDB> pblocktree_local;
+    std::unique_ptr<CCoinsViewCache> pcoinsTip_local;
     boost::filesystem::path pathTemp;
     boost::thread_group threadGroup;
 

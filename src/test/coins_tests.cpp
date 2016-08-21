@@ -113,8 +113,8 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
 
     // The cache stack.
     CCoinsViewTest base; // A CCoinsViewTest at the bottom.
-    std::vector<CCoinsViewCacheTest*> stack; // A stack of CCoinsViewCaches on top.
-    stack.push_back(new CCoinsViewCacheTest(&base)); // Start with one cache.
+    std::vector<std::unique_ptr<CCoinsViewCacheTest>> stack; // A stack of CCoinsViewCaches on top.
+    stack.push_back(std::unique_ptr<CCoinsViewCacheTest>(new CCoinsViewCacheTest(&base))); // Start with one cache.
 
     // Use a limited set of random transaction ids, so we do test overwriting entries.
     std::vector<uint256> txids;
@@ -159,7 +159,7 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
                     missed_an_entry = true;
                 }
             }
-            BOOST_FOREACH(const CCoinsViewCacheTest *test, stack) {
+            for (const std::unique_ptr<CCoinsViewCacheTest>& test : stack) {
                 test->SelfTest();
             }
         }
@@ -176,18 +176,17 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
             if (stack.size() > 0 && insecure_rand() % 2 == 0) {
                 //Remove the top cache
                 stack.back()->Flush();
-                delete stack.back();
                 stack.pop_back();
             }
             if (stack.size() == 0 || (stack.size() < 4 && insecure_rand() % 2)) {
                 //Add a new cache
                 CCoinsView* tip = &base;
                 if (stack.size() > 0) {
-                    tip = stack.back();
+                    tip = stack.back().get();
                 } else {
                     removed_all_caches = true;
                 }
-                stack.push_back(new CCoinsViewCacheTest(tip));
+                stack.push_back(std::unique_ptr<CCoinsViewCacheTest>(new CCoinsViewCacheTest(tip)));
                 if (stack.size() == 4) {
                     reached_4_caches = true;
                 }
@@ -196,10 +195,7 @@ BOOST_AUTO_TEST_CASE(coins_cache_simulation_test)
     }
 
     // Clean up the stack.
-    while (stack.size() > 0) {
-        delete stack.back();
-        stack.pop_back();
-    }
+    stack.clear();
 
     // Verify coverage.
     BOOST_CHECK(removed_all_caches);
@@ -224,8 +220,8 @@ BOOST_AUTO_TEST_CASE(updatecoins_simulation_test)
 
     // The cache stack.
     CCoinsViewTest base; // A CCoinsViewTest at the bottom.
-    std::vector<CCoinsViewCacheTest*> stack; // A stack of CCoinsViewCaches on top.
-    stack.push_back(new CCoinsViewCacheTest(&base)); // Start with one cache.
+    std::vector<std::unique_ptr<CCoinsViewCacheTest>> stack; // A stack of CCoinsViewCaches on top.
+    stack.push_back(std::unique_ptr<CCoinsViewCacheTest>(new CCoinsViewCacheTest(&base))); // Start with one cache.
 
     // Track the txids we've used and whether they have been spent or not
     std::map<uint256, CAmount> coinbaseids;
@@ -323,24 +319,20 @@ BOOST_AUTO_TEST_CASE(updatecoins_simulation_test)
             // Every 100 iterations, change the cache stack.
             if (stack.size() > 0 && insecure_rand() % 2 == 0) {
                 stack.back()->Flush();
-                delete stack.back();
                 stack.pop_back();
             }
             if (stack.size() == 0 || (stack.size() < 4 && insecure_rand() % 2)) {
                 CCoinsView* tip = &base;
                 if (stack.size() > 0) {
-                    tip = stack.back();
+                    tip = stack.back().get();
                 }
-                stack.push_back(new CCoinsViewCacheTest(tip));
+                stack.push_back(std::unique_ptr<CCoinsViewCacheTest>(new CCoinsViewCacheTest(tip)));
            }
         }
     }
 
     // Clean up the stack.
-    while (stack.size() > 0) {
-        delete stack.back();
-        stack.pop_back();
-    }
+    stack.clear();
 
     // Verify coverage.
     BOOST_CHECK(spent_a_duplicate_coinbase);

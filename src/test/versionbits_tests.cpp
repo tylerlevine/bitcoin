@@ -37,7 +37,7 @@ public:
 class VersionBitsTester
 {
     // A fake blockchain
-    std::vector<CBlockIndex*> vpblock;
+    std::vector<std::unique_ptr<CBlockIndex>> vpblock;
 
     // 6 independent checkers for the same bit.
     // The first one performs all checks, the second only 50%, the third only 25%, etc...
@@ -51,13 +51,10 @@ public:
     VersionBitsTester() : num(0) {}
 
     VersionBitsTester& Reset() {
-        for (unsigned int i = 0; i < vpblock.size(); i++) {
-            delete vpblock[i];
-        }
+        vpblock.clear();
         for (unsigned int  i = 0; i < CHECKERS; i++) {
             checker[i] = TestConditionChecker();
         }
-        vpblock.clear();
         return *this;
     }
 
@@ -67,13 +64,13 @@ public:
 
     VersionBitsTester& Mine(unsigned int height, int32_t nTime, int32_t nVersion) {
         while (vpblock.size() < height) {
-            CBlockIndex* pindex = new CBlockIndex();
+            auto pindex = std::unique_ptr<CBlockIndex>(new CBlockIndex());
             pindex->nHeight = vpblock.size();
-            pindex->pprev = vpblock.size() > 0 ? vpblock.back() : NULL;
+            pindex->pprev = vpblock.size() > 0 ? vpblock.back().get() : NULL;
             pindex->nTime = nTime;
             pindex->nVersion = nVersion;
             pindex->BuildSkip();
-            vpblock.push_back(pindex);
+            vpblock.push_back(std::move(pindex));
         }
         return *this;
     }
@@ -81,7 +78,7 @@ public:
     VersionBitsTester& TestDefined() {
         for (int i = 0; i < CHECKERS; i++) {
             if ((insecure_rand() & ((1 << i) - 1)) == 0) {
-                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back()) == THRESHOLD_DEFINED, strprintf("Test %i for DEFINED", num));
+                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back().get()) == THRESHOLD_DEFINED, strprintf("Test %i for DEFINED", num));
             }
         }
         num++;
@@ -91,7 +88,7 @@ public:
     VersionBitsTester& TestStarted() {
         for (int i = 0; i < CHECKERS; i++) {
             if ((insecure_rand() & ((1 << i) - 1)) == 0) {
-                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back()) == THRESHOLD_STARTED, strprintf("Test %i for STARTED", num));
+                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back().get()) == THRESHOLD_STARTED, strprintf("Test %i for STARTED", num));
             }
         }
         num++;
@@ -101,7 +98,7 @@ public:
     VersionBitsTester& TestLockedIn() {
         for (int i = 0; i < CHECKERS; i++) {
             if ((insecure_rand() & ((1 << i) - 1)) == 0) {
-                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back()) == THRESHOLD_LOCKED_IN, strprintf("Test %i for LOCKED_IN", num));
+                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back().get()) == THRESHOLD_LOCKED_IN, strprintf("Test %i for LOCKED_IN", num));
             }
         }
         num++;
@@ -111,7 +108,7 @@ public:
     VersionBitsTester& TestActive() {
         for (int i = 0; i < CHECKERS; i++) {
             if ((insecure_rand() & ((1 << i) - 1)) == 0) {
-                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back()) == THRESHOLD_ACTIVE, strprintf("Test %i for ACTIVE", num));
+                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back().get()) == THRESHOLD_ACTIVE, strprintf("Test %i for ACTIVE", num));
             }
         }
         num++;
@@ -121,14 +118,14 @@ public:
     VersionBitsTester& TestFailed() {
         for (int i = 0; i < CHECKERS; i++) {
             if ((insecure_rand() & ((1 << i) - 1)) == 0) {
-                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back()) == THRESHOLD_FAILED, strprintf("Test %i for FAILED", num));
+                BOOST_CHECK_MESSAGE(checker[i].GetStateFor(vpblock.empty() ? NULL : vpblock.back().get()) == THRESHOLD_FAILED, strprintf("Test %i for FAILED", num));
             }
         }
         num++;
         return *this;
     }
 
-    CBlockIndex * Tip() { return vpblock.size() ? vpblock.back() : NULL; }
+    CBlockIndex * Tip() { return vpblock.size() ? vpblock.back().get() : NULL; }
 };
 
 BOOST_FIXTURE_TEST_SUITE(versionbits_tests, TestingSetup)

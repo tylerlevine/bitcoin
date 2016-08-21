@@ -45,9 +45,12 @@ BasicTestingSetup::~BasicTestingSetup()
         ECC_Stop();
 }
 
-TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(chainName)
+TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(chainName),
+    pcoinsdbview(new CCoinsViewDB(1 << 23, true)), 
+    pblocktree_local(new CBlockTreeDB(1 << 20, true)),
+    pcoinsTip_local(new CCoinsViewCache(pcoinsdbview.get()))
 {
-    const CChainParams& chainparams = Params();
+        const CChainParams& chainparams = Params();
         // Ideally we'd move all the RPC tests to the functional testing framework
         // instead of unit tests, but for now we need these here.
         RegisterAllCoreRPCCommands(tableRPC);
@@ -56,9 +59,8 @@ TestingSetup::TestingSetup(const std::string& chainName) : BasicTestingSetup(cha
         boost::filesystem::create_directories(pathTemp);
         mapArgs["-datadir"] = pathTemp.string();
         mempool.setSanityCheck(1.0);
-        pblocktree = new CBlockTreeDB(1 << 20, true);
-        pcoinsdbview = new CCoinsViewDB(1 << 23, true);
-        pcoinsTip = new CCoinsViewCache(pcoinsdbview);
+        pblocktree = pblocktree_local.get();
+        pcoinsTip = pcoinsTip_local.get();
         InitBlockIndex(chainparams);
         {
             CValidationState state;
@@ -77,9 +79,6 @@ TestingSetup::~TestingSetup()
         threadGroup.interrupt_all();
         threadGroup.join_all();
         UnloadBlockIndex();
-        delete pcoinsTip;
-        delete pcoinsdbview;
-        delete pblocktree;
         boost::filesystem::remove_all(pathTemp);
 }
 
@@ -104,7 +103,7 @@ CBlock
 TestChain100Setup::CreateAndProcessBlock(const std::vector<CMutableTransaction>& txns, const CScript& scriptPubKey)
 {
     const CChainParams& chainparams = Params();
-    CBlockTemplate *pblocktemplate = BlockAssembler(chainparams).CreateNewBlock(scriptPubKey);
+    auto pblocktemplate = std::unique_ptr<CBlockTemplate>(BlockAssembler(chainparams).CreateNewBlock(scriptPubKey));
     CBlock& block = pblocktemplate->block;
 
     // Replace mempool-selected txns with just coinbase plus passed-in txns:
@@ -121,7 +120,6 @@ TestChain100Setup::CreateAndProcessBlock(const std::vector<CMutableTransaction>&
     ProcessNewBlock(state, chainparams, NULL, &block, true, NULL);
 
     CBlock result = block;
-    delete pblocktemplate;
     return result;
 }
 
