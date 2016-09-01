@@ -8,11 +8,9 @@
 #include <algorithm>
 #include <vector>
 
-#include <boost/foreach.hpp>
-#include <boost/thread/condition_variable.hpp>
-#include <boost/thread/locks.hpp>
-#include <boost/thread/mutex.hpp>
-#include <boost/thread/thread.hpp>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 template <typename T>
 class CCheckQueueControl;
@@ -32,13 +30,13 @@ class CCheckQueue
 {
 private:
     //! Mutex to protect the inner state
-    boost::mutex mutex;
+    std::mutex mutex;
 
     //! Worker threads block on this when out of work
-    boost::condition_variable condWorker;
+    std::condition_variable condWorker;
 
     //! Master thread blocks on this when out of work
-    boost::condition_variable condMaster;
+    std::condition_variable condMaster;
 
     //! The queue of elements to be processed.
     //! As the order of booleans doesn't matter, it is used as a LIFO (stack)
@@ -67,19 +65,19 @@ private:
     unsigned int nBatchSize;
 
     //! The threads operating this queue
-    boost::thread_group threadGroup;
+    std::vector<std::thread> threads;
 
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false)
     {
-        boost::condition_variable& cond = fMaster ? condMaster : condWorker;
+        std::condition_variable& cond = fMaster ? condMaster : condWorker;
         std::vector<T> vChecks;
         vChecks.reserve(nBatchSize);
         unsigned int nNow = 0;
         bool fOk = true;
         do {
             {
-                boost::unique_lock<boost::mutex> lock(mutex);
+                std::unique_lock<std::mutex> lock(mutex);
                 // first do the clean-up of the previous loop run (allowing us to do it in the same critsect)
                 if (nNow) {
                     fAllOk &= fOk;
@@ -123,7 +121,7 @@ private:
                 fOk = fAllOk;
             }
             // execute work
-            BOOST_FOREACH (T& check, vChecks)
+            for (T& check : vChecks)
                 if (fOk)
                     fOk = check();
             vChecks.clear();
@@ -137,18 +135,27 @@ public:
     //! Add worker threads
     void init(size_t RT_N_SCRIPTCHECK_THREADS)
     {
-        for (int i=1; i< RT_N_SCRIPTCHECK_THREADS; i++)
-            threadGroup.create_thread([=](){Thread();});
+        for (size_t id = 1; id < RT_N_SCRIPTCHECK_THREADS; ++id) {
+            std::thread t([=]() {Thread(); });
+            threads.push_back(std::move(t));
+        }
     }
 
     void quit() 
     {
-        threadGroup.interrupt_all();
-        threadGroup.join_all();
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            fQuit = true;
+        }
+        condWorker.notify_all();
+        for (auto& t : threads)
+            t.join();
+        threads.clear();
         nTotal = 0;
         nIdle = 0;
         fAllOk = true;
         nTodo = 0;
+        fQuit = false;
     }
 
     //! Worker thread
@@ -174,8 +181,8 @@ public:
         }
         ~emplacer()
         {
-            boost::unique_lock<boost::mutex> lock(t->mutex);
-            BOOST_FOREACH (T& check, vChecks) {
+            std::unique_lock<std::mutex> lock(t->mutex);
+            for (T& check : vChecks) {
                 t->queue.push_back(T());
                 check.swap(t->queue.back());
             }
@@ -198,7 +205,7 @@ public:
 
     bool IsIdle()
     {
-        boost::unique_lock<boost::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(mutex);
         return (nTotal == nIdle && nTodo == 0 && fAllOk == true);
     }
 
