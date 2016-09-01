@@ -74,8 +74,6 @@ TestingSetup::~TestingSetup()
 {
         UnregisterNodeSignals(GetNodeSignals());
         StopCCheckQueue();
-        threadGroup.interrupt_all();
-        threadGroup.join_all();
         UnloadBlockIndex();
         delete pcoinsTip;
         delete pcoinsdbview;
