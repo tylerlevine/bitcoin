@@ -18,6 +18,11 @@ static const unsigned int MAX_BLOCK_BASE_SIZE = 1000000;
 static const int64_t MAX_BLOCK_SIGOPS_COST = 80000;
 /** Coinbase transaction outputs can only be spent after this number of new blocks (network rule) */
 static const int COINBASE_MATURITY = 100;
+/** The minimum number of bytes a valid input uses */
+static const unsigned long long MIN_INPUT_SIZE = 41;
+/** The maximum number of checks needed, computed based on there being at most one check per input.
+ * Separate from MAX_BLOCK_SIGOPS as an input may have 0 sigops. */
+static const unsigned long long MAX_SCRIPTCHECKS = static_cast<unsigned long long>(MAX_BLOCK_SERIALIZED_SIZE)/MIN_INPUT_SIZE;
 
 /** Flags for nSequence and nLockTime locks */
 enum {
