@@ -142,19 +142,32 @@ public:
         return Loop(true);
     }
 
-    //! Add a batch of checks to the queue
-    void Add(std::vector<T>& vChecks)
-    {
-        boost::unique_lock<boost::mutex> lock(mutex);
-        BOOST_FOREACH (T& check, vChecks) {
-            queue.push_back(T());
-            check.swap(queue.back());
+    //! RAII style insertion into queue
+    struct emplacer {
+        CCheckQueue<T>* t;
+        std::vector<T> vChecks;
+        emplacer(CCheckQueue<T>* t_) : t(t_) {}
+        void operator()(T && t)
+        {
+            vChecks.emplace_back(std::move(t));
         }
-        nTodo += vChecks.size();
-        if (vChecks.size() == 1)
-            condWorker.notify_one();
-        else if (vChecks.size() > 1)
-            condWorker.notify_all();
+        ~emplacer()
+        {
+            boost::unique_lock<boost::mutex> lock(t->mutex);
+            BOOST_FOREACH (T& check, vChecks) {
+                t->queue.push_back(T());
+                check.swap(t->queue.back());
+            }
+            t->nTodo += vChecks.size();
+            if (vChecks.size() == 1)
+                t->condWorker.notify_one();
+            else if (vChecks.size() > 1)
+                t->condWorker.notify_all();
+        }
+
+    };
+    emplacer get_emplacer() {
+        return emplacer(this);
     }
 
     ~CCheckQueue()
@@ -199,12 +212,14 @@ public:
         return fRet;
     }
 
-    void Add(std::vector<T>& vChecks)
+    typename CCheckQueue<T>::emplacer get_emplacer()
     {
-        if (pqueue != NULL)
-            pqueue->Add(vChecks);
+        return pqueue->get_emplacer();
     }
 
+    operator bool() {
+        return (!!pqueue);
+    }
     ~CCheckQueueControl()
     {
         if (!fDone)

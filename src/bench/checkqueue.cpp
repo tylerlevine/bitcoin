@@ -27,9 +27,9 @@ static void CCheckQueueSpeed(benchmark::State& state)
         CCheckQueueControl<FakeJobNoWork> control(&queue);
         for (size_t j = 0; j < 101; ++j) {
             size_t r = 30;
-            std::vector<FakeJobNoWork> checks;
-            checks.resize(r);
-            control.Add(checks);
+            auto emplacer = control.get_emplacer();
+            for (size_t k = 0; k < r; ++k)
+                emplacer(FakeJobNoWork{});
         }
     }
     threadGroup.interrupt_all();
@@ -59,9 +59,9 @@ static void CCheckQueueSpeedPrevectorJob(benchmark::State& state)
         CCheckQueueControl<PrevectorJob> control(&queue);
         for (size_t j = 0; j < 101; ++j) {
             size_t r = 30;
-            std::vector<PrevectorJob> checks;
-            checks.resize(r);
-            control.Add(checks);
+            auto emplacer = control.get_emplacer();
+            for (size_t k = 0; k < r; ++k)
+                emplacer(PrevectorJob{});
         }
     }
     threadGroup.interrupt_all();
