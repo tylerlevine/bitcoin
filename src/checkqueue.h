@@ -25,11 +25,11 @@
 #endif
 
 
-/** Forward Declaration on CCheckQueue. */
-template <typename T>
+/** Forward Declaration on CCheckQueue. Note default no testing. */
+template <typename T, bool TFE = false, bool TLE = false>
 class CCheckQueue;
 /** Forward Declaration on CCheckQueueControl */
-template <typename T>
+template <typename Q, bool TFE = false, bool TLE = false>
 class CCheckQueueControl;
 
 
@@ -99,6 +99,10 @@ public:
         checks.clear();
     }
 
+    decltype(&checks) TEST_get_checks()
+    {
+        return  &checks;
+    }
 };
 /* barrier is used to communicate that a thread has finished
      * all work and reported any bad checks it might have seen.
@@ -278,13 +282,17 @@ class atomic_condition {
  * as an N'th worker, until all jobs are done.
  *
  * @tparam T the type of callable check object
+ * @tparam J the maximum number of jobs possible 
+ * @tparam W the maximum number of workers possible
  */
 
-template <typename T>
+template <typename T, bool TFE, bool TLE>
 class CCheckQueue
 {
 public:
     typedef T JOB_TYPE;
+    static const bool TEST_FUNCTIONS_ENABLE = TFE;
+    static const bool TEST_LOGGING_ENABLE = TLE;
 
 private:
     CCheckQueue_Internals::job_array<JOB_TYPE> jobs;
@@ -303,6 +311,9 @@ private:
     std::vector<std::thread> threads;
     /** Makes sure only one thread is using control functionality at a time*/
     std::mutex control_mtx;
+    /** state only for testing */
+    mutable std::atomic<size_t> test_log_seq;
+    mutable std::vector<std::unique_ptr<std::ostringstream>> test_log;
 
     void consume(CCheckQueue_Internals::PriorityWorkQueue& work_queue)
     {
@@ -329,9 +340,11 @@ private:
         static CCheckQueue_Internals::PriorityWorkQueue work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
         work_queue.reset();
         masterJoined.store(true);
+        TEST_log(ID, [](std::ostringstream& o) { o << "Master just set masterJoined\n"; });
         consume(work_queue);
         work.finished();
         work.wait_all_finished();
+        TEST_log(ID, [](std::ostringstream& o) { o << "(Master) saw all threads finished\n"; });
         bool fRet = fAllOk.load();
         sleeper.sleep();
         masterJoined.store(false);
@@ -342,17 +355,24 @@ private:
 
         CCheckQueue_Internals::PriorityWorkQueue work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
         while (sleeper.wait()) {
+            TEST_log(ID, [](std::ostringstream& o) {o << "Round starting\n";});
             consume(work_queue);
             // Only spins here if !fAllOk, otherwise consume finished all
             while (!masterJoined.load())
                 ;
             size_t prev_total = nAvail.load();
+            TEST_log(ID, [&, this](std::ostringstream& o) {
+                o << "saw up to " << prev_total << " master was "
+                << masterJoined.load() << " nAvail " << nAvail.load() << '\n';
+            });
             work.finished();
             // We wait until the master reports leaving explicitly
             while (masterJoined.load())
                 ;
+            TEST_log(ID, [](std::ostringstream& o) { o << "Saw master leave\n"; });
             jobs.reset_flags_for(ID, prev_total);
             cleanup.finished();
+            TEST_log(ID, [](std::ostringstream& o) { o << "Resetting nAvail and fAllOk\n"; });
             nAvail.store(0);
             fAllOk.store(true);
             if (ID == 1) {
@@ -370,7 +390,7 @@ private:
 
 public:
     CCheckQueue() : jobs(), work(), cleanup(), sleeper(), RT_N_SCRIPTCHECK_THREADS(0),
-    nAvail(0), fAllOk(true), masterJoined(false) {}
+    nAvail(0), fAllOk(true), masterJoined(false), test_log_seq(0) {}
 
     //! Worker thread
     void Thread(size_t ID)
@@ -432,6 +452,8 @@ public:
         std::lock_guard<std::mutex> l(control_mtx);
         MAX_JOBS = MAX_JOBS_;
         RT_N_SCRIPTCHECK_THREADS = RT_N_SCRIPTCHECK_THREADS_;
+        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS && TEST_LOGGING_ENABLE; ++i)
+            test_log.push_back(std::unique_ptr<std::ostringstream>(new std::ostringstream()));
         work.init(RT_N_SCRIPTCHECK_THREADS);
         cleanup.init(RT_N_SCRIPTCHECK_THREADS-1);
         jobs.init(MAX_JOBS, RT_N_SCRIPTCHECK_THREADS);
@@ -441,21 +463,82 @@ public:
             threads.push_back(std::move(t));
         }
     }
+
+    /** Various testing functionalities */
+
+    void TEST_consume(const size_t ID)
+    {
+        static CCheckQueue_Internals::PriorityWorkQueue work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
+        if (TEST_FUNCTIONS_ENABLE)
+            consume(work_queue);
+    }
+
+    void TEST_set_masterJoined(const bool b)
+    {
+        if (TEST_FUNCTIONS_ENABLE)
+            masterJoined.store(b);
+    }
+
+    size_t TEST_count_set_flags()
+    {
+        auto count = 0;
+        for (auto t = 0; t < MAX_JOBS && TEST_FUNCTIONS_ENABLE; ++t)
+            count += jobs.reserve(t) ? 0 : 1;
+        return count;
+    }
+
+    void TEST_reset_all_flags()
+    {
+        for (auto t = 0; t < MAX_JOBS && TEST_FUNCTIONS_ENABLE; ++t)
+            jobs.reset_flag(t);
+    }
+
+    template <typename Callable>
+    void TEST_log(const size_t ID, Callable c) const
+    {
+        if (TEST_LOGGING_ENABLE) {
+            *test_log[ID] << "[[" << test_log_seq++ <<"]] ";
+            c(*test_log[ID]);
+        }
+    }
+
+    void TEST_dump_log() const
+    {
+        if (TEST_FUNCTIONS_ENABLE) {
+            LogPrintf("\n#####################\n## Round Beginning ##\n#####################");
+            for (auto& i : test_log)
+                LogPrintf("\n------------------\n%s\n------------------\n\n", i->str());
+        }
+    }
+
+    void TEST_erase_log() const
+    {
+        if (TEST_FUNCTIONS_ENABLE)
+        for (auto& i : test_log) {
+            i->str("");
+            i->clear();
+        }
+    }
+
+    CCheckQueue_Internals::job_array<JOB_TYPE>* TEST_introspect_jobs()
+    {
+        return TEST_FUNCTIONS_ENABLE ? &jobs : nullptr;
+    }
 };
 
 /** 
  * RAII-style controller object for a CCheckQueue that guarantees the passed
  * queue is finished before continuing.
  */
-template <typename T>
+template <typename T, bool TFE, bool TLE>
 class CCheckQueueControl
 {
 private:
-    CCheckQueue<T>*  const pqueue;
+    CCheckQueue<T, TFE, TLE>*  const pqueue;
     bool fDone;
 
 public:
-    CCheckQueueControl(CCheckQueue<T>* pqueueIn) : pqueue(pqueueIn), fDone(false)
+    CCheckQueueControl(CCheckQueue<T, TFE, TLE>* pqueueIn) : pqueue(pqueueIn), fDone(false)
     {
         if (pqueue) 
             pqueue->ControlLock();
@@ -471,7 +554,7 @@ public:
         return fRet;
     }
 
-    typename CCheckQueue<T>::emplacer get_emplacer()
+    typename CCheckQueue<T, TFE, TLE>::emplacer get_emplacer()
     {
         return pqueue->get_emplacer();
     }
