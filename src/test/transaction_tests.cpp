@@ -470,8 +470,8 @@ BOOST_AUTO_TEST_CASE(test_big_witness_transaction) {
 
     // check all inputs concurrently, with the cache
     PrecomputedTransactionData txdata(tx);
-    CCheckQueue<CScriptCheck> scriptcheckqueue(128);
-    scriptcheckqueue.init(20);
+    CCheckQueue<CScriptCheck> scriptcheckqueue;
+    scriptcheckqueue.init(MAX_SCRIPTCHECKS, 20);
     CCheckQueueControl<CScriptCheck> control(&scriptcheckqueue);
 
     CCoins coins;

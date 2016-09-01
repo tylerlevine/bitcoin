@@ -7,7 +7,6 @@
 #include "main.h"
 #include "checkqueue.h"
 #include "prevector.h"
-#include <boost/thread/thread.hpp>
 
 static void CCheckQueueSpeed(benchmark::State& state)
 {
@@ -18,9 +17,8 @@ static void CCheckQueueSpeed(benchmark::State& state)
         }
         void swap(FakeJobNoWork& x){};
     };
-    const unsigned int batch_size = 128;
-    CCheckQueue<FakeJobNoWork> queue {batch_size};
-    queue.init(std::max(2, GetNumCores()));
+    CCheckQueue<FakeJobNoWork> queue {};
+    queue.init(100000, std::max(2, GetNumCores()));
     while (state.KeepRunning()) {
         CCheckQueueControl<FakeJobNoWork> control(&queue);
         for (size_t j = 0; j < 101; ++j) {
@@ -46,9 +44,8 @@ static void CCheckQueueSpeedPrevectorJob(benchmark::State& state)
         void swap(PrevectorJob& x){p.swap(x.p);};
     };
     seed_insecure_rand(true);
-    const unsigned int batch_size = 128;
-    CCheckQueue<PrevectorJob> queue {batch_size};
-    queue.init(std::max(2, GetNumCores()));
+    CCheckQueue<PrevectorJob> queue {};
+    queue.init(100000, std::max(2, GetNumCores()));
     while (state.KeepRunning()) {
         CCheckQueueControl<PrevectorJob> control(&queue);
         for (size_t j = 0; j < 101; ++j) {

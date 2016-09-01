@@ -2234,13 +2234,13 @@ void static FlushBlockFile(bool fFinalize = false)
 
 bool FindUndoPos(CValidationState &state, int nFile, CDiskBlockPos &pos, unsigned int nAddSize);
 
-static CCheckQueue<CScriptCheck> scriptcheckqueue(128);
+static CCheckQueue<CScriptCheck> scriptcheckqueue{};
 void StopCCheckQueue() {
     LogPrintf("Shutting down CCheckQueue\n");
     scriptcheckqueue.quit();
 };
 void SetupCCheckQueue(size_t RT_N_SCRIPTCHECK_THREADS) {
-    scriptcheckqueue.init(RT_N_SCRIPTCHECK_THREADS);
+    scriptcheckqueue.init(MAX_SCRIPTCHECKS, RT_N_SCRIPTCHECK_THREADS);
 };
 
 
