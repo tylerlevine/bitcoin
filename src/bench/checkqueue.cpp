@@ -11,7 +11,6 @@
 
 static void CCheckQueueSpeed(benchmark::State& state)
 {
-    boost::thread_group  threadGroup;
     struct FakeJobNoWork {
         bool operator()()
         {
@@ -21,8 +20,7 @@ static void CCheckQueueSpeed(benchmark::State& state)
     };
     const unsigned int batch_size = 128;
     CCheckQueue<FakeJobNoWork> queue {batch_size};
-    for (int i=1; i < std::max(2, GetNumCores()); i++)
-        threadGroup.create_thread([&](){queue.Thread();});
+    queue.init(std::max(2, GetNumCores()));
     while (state.KeepRunning()) {
         CCheckQueueControl<FakeJobNoWork> control(&queue);
         for (size_t j = 0; j < 101; ++j) {
@@ -32,13 +30,10 @@ static void CCheckQueueSpeed(benchmark::State& state)
                 emplacer(FakeJobNoWork{});
         }
     }
-    threadGroup.interrupt_all();
-    threadGroup.join_all();
 }
 
 static void CCheckQueueSpeedPrevectorJob(benchmark::State& state)
 {
-    boost::thread_group  threadGroup;
     struct PrevectorJob {
         prevector<28, uint8_t> p;
         PrevectorJob(){
@@ -53,8 +48,7 @@ static void CCheckQueueSpeedPrevectorJob(benchmark::State& state)
     seed_insecure_rand(true);
     const unsigned int batch_size = 128;
     CCheckQueue<PrevectorJob> queue {batch_size};
-    for (int i=1; i < std::max(2, GetNumCores()); i++)
-        threadGroup.create_thread([&](){queue.Thread();});
+    queue.init(std::max(2, GetNumCores()));
     while (state.KeepRunning()) {
         CCheckQueueControl<PrevectorJob> control(&queue);
         for (size_t j = 0; j < 101; ++j) {
@@ -64,8 +58,6 @@ static void CCheckQueueSpeedPrevectorJob(benchmark::State& state)
                 emplacer(PrevectorJob{});
         }
     }
-    threadGroup.interrupt_all();
-    threadGroup.join_all();
     seed_insecure_rand(false);
 }
 BENCHMARK(CCheckQueueSpeed);

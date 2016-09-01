@@ -12,6 +12,7 @@
 #include <boost/thread/condition_variable.hpp>
 #include <boost/thread/locks.hpp>
 #include <boost/thread/mutex.hpp>
+#include <boost/thread/thread.hpp>
 
 template <typename T>
 class CCheckQueueControl;
@@ -64,6 +65,9 @@ private:
 
     //! The maximum number of elements to be processed in one batch
     unsigned int nBatchSize;
+
+    //! The threads operating this queue
+    boost::thread_group threadGroup;
 
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false)
@@ -130,6 +134,23 @@ public:
     //! Create a new check queue
     CCheckQueue(unsigned int nBatchSizeIn) : nIdle(0), nTotal(0), fAllOk(true), nTodo(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
 
+    //! Add worker threads
+    void init(size_t RT_N_SCRIPTCHECK_THREADS)
+    {
+        for (int i=1; i< RT_N_SCRIPTCHECK_THREADS; i++)
+            threadGroup.create_thread([=](){Thread();});
+    }
+
+    void quit() 
+    {
+        threadGroup.interrupt_all();
+        threadGroup.join_all();
+        nTotal = 0;
+        nIdle = 0;
+        fAllOk = true;
+        nTodo = 0;
+    }
+
     //! Worker thread
     void Thread()
     {
@@ -172,6 +193,7 @@ public:
 
     ~CCheckQueue()
     {
+        quit();
     }
 
     bool IsIdle()
