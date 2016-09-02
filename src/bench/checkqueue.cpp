@@ -25,7 +25,7 @@ static void CCheckQueueSpeed(benchmark::State& state)
             size_t r = 30;
             auto emplacer = control.get_emplacer();
             for (size_t k = 0; k < r; ++k)
-                emplacer(FakeJobNoWork{});
+                emplacer();
         }
     }
 }
@@ -52,7 +52,7 @@ static void CCheckQueueSpeedPrevectorJob(benchmark::State& state)
             size_t r = 30;
             auto emplacer = control.get_emplacer();
             for (size_t k = 0; k < r; ++k)
-                emplacer(PrevectorJob{});
+                emplacer();
         }
     }
     seed_insecure_rand(false);

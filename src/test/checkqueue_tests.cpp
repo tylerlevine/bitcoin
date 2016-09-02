@@ -183,7 +183,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_consume)
     for (auto y = 0; y < 1000; ++y) {
         auto emplacer = fast_queue->get_emplacer();
         for (auto x = 0; x < 100; ++x)
-            emplacer(FakeCheckNoWork{});
+            emplacer();
     }
     fast_queue->TEST_set_masterJoined(true);
 
@@ -220,7 +220,7 @@ void Correct_Queue_range(std::vector<size_t> range)
                 auto emplacer = control.get_emplacer();
                 for (size_t k = 0; k < r && total; k++) {
                     total--;
-                    emplacer(FakeCheckCheckCompletion{});
+                    emplacer();
                 }
             }
         }
@@ -291,7 +291,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
 
             auto emplacer = control.get_emplacer();
             for (size_t k = 0; k < r && remaining; k++, remaining--)
-                emplacer(FailingCheck{remaining == 1});
+                emplacer(remaining == 1);
         }
         bool success = control.Wait();
         if (success && i > 0) {
@@ -323,7 +323,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Recovers_From_Failure)
             {
                 auto emplacer = control.get_emplacer();
                 for (size_t k = 0; k < 100; ++k)
-                    emplacer(FailingCheck{k == 99 && end_fails});
+                    emplacer(k == 99 && end_fails);
             }
             result[end_fails ? 0 : 1] = control.Wait();
             fail_queue->TEST_dump_log();
@@ -364,7 +364,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_UniqueCheck)
             size_t r = GetRand(10);
             auto emplacer = control.get_emplacer();
             for (size_t k = 0; k < r && total; k++)
-                emplacer(UniqueCheck{--total});
+                emplacer(--total);
         }
     }
     bool r = true;
@@ -403,7 +403,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Memory)
                 auto emplacer = control.get_emplacer();
                 for (size_t k = 0; k < r && total; k++) {
                     total--;
-                    emplacer(MemoryCheck{total == 0});
+                    emplacer(total == 0);
                 }
             }
         }
@@ -434,7 +434,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_FrozenCleanup)
     std::thread t0([&]() {
         CCheckQueueControl<FrozenCleanupCheck> control(queue.get());
         {
-            control.get_emplacer()(FrozenCleanupCheck{});
+            control.get_emplacer()();
         }
         FrozenCleanupCheck::frozen = true;
         BOOST_REQUIRE(control.Wait());

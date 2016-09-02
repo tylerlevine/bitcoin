@@ -75,9 +75,10 @@ public:
     /** in place constructs a check. Caller must guarantee that this does not allocate
      * (if it does allocate, the check will not have an associated flag)
      */
-    void emplace_back(T&& t)
+    template< class... Args >
+    void emplace_back(Args&& ... args)
     {
-        checks.emplace_back(std::move(t));
+        checks.emplace_back(std::forward<Args>(args) ...);
     }
 
     /** Not thread safe method of determining the number of checks added */
@@ -519,9 +520,10 @@ public:
         CCheckQueue_Internals::check_storarge<CHECK_TYPE>& j;
         std::atomic<size_t>& nAvail;
         emplacer(CCheckQueue_Internals::check_storarge<CHECK_TYPE>& j_, std::atomic<size_t>& nAvail_) : j(j_), nAvail(nAvail_) {}
-        void operator()(CHECK_TYPE&& t)
+        template< class... Args >
+        void operator()(Args&& ... args)
         {
-            j.emplace_back(std::move(t));
+            j.emplace_back(std::forward<Args>(args) ...);
         }
         ~emplacer()
         {

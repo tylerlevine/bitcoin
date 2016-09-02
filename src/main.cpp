@@ -1974,7 +1974,7 @@ bool CheckTxInputs(const CTransaction& tx, CValidationState& state, const CCoins
 }
 }// namespace Consensus
 
-bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheStore, PrecomputedTransactionData& txdata, std::function<void (CScriptCheck &&)> emplacer)
+bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsViewCache &inputs, bool fScriptChecks, unsigned int flags, bool cacheStore, PrecomputedTransactionData& txdata, std::function<void (const CCoins&, const CTransaction&, unsigned int, unsigned int, bool, PrecomputedTransactionData*)>  emplacer)
 {
     if (!tx.IsCoinBase())
     {
@@ -1999,7 +1999,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, const CCoinsVi
 
                 // Verify signature
                 if (emplacer) {
-                    emplacer(CScriptCheck(*coins, tx, i, flags, cacheStore, &txdata));
+                    emplacer(*coins, tx, i, flags, cacheStore, &txdata);
                     continue;
                 }
                 CScriptCheck check(*coins, tx, i, flags, cacheStore, &txdata);
