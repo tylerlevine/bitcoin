@@ -14,6 +14,8 @@
 #include <mutex>
 
 
+/** These will produce compiler warnings if these types are
+ * not guaranteed to be lock free on the platform */
 #ifndef ATOMIC_BOOL_LOCK_FREE
 #pragma message("std::atomic<bool> is not lock free")
 #endif
@@ -37,53 +39,63 @@ class CCheckQueueControl;
  * of CCheckQueue, but is separate for easier testability and modularity */
 namespace CCheckQueue_Internals
 {
-/** job_array holds the atomic flags and the job data for the queue
-     * and provides methods to assist in accessing or adding jobs.
+/** check_storarge holds the atomic flags and the check data for the queue
+     * and provides methods to assist in accessing or adding checks.
      */
 template <typename T>
-class job_array
+class check_storarge
 {
-    /** the raw check type */
+    /** Vector to store raw checks */
     std::vector<T> checks;
-    /** atomic flags which are used to reserve a check from checks
-             * C++11 standard guarantees that these are atomic on all platforms
-             * */
+    /** atomic flags which are used to mark a check as reserved from checks
+             * C++11 standard guarantees that these are atomic  lock free on all platforms
+             * 
+             * Note: we wrap them with the default_cleared_flag to allow for them to be 
+             * run-time initialized once. However, it is not safe to, say, copy a vector of such flags.*/
     struct default_cleared_flag : std::atomic_flag {
-        default_cleared_flag () : std::atomic_flag() { clear(); };
-        default_cleared_flag (const default_cleared_flag & s) : std::atomic_flag() { clear(); };
+        default_cleared_flag() : std::atomic_flag() { clear(); };
+        default_cleared_flag(const default_cleared_flag& s) : std::atomic_flag() { clear(); };
     };
     std::vector<default_cleared_flag> flags;
+    /** The number of workers that was started with, eg, RunTime Number ScriptCheck Threads  */
     size_t RT_N_SCRIPTCHECK_THREADS;
 
 public:
-    job_array() :  RT_N_SCRIPTCHECK_THREADS(0)
+    /** Default constructor. init must be called with the right number of threads before use */
+    check_storarge() : RT_N_SCRIPTCHECK_THREADS(0)
     {
     }
-
-    void init(const size_t MAX_JOBS, const size_t rt)
+    /** Initializes the checks and flags. Should not be called during normal operation */
+    void init(const size_t MAX_CHECKS, const size_t rt)
     {
         RT_N_SCRIPTCHECK_THREADS = rt;
-        checks.reserve(MAX_JOBS);
-        flags.resize(MAX_JOBS);
+        checks.reserve(MAX_CHECKS);
+        flags.resize(MAX_CHECKS);
     }
+    /** in place constructs a check. Caller must guarantee that this does not allocate
+     * (if it does allocate, the check will not have an associated flag)
+     */
     void emplace_back(T&& t)
     {
         checks.emplace_back(std::move(t));
     }
 
+    /** Not thread safe method of determining the number of checks added */
     size_t size()
     {
         return checks.size();
     }
-    
+
     /** reserve tries to set a flag for an element 
-             * and returns if it was successful */
+             * and returns if it was set by this thread */
     bool reserve(const size_t i)
     {
         return !flags[i].test_and_set();
     }
 
-    void reset_flags_for(const size_t ID, const size_t to) 
+    /** Given a thread ID and an size, resets the flags that were supposed
+     * to be controlled by that thread. */
+    void reset_flags_for(const size_t ID, const size_t to)
     {
         for (size_t i = ID; i < to; i += RT_N_SCRIPTCHECK_THREADS)
             flags[i].clear();
@@ -94,31 +106,32 @@ public:
         return checks[i]();
     }
 
+    /** Clears the checks vector. Not thread safe, requires external synchronization.
+     * Calls destructor of every check in the vector, freeing any associated memory (as long
+     * as the check type T does not leak...) */
     void clear_check_memory()
     {
         checks.clear();
     }
 
+    /** Testing functions... */
     decltype(&checks) TEST_get_checks()
     {
-        return  &checks;
+        return &checks;
     }
 };
-/* barrier is used to communicate that a thread has finished
-     * all work and reported any bad checks it might have seen.
-     *
-     * Results should normally be cached thread locally (once a thread is done, it
-     * will not mark itself un-done so no need to read the atomic twice)
-     */
 
+/** barrier is used to count the number of threads who are at a certain point within a round.  */
 class barrier
 {
+    /** The number of workers that was started with, eg, RunTime Number ScriptCheck Threads  */
     size_t RT_N_SCRIPTCHECK_THREADS;
     std::atomic<size_t> count;
 
 public:
     /** Default state is false so that first round looks like no prior round*/
-    barrier() : RT_N_SCRIPTCHECK_THREADS(0), count(0) {
+    barrier() : RT_N_SCRIPTCHECK_THREADS(0), count(0)
+    {
     }
     void init(const size_t rt)
     {
@@ -137,7 +150,7 @@ public:
     {
         count.store(0);
     }
-    void wait_reset() const 
+    void wait_reset() const
     {
         while (count.load() != 0)
             ;
@@ -146,34 +159,26 @@ public:
 /* PriorityWorkQueue exists to help threads select work 
      * to do in a cache friendly way. As long as all entries added are
      * popped it will be correct. Performance comes from intelligently
-     * chosing the order.
+     * choosing the order. Future optimizations can come here by taking
+     * a smarter set of hints about checks that are definitely completed.
      *
-     * Each thread has a unique id, and preferentiall evaluates
-     * jobs in an index i such that  i == id (mod RT_N_SCRIPTCHECK_THREADS) in increasing
+     *
+     * Each thread has a unique id, and preferentially evaluates
+     * checks in an index i such that  i == id (mod RT_N_SCRIPTCHECK_THREADS) in increasing
      * order.
      *
      * After id aligned work is finished, the thread walks sequentially
      * through its neighbors (id +1%RT_N_SCRIPTCHECK_THREADS, id+2% RT_N_SCRIPTCHECK_THREADS) to find work.
      *
-     * TODO: future optimizations
-     *     - Abort (by clearing)
-     *       remaining on backwards walk if one that is reserved
-     *       already, because it means either the worker's stuff is done
-     *       OR it already has 2 (or more) workers already who will finish it.
-     *     - Use an interval set rather than a vector (maybe)
-     *     - Select thread by most amount of work remaining 
-     *       (requires coordination)
-     *     - Preferentially help 0 (the master) as it joins last
-     *     - have two levels of empty, priority_empty and all_empty
-     *       (check for more work when priority_empty)
      *
      */
 class PriorityWorkQueue
 {
+    /** This contains the number of checks known to be done by a worker (not the id of the check) */
     std::vector<size_t> n_done;
     /** The Worker's ID */
     const size_t id;
-    /** The number of workers that bitcoind started with, eg, RunTime Number ScriptCheck Threads  */
+    /** The number of workers that was started with, eg, RunTime Number ScriptCheck Threads  */
     const size_t RT_N_SCRIPTCHECK_THREADS;
     /** Stores the total inserted since the last reset (ignores pop) */
     size_t total;
@@ -181,17 +186,20 @@ class PriorityWorkQueue
              * Otherwise pops have an O(workers) term, this keeps pop amortized constant */
     size_t id2_cache;
 
-
 public:
-    PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : n_done(), id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_), total(0), id2_cache((id_ + 1) % RT_N_SCRIPTCHECK_THREADS){
+    PriorityWorkQueue(size_t id_, size_t RT_N_SCRIPTCHECK_THREADS_) : n_done(), id(id_), RT_N_SCRIPTCHECK_THREADS(RT_N_SCRIPTCHECK_THREADS_), total(0), id2_cache((id_ + 1) % RT_N_SCRIPTCHECK_THREADS)
+    {
         n_done.resize(RT_N_SCRIPTCHECK_THREADS);
     };
-    void reset() {
+
+    void reset()
+    {
         for (auto& i : n_done)
             i = 0;
         total = 0;
-        id2_cache = (id +1) % RT_N_SCRIPTCHECK_THREADS;
+        id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
     }
+
     /** adds entries for execution [total, n)
              * Places entries in the proper bucket
              * Resets the next thread to help (id2_cache) if work was added
@@ -203,6 +211,7 @@ public:
             id2_cache = (id + 1) % RT_N_SCRIPTCHECK_THREADS;
         }
     }
+
     size_t get_total() const
     {
         return total;
@@ -214,6 +223,7 @@ public:
              */
     bool pop(size_t& val, const bool stealing)
     {
+        // First try to read from our own queue
         val = (id + (n_done[id]) * RT_N_SCRIPTCHECK_THREADS);
         if (val < total) {
             ++n_done[id];
@@ -221,7 +231,7 @@ public:
         }
         if (!stealing)
             return false;
-        // Iterate untill id2 wraps around to id.
+        // Iterate untill id2 wraps around to id -- then we must be empty
         for (; id2_cache != id; id2_cache = (id2_cache + 1) % RT_N_SCRIPTCHECK_THREADS) {
             val = (id2_cache + (n_done[id2_cache]) * RT_N_SCRIPTCHECK_THREADS);
             if (val < total) {
@@ -233,10 +243,18 @@ public:
     }
 };
 
-class atomic_condition {
+/** atomic_condition is used to control threads sleep/alive status.
+ *
+ * it is important for atomic_condition to function correctly that
+ * it is only called the exactly once per operation (e.g., two consecutive calls to 
+ * sleep will overflow the  state counter)
+ */
+class atomic_condition
+{
     std::atomic<uint8_t> state;
-    public:
-    atomic_condition() : state(0) {};
+
+public:
+    atomic_condition() : state(0){};
     void wakeup()
     {
         ++state;
@@ -253,17 +271,24 @@ class atomic_condition {
     {
         state.store(0);
     }
+    /** A thread who calls wait returns in either an
+     * awake or killed state:
+     * An awake atomic_condition will return true.
+     * A killed atomic_condition will return  with false. 
+     * An asleep thread will wait in 1 us increments
+     *
+     * A resurrected thread is equivalent to an asleep alive thread.*/
     bool wait() const
     {
         for (;;) {
             switch (state.load()) {
-                case 0:
-                    std::this_thread::sleep_for(std::chrono::microseconds(1));
-                    break;
-                case 1:
-                    return true;
-                default:
-                    return false;
+            case 0:
+                std::this_thread::sleep_for(std::chrono::microseconds(1));
+                break;
+            case 1:
+                return true;
+            default:
+                return false;
             }
         }
     }
@@ -279,42 +304,78 @@ class atomic_condition {
  * One thread (the master) is assumed to push batches of verifications
  * onto the queue, where they are processed by N-1 worker threads. When
  * the master is done adding work, it temporarily joins the worker pool
- * as an N'th worker, until all jobs are done.
+ * as an N'th worker, until all checks are done.
  *
  * @tparam T the type of callable check object
- * @tparam J the maximum number of jobs possible 
- * @tparam W the maximum number of workers possible
+ *
+ * The other params are only for testing and are default false. They are templated
+ * as to incur no run-time overhead:
+ *
+ * @tparam TFE enables Test Functions to be called (and return meaningful output)
+ * @tparam TLE stores data in the queue local logs. This must be dumped or it will use a lot of memory potentially.
  */
 
 template <typename T, bool TFE, bool TLE>
 class CCheckQueue
 {
 public:
-    typedef T JOB_TYPE;
+    typedef T CHECK_TYPE;
     static const bool TEST_FUNCTIONS_ENABLE = TFE;
     static const bool TEST_LOGGING_ENABLE = TLE;
 
 private:
-    CCheckQueue_Internals::job_array<JOB_TYPE> jobs;
-    CCheckQueue_Internals::barrier work;
-    CCheckQueue_Internals::barrier cleanup;
+    /** CCheckQueue_Internals members. See namespace CCheckQueue_Internals for documentation */
+
+    CCheckQueue_Internals::check_storarge<CHECK_TYPE> checks;
+
     CCheckQueue_Internals::atomic_condition sleeper;
+
+    /** Used to indicate when all the work has been finished in a given round */
+    CCheckQueue_Internals::barrier work;
+
+    /** Used to indicate that cleanup tasks have finished in a given round */
+    CCheckQueue_Internals::barrier cleanup;
+
+    /** The number of workers that was started with, eg, RunTime Number ScriptCheck Threads  */
     size_t RT_N_SCRIPTCHECK_THREADS;
-    size_t MAX_JOBS;
-    /** The number of checks put into the queue, done or not */
+
+    /** The maximum number of checks */
+    size_t MAX_CHECKS;
+
+    /** The number of checks put into the queue, done or not
+     * Technically, some memory fence could synchronize the checks.size()  making this atomic redundant
+     * */
     std::atomic<size_t> nAvail;
+
     /** true if all checks were successful, false if any failure occurs */
     std::atomic<bool> fAllOk;
+
     /** true if the master has joined, false otherwise. A round may not terminate unless masterJoined */
     std::atomic<bool> masterJoined;
-    /** hold handles for work */
+
+    /** vector of handles for worker threads */
     std::vector<std::thread> threads;
-    /** Makes sure only one thread is using control functionality at a time*/
+
+    /** protects queue control functionality to one controller at a time. Probably safe to remove given cs_main lock. */
     std::mutex control_mtx;
+
     /** state only for testing */
     mutable std::atomic<size_t> test_log_seq;
-    mutable std::vector<std::unique_ptr<std::ostringstream>> test_log;
+    mutable std::vector<std::unique_ptr<std::ostringstream> > test_log;
 
+
+    /* The main logic of a checkqueue round 
+     *
+     * returns when the worker has either observed an error, or has seen the master join and
+     * exhausted all checks.
+     *
+     * If an error-ing check is seen, it is reported via fAllOk.
+     *
+     * the atomic variables are read on each loop as they should only be expensive to 
+     * read after a write, less frequent reading would be acceptable as well if this
+     * assumption is false.
+     *
+     */
     void consume(CCheckQueue_Internals::PriorityWorkQueue& work_queue)
     {
         for (;;) {
@@ -322,21 +383,28 @@ private:
             // {Thread A: nAvail.load();} {Thread B:nAvail++; masterJoined = true;} {Thread A: masterJoined.load()}
             bool stealing = masterJoined.load();
             work_queue.add(nAvail.load());
-            size_t job_id;
-            bool got_data = work_queue.pop(job_id, stealing);
-            if (got_data && jobs.reserve(job_id)) {
-                if (!jobs.eval(job_id)) {
+            size_t check_id;
+            bool got_data = work_queue.pop(check_id, stealing);
+            if (got_data && checks.reserve(check_id)) {
+                if (!checks.eval(check_id)) {
                     fAllOk.store(false);
                     return;
                 }
-            }
-            else if (stealing && !got_data)
+            } else if (stealing && !got_data)
                 return;
-        } 
+        }
     }
-    /** Internal function that does bulk of the verification work. */
-    bool Master() {
+
+    /** Once the master thread has added all checks it joins under this function to do work.
+     *
+     * While this logic is similar to the Loop logic, it is slightly different as it performs
+     * no cleanup and signals the master's presence
+     */
+    bool Master()
+    {
+        // Master's ID is always 0
         const size_t ID = 0;
+        // Static initialize the work_queue and reset on each round, saves an allocation
         static CCheckQueue_Internals::PriorityWorkQueue work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
         work_queue.reset();
         masterJoined.store(true);
@@ -346,52 +414,80 @@ private:
         work.wait_all_finished();
         TEST_log(ID, [](std::ostringstream& o) { o << "(Master) saw all threads finished\n"; });
         bool fRet = fAllOk.load();
+        // We must sleep the threads before the master leaves
         sleeper.sleep();
         masterJoined.store(false);
         return fRet;
     }
     void Loop(const size_t ID)
     {
-
         CCheckQueue_Internals::PriorityWorkQueue work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
         while (sleeper.wait()) {
-            TEST_log(ID, [](std::ostringstream& o) {o << "Round starting\n";});
+            // When we enter the loop, the thread is awake.
+            TEST_log(ID, [](std::ostringstream& o) {o << "Round starting\n"; });
             consume(work_queue);
-            // Only spins here if !fAllOk, otherwise consume finished all
+            // master may not have joined (in the case where a check failed)
+            // so this only spins here if the master has not yet joined, otherwise consume finished all
             while (!masterJoined.load())
                 ;
+            // Retain a cached copy of the nAvail max value for cleanup
             size_t prev_total = nAvail.load();
             TEST_log(ID, [&, this](std::ostringstream& o) {
                 o << "saw up to " << prev_total << " master was "
                 << masterJoined.load() << " nAvail " << nAvail.load() << '\n';
             });
+            // Mark finished
             work.finished();
-            // We wait until the master reports leaving explicitly
+            // We wait until the master reports leaving explicitly, meaning
+            // it is safe to perform cleanup tasks without corrupting memory
             while (masterJoined.load())
                 ;
             TEST_log(ID, [](std::ostringstream& o) { o << "Saw master leave\n"; });
-            jobs.reset_flags_for(ID, prev_total);
+            // Per thread cleanup tasks
+            checks.reset_flags_for(ID, prev_total);
             cleanup.finished();
             TEST_log(ID, [](std::ostringstream& o) { o << "Resetting nAvail and fAllOk\n"; });
+            // We have every thread set this arbitrarily. Only one thread needs to set this, but
+            // this means no thread has to wait for another to set this.
             nAvail.store(0);
             fAllOk.store(true);
             if (ID == 1) {
                 // Reset master flags too
-                jobs.reset_flags_for(0, prev_total);
-                jobs.clear_check_memory();
+                checks.reset_flags_for(0, prev_total);
+                // Perform any single threaded garbage collection tasks
+                checks.clear_check_memory();
+                // Make sure every thread finishes the cleanup before allowing the master back in
                 cleanup.wait_all_finished();
                 cleanup.reset();
+                // Master cannot rejoin until this call
                 work.reset();
             }
             work_queue.reset();
         }
+
         LogPrintf("CCheckQueue @%#010x Worker %q shutting down\n", this, ID);
     }
 
 public:
-    CCheckQueue() : jobs(), work(), cleanup(), sleeper(), RT_N_SCRIPTCHECK_THREADS(0),
-    nAvail(0), fAllOk(true), masterJoined(false), test_log_seq(0) {}
+    CCheckQueue() : checks(), sleeper(), work(), cleanup(), RT_N_SCRIPTCHECK_THREADS(0),
+                    nAvail(0), fAllOk(true), masterJoined(false), test_log_seq(0) {}
 
+    void init(const size_t MAX_CHECKS_, const size_t RT_N_SCRIPTCHECK_THREADS_)
+    {
+        std::lock_guard<std::mutex> l(control_mtx);
+        MAX_CHECKS = MAX_CHECKS_;
+        RT_N_SCRIPTCHECK_THREADS = RT_N_SCRIPTCHECK_THREADS_;
+        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS && TEST_LOGGING_ENABLE; ++i)
+            test_log.push_back(std::unique_ptr<std::ostringstream>(new std::ostringstream()));
+        work.init(RT_N_SCRIPTCHECK_THREADS);
+        cleanup.init(RT_N_SCRIPTCHECK_THREADS - 1);
+        checks.init(MAX_CHECKS, RT_N_SCRIPTCHECK_THREADS);
+        sleeper.resurrect();
+        for (size_t id = 1; id < RT_N_SCRIPTCHECK_THREADS; ++id) {
+            std::thread t([=]() {Thread(id); });
+            threads.push_back(std::move(t));
+        }
+    }
     //! Worker thread
     void Thread(size_t ID)
     {
@@ -400,12 +496,15 @@ public:
         Loop(ID);
     }
 
-    void ControlLock() {
+    //! Control Lock should be held by any user of this queue
+    void ControlLock()
+    {
         control_mtx.lock();
         sleeper.wakeup();
         work.wait_reset();
     }
-    void ControlUnlock() {
+    void ControlUnlock()
+    {
         control_mtx.unlock();
     };
 
@@ -414,22 +513,13 @@ public:
     {
         return Master();
     }
-    void quit()
-    {
-        std::lock_guard<std::mutex> l(control_mtx);
-        sleeper.kill();
-        for (auto& t : threads)
-            t.join();
-        threads.clear();
-        jobs.clear_check_memory();
-    }
 
-
+    //! RAII container for emplacing checks without copying
     struct emplacer {
-        CCheckQueue_Internals::job_array<JOB_TYPE>& j;
+        CCheckQueue_Internals::check_storarge<CHECK_TYPE>& j;
         std::atomic<size_t>& nAvail;
-        emplacer(CCheckQueue_Internals::job_array<JOB_TYPE>& j_, std::atomic<size_t>& nAvail_) : j(j_), nAvail(nAvail_) {}
-        void operator()(JOB_TYPE && t)
+        emplacer(CCheckQueue_Internals::check_storarge<CHECK_TYPE>& j_, std::atomic<size_t>& nAvail_) : j(j_), nAvail(nAvail_) {}
+        void operator()(CHECK_TYPE&& t)
         {
             j.emplace_back(std::move(t));
         }
@@ -437,38 +527,35 @@ public:
         {
             nAvail.store(j.size());
         }
-
     };
-    emplacer get_emplacer() {
-        return emplacer(jobs, nAvail);
+
+    emplacer get_emplacer()
+    {
+        return emplacer(checks, nAvail);
     }
+
+    //! Performs a clean shutdown of the queue. Does not release checks vectors
+    void quit()
+    {
+        std::lock_guard<std::mutex> l(control_mtx);
+        sleeper.kill();
+        for (auto& t : threads)
+            t.join();
+        threads.clear();
+        checks.clear_check_memory();
+    }
+
     ~CCheckQueue()
     {
         quit();
     }
 
-    void init(const size_t MAX_JOBS_, const size_t RT_N_SCRIPTCHECK_THREADS_)
-    {
-        std::lock_guard<std::mutex> l(control_mtx);
-        MAX_JOBS = MAX_JOBS_;
-        RT_N_SCRIPTCHECK_THREADS = RT_N_SCRIPTCHECK_THREADS_;
-        for (auto i = 0; i < RT_N_SCRIPTCHECK_THREADS && TEST_LOGGING_ENABLE; ++i)
-            test_log.push_back(std::unique_ptr<std::ostringstream>(new std::ostringstream()));
-        work.init(RT_N_SCRIPTCHECK_THREADS);
-        cleanup.init(RT_N_SCRIPTCHECK_THREADS-1);
-        jobs.init(MAX_JOBS, RT_N_SCRIPTCHECK_THREADS);
-        sleeper.resurrect();
-        for (size_t id = 1; id < RT_N_SCRIPTCHECK_THREADS; ++id) {
-            std::thread t([=]() {Thread(id); });
-            threads.push_back(std::move(t));
-        }
-    }
 
     /** Various testing functionalities */
 
     void TEST_consume(const size_t ID)
     {
-        static CCheckQueue_Internals::PriorityWorkQueue work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
+        CCheckQueue_Internals::PriorityWorkQueue work_queue(ID, RT_N_SCRIPTCHECK_THREADS);
         if (TEST_FUNCTIONS_ENABLE)
             consume(work_queue);
     }
@@ -482,22 +569,22 @@ public:
     size_t TEST_count_set_flags()
     {
         auto count = 0;
-        for (auto t = 0; t < MAX_JOBS && TEST_FUNCTIONS_ENABLE; ++t)
-            count += jobs.reserve(t) ? 0 : 1;
+        for (auto t = 0; t < MAX_CHECKS && TEST_FUNCTIONS_ENABLE; ++t)
+            count += checks.reserve(t) ? 0 : 1;
         return count;
     }
 
     void TEST_reset_all_flags()
     {
-        for (auto t = 0; t < MAX_JOBS && TEST_FUNCTIONS_ENABLE; ++t)
-            jobs.reset_flag(t);
+        for (auto t = 0; t < MAX_CHECKS && TEST_FUNCTIONS_ENABLE; ++t)
+            checks.reset_flag(t);
     }
 
     template <typename Callable>
     void TEST_log(const size_t ID, Callable c) const
     {
         if (TEST_LOGGING_ENABLE) {
-            *test_log[ID] << "[[" << test_log_seq++ <<"]] ";
+            *test_log[ID] << "[[" << test_log_seq++ << "]] ";
             c(*test_log[ID]);
         }
     }
@@ -514,15 +601,15 @@ public:
     void TEST_erase_log() const
     {
         if (TEST_FUNCTIONS_ENABLE)
-        for (auto& i : test_log) {
-            i->str("");
-            i->clear();
-        }
+            for (auto& i : test_log) {
+                i->str("");
+                i->clear();
+            }
     }
 
-    CCheckQueue_Internals::job_array<JOB_TYPE>* TEST_introspect_jobs()
+    CCheckQueue_Internals::check_storarge<CHECK_TYPE>* TEST_introspect_checks()
     {
-        return TEST_FUNCTIONS_ENABLE ? &jobs : nullptr;
+        return TEST_FUNCTIONS_ENABLE ? &checks : nullptr;
     }
 };
 
@@ -534,13 +621,13 @@ template <typename T, bool TFE, bool TLE>
 class CCheckQueueControl
 {
 private:
-    CCheckQueue<T, TFE, TLE>*  const pqueue;
+    CCheckQueue<T, TFE, TLE>* const pqueue;
     bool fDone;
 
 public:
     CCheckQueueControl(CCheckQueue<T, TFE, TLE>* pqueueIn) : pqueue(pqueueIn), fDone(false)
     {
-        if (pqueue) 
+        if (pqueue)
             pqueue->ControlLock();
     }
 
@@ -559,8 +646,9 @@ public:
         return pqueue->get_emplacer();
     }
 
-    operator bool() {
-        return (!!pqueue);
+    operator bool()
+    {
+        return pqueue != nullptr;
     }
 
     ~CCheckQueueControl()
