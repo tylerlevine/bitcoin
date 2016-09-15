@@ -13,6 +13,7 @@
 
 #include <boost/thread.hpp>
 #include <boost/unordered_set.hpp>
+#include "cuckoocache.h"
 
 namespace {
 
@@ -23,8 +24,8 @@ namespace {
 class CSignatureCacheHasher
 {
 public:
-    size_t operator()(const uint256& key) const {
-        return key.GetCheapHash();
+    uint64_t operator()(const uint256& key) const {
+        return key.GetUint64(0);
     }
 };
 
@@ -38,7 +39,7 @@ class CSignatureCache
 private:
      //! Entries are SHA256(nonce || signature hash || public key || signature):
     uint256 nonce;
-    typedef boost::unordered_set<uint256, CSignatureCacheHasher> map_type;
+    typedef CuckooCache<uint256, CSignatureCacheHasher> map_type;
     map_type setValid;
     boost::shared_mutex cs_sigcache;
 
@@ -59,30 +60,27 @@ public:
     Get(const uint256& entry)
     {
         boost::shared_lock<boost::shared_mutex> lock(cs_sigcache);
-        return setValid.count(entry);
+        return setValid.contains(entry);
     }
 
-    void Erase(const uint256& entry)
+    bool
+    GetErase(const uint256& entry)
     {
-        boost::unique_lock<boost::shared_mutex> lock(cs_sigcache);
-        setValid.erase(entry);
+        boost::shared_lock<boost::shared_mutex> lock(cs_sigcache);
+        auto it = setValid.find(entry);
+        if (it != setValid.end()) {
+            setValid.garbage_collect(it);
+            return true;
+        }
+        return false;
     }
 
     void Set(const uint256& entry)
     {
         size_t nMaxCacheSize = GetArg("-maxsigcachesize", DEFAULT_MAX_SIG_CACHE_SIZE) * ((size_t) 1 << 20);
         if (nMaxCacheSize <= 0) return;
-
         boost::unique_lock<boost::shared_mutex> lock(cs_sigcache);
-        while (memusage::DynamicUsage(setValid) > nMaxCacheSize)
-        {
-            map_type::size_type s = GetRand(setValid.bucket_count());
-            map_type::local_iterator it = setValid.begin(s);
-            if (it != setValid.end(s)) {
-                setValid.erase(*it);
-            }
-        }
-
+        setValid.setup(nMaxCacheSize);
         setValid.insert(entry);
     }
 };
@@ -95,13 +93,8 @@ bool CachingTransactionSignatureChecker::VerifySignature(const std::vector<unsig
 
     uint256 entry;
     signatureCache.ComputeEntry(entry, sighash, vchSig, pubkey);
-
-    if (signatureCache.Get(entry)) {
-        if (!store) {
-            signatureCache.Erase(entry);
-        }
+    if(store ? signatureCache.Get(entry) : signatureCache.GetErase(entry))
         return true;
-    }
 
     if (!TransactionSignatureChecker::VerifySignature(vchSig, pubkey, sighash))
         return false;
