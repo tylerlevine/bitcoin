@@ -9,6 +9,7 @@
 #include "script/interpreter.h"
 
 #include <vector>
+#include <mutex>
 
 // DoS prevention: limit cache size to less than 40MB (over 500000
 // entries on 64-bit systems).
@@ -20,8 +21,8 @@ class CachingTransactionSignatureChecker : public TransactionSignatureChecker
 {
 private:
     bool store;
-
 public:
+    static std::mutex mtx;
     CachingTransactionSignatureChecker(const CTransaction* txToIn, unsigned int nInIn, const CAmount& amount, bool storeIn, PrecomputedTransactionData& txdataIn) : TransactionSignatureChecker(txToIn, nInIn, amount, txdataIn), store(storeIn) {}
 
     bool VerifySignature(const std::vector<unsigned char>& vchSig, const CPubKey& vchPubKey, const uint256& sighash) const;
