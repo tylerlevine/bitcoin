@@ -19,7 +19,7 @@ namespace {
  * We're hashing a nonce into the entries themselves, so we don't need extra
  * blinding in the set hash computation.
  */
-class CSignatureCacheHasher
+class SignatureCacheHasher
 {
 public:
     uint32_t operator()(const uint256& key, uint8_t n) const
@@ -35,16 +35,16 @@ public:
  * twice for every transaction (once when accepted into memory pool, and
  * again when accepted into the block chain)
  */
-class CSignatureCache
+class SignatureCache
 {
 private:
      //! Entries are SHA256(nonce || signature hash || public key || signature):
     uint256 nonce;
-    typedef CuckooCache<uint256, CSignatureCacheHasher> map_type;
+    typedef CuckooCache<uint256, SignatureCacheHasher> map_type;
     map_type setValid;
 
 public:
-    CSignatureCache() 
+    SignatureCache()
     {
         GetRandBytes(nonce.begin(), 32);
     }
@@ -81,11 +81,12 @@ public:
     }
 };
 
+static SignatureCache signatureCache;
 }
+
 
 bool CachingTransactionSignatureChecker::VerifySignature(const std::vector<unsigned char>& vchSig, const CPubKey& pubkey, const uint256& sighash) const
 {
-    static CSignatureCache signatureCache;
     uint256 entry;
     signatureCache.ComputeEntry(entry, sighash, vchSig, pubkey);
     if (!store) {

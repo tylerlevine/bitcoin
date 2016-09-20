@@ -12,49 +12,51 @@
 template <typename T, uint8_t TagSize = 1, bool RemovePadding = true>
 struct dual_vector {
     static_assert(sizeof(T) == 32, "Dual vector should only be used for a 32-byte item");
-    static_assert( TagSize <= 4, "TagSize too large!");
-    static_assert( TagSize != 0, "Must Have a Tag!");
+    static_assert(TagSize <= 4, "TagSize too large!");
+    static_assert(TagSize != 0, "Must Have a Tag!");
     static const size_t MAIN_BYTES = sizeof(T) - TagSize;
-    static const size_t MAIN_PAD_BYTES = TagSize*(!RemovePadding);
-    static const size_t TOTAL_MAIN_BYTES = MAIN_BYTES+MAIN_PAD_BYTES;
+    static const size_t MAIN_PAD_BYTES = TagSize * (!RemovePadding);
+    static const size_t TOTAL_MAIN_BYTES = MAIN_BYTES + MAIN_PAD_BYTES;
     static const size_t TAG_BYTES = TagSize;
     typedef std::vector<uint8_t> underlying_storage;
     underlying_storage tag;
     underlying_storage main;
-    dual_vector() : tag(), main() {};
-    inline void resize(size_t n) 
+    dual_vector() : tag(), main(){};
+    inline void resize(size_t n)
     {
-        tag.resize(n*TAG_BYTES);
-        main.resize(n*TOTAL_MAIN_BYTES);
+        tag.resize(n * TAG_BYTES);
+        main.resize(n * TOTAL_MAIN_BYTES);
     }
-    inline void shrink_to_fit() {
+    inline void shrink_to_fit()
+    {
         tag.shrink_to_fit();
         main.shrink_to_fit();
     }
-    inline bool compare_at(size_t n, const T& t) const {
-        return std::memcmp(&tag[n*TAG_BYTES], t.begin()+MAIN_BYTES, TAG_BYTES) == 0 &&  std::memcmp(&main[n*TOTAL_MAIN_BYTES], t.begin(), MAIN_BYTES) == 0;
-    }
-    inline void insert_at(size_t n, const T& t) 
+    inline bool compare_at(size_t n, const T& t) const
     {
-        std::memcpy(&tag[n*TAG_BYTES], t.begin()+MAIN_BYTES, TAG_BYTES);
-        std::memcpy(&main[n*TOTAL_MAIN_BYTES], t.begin(), MAIN_BYTES);
+        return std::memcmp(&tag[n * TAG_BYTES], t.begin() + MAIN_BYTES, TAG_BYTES) == 0 && std::memcmp(&main[n * TOTAL_MAIN_BYTES], t.begin(), MAIN_BYTES) == 0;
+    }
+    inline void insert_at(size_t n, const T& t)
+    {
+        std::memcpy(&tag[n * TAG_BYTES], t.begin() + MAIN_BYTES, TAG_BYTES);
+        std::memcpy(&main[n * TOTAL_MAIN_BYTES], t.begin(), MAIN_BYTES);
     }
 
-    inline void swap_at(size_t n, T& t) 
+    inline void swap_at(size_t n, T& t)
     {
-        uint8_t * ptr = t.begin();
-        uint8_t * end = ptr + MAIN_BYTES;
-        for (uint8_t * q =(&main[n*TOTAL_MAIN_BYTES]); ptr  != end; ++q, ++ptr)
+        uint8_t* ptr = t.begin();
+        uint8_t* end = ptr + MAIN_BYTES;
+        for (uint8_t* q = (&main[n * TOTAL_MAIN_BYTES]); ptr != end; ++q, ++ptr)
             std::swap(*q, *ptr);
         end += TAG_BYTES;
-        for (uint8_t * q = (&tag[n*TAG_BYTES]); ptr != end; ++q, ++ptr)
+        for (uint8_t* q = (&tag[n * TAG_BYTES]); ptr != end; ++q, ++ptr)
             std::swap(*q, *ptr);
     }
-    
-    inline void fill_at(size_t n, T& t) const 
+
+    inline void fill_at(size_t n, T& t) const
     {
-        std::memcpy(t.begin(), &main[n*TOTAL_MAIN_BYTES],  MAIN_BYTES);
-        std::memcpy(t.begin()+MAIN_BYTES, &tag[n*TAG_BYTES], TAG_BYTES);
+        std::memcpy(t.begin(), &main[n * TOTAL_MAIN_BYTES], MAIN_BYTES);
+        std::memcpy(t.begin() + MAIN_BYTES, &tag[n * TAG_BYTES], TAG_BYTES);
     }
 };
 
@@ -64,31 +66,33 @@ struct dual_vector<T, 0, RemovePadding> {
     static const size_t TAG_BYTES = 0;
     typedef std::vector<T> underlying_storage;
     underlying_storage main;
-    dual_vector() : main() {};
-    inline void resize(size_t n) 
+    dual_vector() : main(){};
+    inline void resize(size_t n)
     {
         main.reserve(n);
         T def{};
         for (auto i = 0; i < n; ++i)
             main.push_back(T(def));
     }
-    inline void shrink_to_fit() {
+    inline void shrink_to_fit()
+    {
         main.shrink_to_fit();
     }
-    inline bool compare_at(size_t n, const T& t) const {
-        return  main[n] == t; 
+    inline bool compare_at(size_t n, const T& t) const
+    {
+        return main[n] == t;
     }
-    inline void insert_at(size_t n, const T& t) 
+    inline void insert_at(size_t n, const T& t)
     {
         main[n] = t;
     }
 
-    inline void swap_at(size_t n, T& t) 
+    inline void swap_at(size_t n, T& t)
     {
         std::swap(main[n], t);
     }
-    
-    inline void fill_at(size_t n, T& t) const 
+
+    inline void fill_at(size_t n, T& t) const
     {
         t = main[n];
     }
@@ -128,7 +132,7 @@ public:
     garbage_collect_flags() : v(){};
     inline void resize(size_type s)
     {
-        v.resize((s / 8) + (s% 8 != 0));
+        v.resize((s / 8) + (s % 8 != 0));
     }
     inline void shrink_to_fit()
     {
@@ -153,6 +157,7 @@ template <typename Key, typename Hash, uint8_t HashLimit = 10, uint8_t TagSize =
 class CuckooCache
 {
     static_assert(sizeof(Key) == 32, "Invalid Key Size.");
+
 public:
     // (Most Of) The standard container typedefs, for compatibility, along with
     // a few custom ones pertaining to this class (made private)
@@ -229,7 +234,7 @@ public:
             auto it = find(t);
             if (it != end())
                 return un_garbage_collect(it);
-            size_type h {0};
+            size_type h{0};
             // Look at each hash location and put it in if
             // we find a collected location
             for (uint8_t n = 0; n < hash_limit; ++n) {
@@ -283,7 +288,7 @@ public:
      * find did not return anything */
     inline size_type end() const
     {
-        return size+1;
+        return size + 1;
     }
 
     /** rehash reinserts every element of the set into itself. This should be
