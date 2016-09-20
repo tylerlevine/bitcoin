@@ -24,8 +24,8 @@ class CSignatureCacheHasher
 public:
     uint32_t operator()(const uint256& key, uint8_t n) const
     {
-        uint32_t u;
-        std::memcpy(&u, key.begin()+(sizeof(uint32_t)*n), sizeof(uint32_t));
+        uint32_t u {0};
+        std::memcpy(&u, key.begin()+(sizeof(uint8_t)*3*n), 3);
         return u;
     }
 };
