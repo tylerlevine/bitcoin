@@ -185,20 +185,21 @@ public:
             auto it = find(t);
             if (it != end())
                 return un_garbage_collect(it);
-            size_type h{0};
             // Look at each hash location and put it in if
             // we find a collected location
-            for (uint8_t n = 0; n < 10; ++n) {
-                h = compute_hash(t, n);
-                // In this case, it is safe to just replace the old data
+            size_type h = compute_hash(t, 0);
+            size_type h_ = h;
+            // In this case, it is safe to just replace the old data
+            for (uint8_t n = 1; n < 10; ++n) {
                 if (flags.is_marked(h)) {
                     set.insert_at(h, t);
                     flags.unmark(h);
                     return;
                 }
+                h = compute_hash(t, n);
             }
             // We must make a copy because the table must be in accurate state before recursing
-            set.swap_at(h, t);
+            set.swap_at(h_, t);
         }
     }
 
