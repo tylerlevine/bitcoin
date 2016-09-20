@@ -9,23 +9,17 @@
 #include <vector>
 
 
-template <typename T, uint8_t TagSize = 1, bool RemovePadding = true>
+template <typename T>
 struct dual_vector {
     static_assert(sizeof(T) == 32, "Dual vector should only be used for a 32-byte item");
-    static_assert(TagSize <= 4, "TagSize too large!");
-    static_assert(TagSize != 0, "Must Have a Tag!");
-    static const size_t MAIN_BYTES = sizeof(T) - TagSize;
-    static const size_t MAIN_PAD_BYTES = TagSize * (!RemovePadding);
-    static const size_t TOTAL_MAIN_BYTES = MAIN_BYTES + MAIN_PAD_BYTES;
-    static const size_t TAG_BYTES = TagSize;
     typedef std::vector<uint8_t> underlying_storage;
     underlying_storage tag;
     underlying_storage main;
     dual_vector() : tag(), main(){};
     inline void resize(size_t n)
     {
-        tag.resize(n * TAG_BYTES);
-        main.resize(n * TOTAL_MAIN_BYTES);
+        tag.resize(n);
+        main.resize(n * 31);
     }
     inline void shrink_to_fit()
     {
@@ -34,73 +28,34 @@ struct dual_vector {
     }
     inline bool compare_at(size_t n, const T& t) const
     {
-        return std::memcmp(&tag[n * TAG_BYTES], t.begin() + MAIN_BYTES, TAG_BYTES) == 0 && std::memcmp(&main[n * TOTAL_MAIN_BYTES], t.begin(), MAIN_BYTES) == 0;
+        return tag[n] == *(t.begin() + 31) && std::memcmp(&main[n * 31], t.begin(), 31) == 0;
     }
     inline void insert_at(size_t n, const T& t)
     {
-        std::memcpy(&tag[n * TAG_BYTES], t.begin() + MAIN_BYTES, TAG_BYTES);
-        std::memcpy(&main[n * TOTAL_MAIN_BYTES], t.begin(), MAIN_BYTES);
+        tag[n] = *(t.begin() + 31);
+        std::memcpy(&main[n * 31], t.begin(), 31);
     }
 
     inline void swap_at(size_t n, T& t)
     {
         uint8_t* ptr = t.begin();
-        uint8_t* end = ptr + MAIN_BYTES;
-        for (uint8_t* q = (&main[n * TOTAL_MAIN_BYTES]); ptr != end; ++q, ++ptr)
+        uint8_t* end = ptr + 31;
+        for (uint8_t* q = (&main[n * 31]); ptr != end; ++q, ++ptr)
             std::swap(*q, *ptr);
-        end += TAG_BYTES;
-        for (uint8_t* q = (&tag[n * TAG_BYTES]); ptr != end; ++q, ++ptr)
-            std::swap(*q, *ptr);
+        std::swap(tag[n], *(end));
     }
 
     inline void fill_at(size_t n, T& t) const
     {
-        std::memcpy(t.begin(), &main[n * TOTAL_MAIN_BYTES], MAIN_BYTES);
-        std::memcpy(t.begin() + MAIN_BYTES, &tag[n * TAG_BYTES], TAG_BYTES);
+        std::memcpy(t.begin(), &main[n * 31], 31);
+        *(t.begin() + 31) = tag[n];
     }
 };
 
-template <typename T, bool RemovePadding>
-struct dual_vector<T, 0, RemovePadding> {
-    static const size_t MAIN_BYTES = sizeof(T);
-    static const size_t TAG_BYTES = 0;
-    typedef std::vector<T> underlying_storage;
-    underlying_storage main;
-    dual_vector() : main(){};
-    inline void resize(size_t n)
-    {
-        main.reserve(n);
-        T def{};
-        for (auto i = 0; i < n; ++i)
-            main.push_back(T(def));
-    }
-    inline void shrink_to_fit()
-    {
-        main.shrink_to_fit();
-    }
-    inline bool compare_at(size_t n, const T& t) const
-    {
-        return main[n] == t;
-    }
-    inline void insert_at(size_t n, const T& t)
-    {
-        main[n] = t;
-    }
-
-    inline void swap_at(size_t n, T& t)
-    {
-        std::swap(main[n], t);
-    }
-
-    inline void fill_at(size_t n, T& t) const
-    {
-        t = main[n];
-    }
-};
 /**
- * garbage_collect_flag is a subtype of a std::atomic<uint8_t> 
+ * garbage_collect_flag is a subtype of a std::atomic<uint8_t>
  * with the benfit that it can be copy constructed, allowing
- * dynamically initialized vectors to be used. This means 
+ * dynamically initialized vectors to be used. This means
  * it is not entirely thread safe if the container (e.g., std::vector)
  * resizes after startup.
  */
@@ -153,25 +108,21 @@ public:
         return (1 << (s % 8)) & v[s / 8].load(std::memory_order_relaxed);
     }
 };
-template <typename Key, typename Hash, uint8_t HashLimit = 10, uint8_t TagSize = 1, bool RemovePadding = true>
+template <typename Key, typename Hash>
 class CuckooCache
 {
     static_assert(sizeof(Key) == 32, "Invalid Key Size.");
 
 public:
-    // (Most Of) The standard container typedefs, for compatibility, along with
-    // a few custom ones pertaining to this class (made private)
-    typedef Key key_type;
-    typedef key_type value_type;
+    typedef Key value_type;
 
 private:
-    typedef dual_vector<value_type, TagSize, RemovePadding> underlying_storage;
+    typedef dual_vector<value_type> underlying_storage;
     typedef uint8_t recursion_limit_type;
 
 public:
     typedef uint32_t size_type;
     typedef Hash hasher;
-    static const uint8_t hash_limit = HashLimit;
 
 private:
     /** set stores all the keys */
@@ -214,7 +165,7 @@ public:
      * It drops the last element if it runs out of depth.
      *
      * Note: We trample on the passed in key to avoid having to copy any memory
-     * needlessly. There is no use case which actually needs that key to be 
+     * needlessly. There is no use case which actually needs that key to be
      * preserved
      *
      * TODO: This is technically sub optimal because we swap onto the last hash
@@ -237,7 +188,7 @@ public:
             size_type h{0};
             // Look at each hash location and put it in if
             // we find a collected location
-            for (uint8_t n = 0; n < hash_limit; ++n) {
+            for (uint8_t n = 0; n < 10; ++n) {
                 h = compute_hash(t, n);
                 // In this case, it is safe to just replace the old data
                 if (flags.is_marked(h)) {
@@ -252,7 +203,7 @@ public:
     }
 
     /* find iterates through the hash locations for a given key
-     * and checks to see if it is present. 
+     * and checks to see if it is present.
      *
      * Find does not check garbage collected state, so
      *
@@ -267,7 +218,7 @@ public:
      */
     inline size_type find(const value_type& t) const
     {
-        for (uint8_t n = 0; n < hash_limit; ++n) {
+        for (uint8_t n = 0; n < 10; ++n) {
             size_type h = compute_hash(t, n);
             if (set.compare_at(h, t))
                 return h;
@@ -279,7 +230,7 @@ public:
      */
     inline bool contains(const value_type& t) const
     {
-        for (auto i = 0; i < hash_limit; ++i)
+        for (auto i = 0; i < 10; ++i)
             if (set.compare_at(compute_hash(t, i), t))
                 return true;
         return false;
@@ -354,12 +305,9 @@ public:
      */
     void resize_bytes(size_t bytes)
     {
-        auto bytes_free = bytes - sizeof(CuckooCache<key_type, hasher>);
+        auto bytes_free = bytes - sizeof(CuckooCache<value_type, hasher>);
         auto n = 0;
-        if (RemovePadding)
-            n = (8 * bytes_free) / (8 * sizeof(value_type) + sizeof(std::atomic<uint8_t>));
-        else
-            n = (8 * bytes_free) / (8 * (sizeof(value_type) + TagSize) + sizeof(std::atomic<uint8_t>));
+        n = (8 * bytes_free) / (8 * sizeof(value_type) + sizeof(std::atomic<uint8_t>));
         resize(n);
     }
 
