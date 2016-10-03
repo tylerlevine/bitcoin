@@ -9,6 +9,7 @@
 #include "crypto/ripemd160.h"
 #include "crypto/sha256.h"
 #include "prevector.h"
+#include "remote_vector.h"
 #include "serialize.h"
 #include "uint256.h"
 #include "version.h"
@@ -122,6 +123,12 @@ inline uint160 Hash160(const std::vector<unsigned char>& vch)
 /** Compute the 160-bit hash of a vector. */
 template<unsigned int N>
 inline uint160 Hash160(const prevector<N, unsigned char>& vch)
+{
+    return Hash160(vch.begin(), vch.end());
+}
+/** Compute the 160-bit hash of a vector. */
+template<size_t N>
+inline uint160 Hash160(const remote_vector<unsigned char, N>& vch)
 {
     return Hash160(vch.begin(), vch.end());
 }

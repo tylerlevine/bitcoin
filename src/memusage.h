@@ -93,6 +93,12 @@ static inline size_t DynamicUsage(const prevector<N, X, S, D>& v)
     return MallocUsage(v.allocated_memory());
 }
 
+template<typename X, size_t N>
+static inline size_t DynamicUsage(const remote_vector<X, N>& v)
+{
+    return MallocUsage(v.capacity()*sizeof(X) + 3*sizeof(X*));
+}
+
 template<typename X, typename Y>
 static inline size_t DynamicUsage(const std::set<X, Y>& s)
 {

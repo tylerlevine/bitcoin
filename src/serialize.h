@@ -20,7 +20,9 @@
 #include <utility>
 #include <vector>
 
+#include "remote_vector.h"
 #include "prevector.h"
+#include "script/script.h"
 
 static const unsigned int MAX_SIZE = 0x02000000;
 
@@ -398,6 +400,17 @@ public:
         pbegin = (char*)begin_ptr(v);
         pend = (char*)end_ptr(v);
     }
+    template <typename T, size_t N>
+    explicit CFlatData(remote_vector<T, N> &v)
+    {
+        pbegin = (char*)begin_ptr(v);
+        pend = (char*)end_ptr(v);
+    }
+    explicit CFlatData(CScriptBase &v)
+    {
+        pbegin = (char*)begin_ptr(v);
+        pend = (char*)end_ptr(v);
+    }
     char* begin() { return pbegin; }
     const char* begin() const { return pbegin; }
     char* end() { return pend; }
@@ -528,6 +541,19 @@ template<typename Stream, unsigned int N, typename T> void Unserialize_impl(Stre
 template<typename Stream, unsigned int N, typename T, typename V> void Unserialize_impl(Stream& is, prevector<N, T>& v, int nType, int nVersion, const V&);
 template<typename Stream, unsigned int N, typename T> inline void Unserialize(Stream& is, prevector<N, T>& v, int nType, int nVersion);
 
+/**
+ * remote_vector
+ * remote_vectors of unsigned char are a special case and are intended to be serialized as a single opaque blob.
+ */
+template<typename T, size_t N> unsigned int GetSerializeSize_impl(const remote_vector<T, N>& v, int nType, int nVersion, const unsigned char&);
+template<typename T, size_t N, typename V> unsigned int GetSerializeSize_impl(const remote_vector<T, N>& v, int nType, int nVersion, const V&);
+template<typename T, size_t N> inline unsigned int GetSerializeSize(const remote_vector<T, N>& v, int nType, int nVersion);
+template<typename Stream, typename T, size_t N> void Serialize_impl(Stream& os, const remote_vector<T, N>& v, int nType, int nVersion, const unsigned char&);
+template<typename Stream, typename T, size_t N, typename V> void Serialize_impl(Stream& os, const remote_vector<T, N>& v, int nType, int nVersion, const V&);
+template<typename Stream, typename T, size_t N> inline void Serialize(Stream& os, const remote_vector<T, N>& v, int nType, int nVersion);
+template<typename Stream, typename T, size_t N> void Unserialize_impl(Stream& is, remote_vector<T, N>& v, int nType, int nVersion, const unsigned char&);
+template<typename Stream, typename T, size_t N, typename V> void Unserialize_impl(Stream& is, remote_vector<T, N>& v, int nType, int nVersion, const V&);
+template<typename Stream, typename T, size_t N> inline void Unserialize(Stream& is, remote_vector<T, N>& v, int nType, int nVersion);
 /**
  * vector
  * vectors of unsigned char are a special case and are intended to be serialized as a single opaque blob.
@@ -712,6 +738,93 @@ inline void Unserialize(Stream& is, prevector<N, T>& v, int nType, int nVersion)
 }
 
 
+/**
+ * remote_vector
+ */
+template<typename T, size_t N>
+unsigned int GetSerializeSize_impl(const remote_vector<T, N>& v, int nType, int nVersion, const unsigned char&)
+{
+    return (GetSizeOfCompactSize(v.size()) + v.size() * sizeof(T));
+}
+
+template<typename T, size_t N, typename V>
+unsigned int GetSerializeSize_impl(const remote_vector<T, N>& v, int nType, int nVersion, const V&)
+{
+    unsigned int nSize = GetSizeOfCompactSize(v.size());
+    for (typename remote_vector<T, N>::const_iterator vi = v.begin(); vi != v.end(); ++vi)
+        nSize += GetSerializeSize((*vi), nType, nVersion);
+    return nSize;
+}
+
+template<typename T, size_t N>
+inline unsigned int GetSerializeSize(const remote_vector<T, N>& v, int nType, int nVersion)
+{
+    return GetSerializeSize_impl(v, nType, nVersion, T());
+}
+
+
+template<typename Stream, typename T, size_t N>
+void Serialize_impl(Stream& os, const remote_vector<T, N>& v, int nType, int nVersion, const unsigned char&)
+{
+    WriteCompactSize(os, v.size());
+    if (!v.empty())
+        os.write((char*)&v[0], v.size() * sizeof(T));
+}
+
+template<typename Stream, typename T, size_t N, typename V>
+void Serialize_impl(Stream& os, const remote_vector<T, N>& v, int nType, int nVersion, const V&)
+{
+    WriteCompactSize(os, v.size());
+    for (typename remote_vector<T, N>::const_iterator vi = v.begin(); vi != v.end(); ++vi)
+        ::Serialize(os, (*vi), nType, nVersion);
+}
+
+template<typename Stream, typename T, size_t N>
+inline void Serialize(Stream& os, const remote_vector<T, N>& v, int nType, int nVersion)
+{
+    Serialize_impl(os, v, nType, nVersion, T());
+}
+
+
+template<typename Stream, typename T, size_t N>
+void Unserialize_impl(Stream& is, remote_vector<T, N>& v, int nType, int nVersion, const unsigned char&)
+{
+    // Limit size per read so bogus size value won't cause out of memory
+    v.clear();
+    unsigned int nSize = ReadCompactSize(is);
+    unsigned int i = 0;
+    while (i < nSize)
+    {
+        unsigned int blk = std::min(nSize - i, (unsigned int)(1 + 4999999 / sizeof(T)));
+        v.resize(i + blk);
+        is.read((char*)&v[i], blk * sizeof(T));
+        i += blk;
+    }
+}
+
+template<typename Stream, typename T, size_t N, typename V>
+void Unserialize_impl(Stream& is, remote_vector<T, N>& v, int nType, int nVersion, const V&)
+{
+    v.clear();
+    unsigned int nSize = ReadCompactSize(is);
+    unsigned int i = 0;
+    unsigned int nMid = 0;
+    while (nMid < nSize)
+    {
+        nMid += 5000000 / sizeof(T);
+        if (nMid > nSize)
+            nMid = nSize;
+        v.resize(nMid);
+        for (; i < nMid; i++)
+            Unserialize(is, v[i], nType, nVersion);
+    }
+}
+
+template<typename Stream, typename T, size_t N>
+inline void Unserialize(Stream& is, remote_vector<T, N>& v, int nType, int nVersion)
+{
+    Unserialize_impl(is, v, nType, nVersion, T());
+}
 
 /**
  * vector
