@@ -40,11 +40,7 @@ namespace CuckooCache
  */
 class bit_packed_atomic_flags
 {
-    struct impl : std::atomic<uint8_t> {
-        impl() : std::atomic<uint8_t>(0xFF){};
-        impl(const impl& other) : std::atomic<uint8_t>(other.load()){};
-    };
-    std::unique_ptr<impl[]> mem;
+    std::unique_ptr<std::atomic<uint8_t>[]> mem;
 
 public:
     /** No default constructor as there must be some size */
@@ -58,7 +54,9 @@ public:
     {
         // pad out the size if needed
         size = (size + 7) / 8;
-        mem.reset(new impl[size]);
+        mem.reset(new std::atomic<uint8_t>[size]);
+        for (uint32_t i = 0; i < size; ++i)
+            mem[size].store(0xFF);
     };
 
     /** setup marks all entries and ensures that bit_packed_atomic_flags can store
@@ -71,19 +69,19 @@ public:
     }
 
     /** set sets an entry as discardable.  */
-    inline void set(uint32_t s)
+    inline void bit_set(uint32_t s)
     {
         mem[s >> 3].fetch_or(1 << (s & 7), std::memory_order_relaxed);
     }
 
     /**  unset marks an entry as something that should not be overwritten  */
-    inline void unset(uint32_t s)
+    inline void bit_unset(uint32_t s)
     {
         mem[s >> 3].fetch_and(~(1 << (s & 7)), std::memory_order_relaxed);
     }
 
     /** queries the set for discardability at n*/
-    inline bool is_set(uint32_t s)
+    inline bool bit_is_set(uint32_t s) const
     {
         return (1 << (s & 7)) & mem[s >> 3].load(std::memory_order_relaxed);
     }
@@ -121,22 +119,22 @@ public:
  *
  * Note on function names:
  *   - The name "allow_erase" is used because the real discard happens later.
- *   - The name "please_keep" is used because keys may be erased anyways on insert.
+ *   - The name "please_keep" is used because elements may be erased anyways on insert.
  *
- * @tparam Key should be a POD type that is 32-alignable
- * @tparam Hash should be a function/callable which takes a Key and an Offset and
+ * @tparam Element should be a POD type that is 32-alignable
+ * @tparam Hash should be a function/callable which takes a Element and an Offset and
  * extracts a hash from it. Should return high-entropy hashes for
  * Hash(k, 0) and Hash(k, 1).
  */
-template <typename Key, typename Hash>
+template <typename Element, typename Hash>
 class cache
 {
-    static_assert((sizeof(Key) % 32) == 0, "Invalid Key Size.");
+    static_assert((sizeof(Element) % 32) == 0, "Invalid Element Size.");
 
 public:
 private:
-    /** set stores all the keys */
-    std::vector<Key> set;
+    /** table stores all the elements */
+    std::vector<Element> table;
 
     /** The bit_packed_atomic_flags array is marked mutable because we want
      * garbage collection to be allowed to occur from const methods */
@@ -145,7 +143,7 @@ private:
     /** size stores the total available slots in the hash table */
     uint32_t size;
 
-    /** depth_limit determines how many keys insert should try to replace.
+    /** depth_limit determines how many elements insert should try to replace.
      * Should be set to log2(n)*/
     uint8_t depth_limit;
 
@@ -158,7 +156,7 @@ private:
     /** convenience for not having to write out the modulus everywhere.
      */
     template <uint8_t n>
-    inline uint32_t compute_hash(const Key& t) const
+    inline uint32_t compute_hash(const Element& t) const
     {
         return hash_function.template operator()<n>(t) % size;
     }
@@ -169,18 +167,18 @@ private:
         return ~(uint32_t)1;
     }
 
-    /** allow_erase marks the key at index n as discardable. Threadsafe
+    /** allow_erase marks the element at index n as discardable. Threadsafe
      * without any concurrent insert. */
     inline void allow_erase(uint32_t n) const
     {
-        collection_flags.set(n);
+        collection_flags.bit_set(n);
     }
 
-    /** please_keep marks the key at index n as an entry that should be kept.
+    /** please_keep marks the element at index n as an entry that should be kept.
      * Threadsafe without any concurrent insert. */
     inline void please_keep(uint32_t n) const
     {
-        collection_flags.unset(n);
+        collection_flags.bit_unset(n);
     }
 
 public:
@@ -188,7 +186,7 @@ public:
      * operations may segfault. By default, construct with 2
      * elements.
      */
-    cache() : set(), collection_flags(0), size(0), depth_limit(0), hash_function()
+    cache() : table(), collection_flags(0), size(0), depth_limit(0), hash_function()
     {
         setup(2);
     }
@@ -202,48 +200,47 @@ public:
         if (new_size == size)
             return;
         size = new_size;
-        set.resize(size);
+        table.resize(size);
         collection_flags.setup(size);
         depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(size))));
     }
 
     /** setup bytes is a convenience function which accounts for internal
      * memory usage when deciding how many elements to store. It isn't perfect
-     * because it doesn't account for MallocUsage of collection_flags or set.
+     * because it doesn't account for MallocUsage of collection_flags or table.
      * This difference is small/0, so we ignore it.
      */
     void setup_bytes(size_t bytes)
     {
-        size_t bytes_free = bytes - sizeof(cache<Key, Hash>);
+        size_t bytes_free = bytes - sizeof(cache<Element, Hash>);
         size_t n = 0;
-        n = (8 * bytes_free) / (8 * sizeof(Key) + sizeof(std::atomic<uint8_t>));
+        n = (8 * bytes_free) / (8 * sizeof(Element) + sizeof(std::atomic<uint8_t>));
         setup(n);
     }
 
     /** insert loops at most depth_limit times trying to insert a hash
-     * at various locations in the set via a variant of the Cuckoo Algorithm
+     * at various locations in the table via a variant of the Cuckoo Algorithm
      * with two hash locations.
      *
      * It drops the last tried element if it runs out of depth before
      * encountering an open slot.
      *
      */
-    inline void insert(const Key& keyIn)
+    inline void insert(Element k)
     {
-        Key k = keyIn;
         uint32_t last_loc = invalid();
         uint32_t locs[2] = {compute_hash<0>(k), compute_hash<1>(k)};
-        // Make sure we have not already inserted this key
+        // Make sure we have not already inserted this element
         // If we have, make sure that it does not get deleted
         for (uint32_t loc : locs)
-            if (set[loc] == k)
+            if (table[loc] == k)
                 return please_keep(loc);
         for (uint8_t depth = 0; depth < depth_limit; ++depth) {
             // First try to insert to an empty slot, if one exists
             for (uint32_t loc : locs) {
-                if (!collection_flags.is_set(loc))
+                if (!collection_flags.bit_is_set(loc))
                     continue;
-                set[loc] = k;
+                table[loc] = std::move(k);
                 please_keep(loc);
                 return;
             }
@@ -254,9 +251,12 @@ public:
             * 2) Second iter, last_loc == locs[0] so will go to locs[1]
             *
             * This prevents moving the element we just put in.
+            *
+            * The swap is not a move -- we must switch onto the evicted element
+            * for the next iteration.
             */
             last_loc = last_loc == locs[0] ? locs[1] : locs[0];
-            std::swap(set[last_loc], k);
+            std::swap(table[last_loc], k);
 
             // Recompute the locs -- unfortunately happens one too many times!
             locs[0] = compute_hash<0>(k);
@@ -264,7 +264,7 @@ public:
         }
     }
 
-    /* contains iterates through the hash locations for a given key
+    /* contains iterates through the hash locations for a given element
      * and checks to see if it is present.
      *
      * contains does not check garbage collected state (in other words,
@@ -281,18 +281,18 @@ public:
      * contains returns a bool set true if the element was found.
      */
 
-    inline bool contains(const Key& k, const bool erase) const
+    inline bool contains(const Element& k, const bool erase) const
     {
         if (erase) {
             uint32_t locs[2] = {compute_hash<0>(k), compute_hash<1>(k)};
             for (uint32_t loc : locs)
-                if (set[loc] == k) {
+                if (table[loc] == k) {
                     allow_erase(loc);
                     return true;
                 }
             return false;
         } else
-            return set[compute_hash<0>(k)] == k || set[compute_hash<1>(k)] == k;
+            return table[compute_hash<0>(k)] == k || table[compute_hash<1>(k)] == k;
     }
 };
 }

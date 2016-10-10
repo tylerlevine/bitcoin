@@ -19,6 +19,10 @@ namespace {
 /**
  * We're hashing a nonce into the entries themselves, so we don't need extra
  * blinding in the set hash computation.
+ *
+ * This may exhibit platform endian dependent behavior but because these are
+ * nonced hashes (random) and this state is only ever used locally it is safe.
+ * All that matter is local consistency.
  */
 class SignatureCacheHasher
 {
@@ -26,7 +30,7 @@ public:
     template <uint8_t hash_select>
     uint32_t operator()(const uint256& key) const
     {
-        static_assert(hash_select < 8, "SignatureCacheHasher only has 8 hashes available.");
+        static_assert(hash_select <8, "SignatureCacheHasher only has 8 hashes available.");
         uint32_t u;
         std::memcpy(&u, key.begin()+4*hash_select, 4);
         return u;
@@ -78,6 +82,8 @@ public:
         size_t nMaxCacheSize = GetArg("-maxsigcachesize", DEFAULT_MAX_SIG_CACHE_SIZE) * ((size_t) 1 << 20);
         if (nMaxCacheSize <= 0) return;
         boost::unique_lock<boost::shared_mutex> lock(cs_sigcache);
+        // This can later be refactored to happen once at initialization time
+        // setup_bytes is idempotent for a given nMaxCacheSize.
         setValid.setup_bytes(nMaxCacheSize);
         setValid.insert(entry);
     }
