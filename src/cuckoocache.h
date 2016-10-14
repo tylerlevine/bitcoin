@@ -168,6 +168,18 @@ private:
      * garbage collection to be allowed to occur from const methods */
     mutable bit_packed_atomic_flags collection_flags;
 
+    /** generation_flags tracks how recently an element was inserted into
+     * the cache. true denotes recent, false denotes not-recent. See insert()
+     * method for full semantics.
+     */
+    mutable std::vector<bool> generation_flags;
+
+    /** generation_heuristic is used to determine when a generation might be
+     * aged. It is decremented on insert and set to be max(1, size/4) when it
+     * reaches zero.
+     */
+    uint32_t generation_heuristic;
+
     /** size stores the total available slots in the hash table */
     uint32_t size;
 
@@ -224,7 +236,7 @@ public:
      * operations may segfault. By default, construct with 2
      * elements.
      */
-    cache() : table(), collection_flags(0), size(0), depth_limit(0), hash_function()
+    cache() : table(), collection_flags(0), generation_flags(), generation_heuristic(),  size(0), depth_limit(0), hash_function()
     {
         setup(2);
     }
@@ -246,6 +258,8 @@ public:
         size = new_size;
         table.resize(size);
         collection_flags.setup(size);
+        generation_flags.resize(size);
+        generation_heuristic = std::max((uint32_t)1, size / 4);
         depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(size))));
     }
 
@@ -261,7 +275,7 @@ public:
     {
         size_t bytes_free = bytes - sizeof(cache<Element, Hash>);
         size_t n = 0;
-        n = (8 * bytes_free) / (8 * sizeof(Element) + sizeof(std::atomic<uint8_t>));
+        n = (8 * bytes_free) / (8 * sizeof(Element) + sizeof(std::atomic<uint8_t>) + sizeof(bool));
         setup(n);
     }
 
@@ -287,13 +301,37 @@ public:
      */
     inline void insert(Element e)
     {
+        if ((--generation_heuristic) == 0) {
+            // reset the generation_heuristic
+            generation_heuristic = std::max((uint32_t) 1, size / 4);
+            // count the number of elements from the latest generation which
+            // have not been erased.
+            uint32_t count = 0;
+            for (uint32_t i = 0; i < size; ++i)
+                count += generation_flags[i] && !collection_flags.bit_is_set(i);
+            // If we have erased less than our generation_heuristic, then
+            // allow_erase on all elements in the old generation (marked false)
+            // and move all elements in the current generation to the old
+            // generation but do not call allow_erase on their indices.
+            if (count > generation_heuristic) {
+                for (std::vector<bool>::iterator it = generation_flags.begin(); it != generation_flags.end(); ++it)
+                    if (*it)
+                        *it = false;
+                    else
+                        allow_erase(it - generation_flags.begin());
+            }
+        }
         uint32_t last_loc = invalid();
+        bool last_generation = true;
         uint32_t locs[2] = {compute_hash<0>(e), compute_hash<1>(e)};
         // Make sure we have not already inserted this element
         // If we have, make sure that it does not get deleted
         for (uint32_t loc : locs)
-            if (table[loc] == e)
-                return please_keep(loc);
+            if (table[loc] == e) {
+                please_keep(loc);
+                generation_flags[loc] = last_generation;
+                return;
+            }
         for (uint8_t depth = 0; depth < depth_limit; ++depth) {
             // First try to insert to an empty slot, if one exists
             for (uint32_t loc : locs) {
@@ -301,6 +339,7 @@ public:
                     continue;
                 table[loc] = std::move(e);
                 please_keep(loc);
+                generation_flags[loc] = last_generation;
                 return;
             }
             /** Swap with the element at the location that was
@@ -316,6 +355,10 @@ public:
             */
             last_loc = last_loc == locs[0] ? locs[1] : locs[0];
             std::swap(table[last_loc], e);
+            // Can't std::swap a std::vector<bool>::reference and a bool&.
+            bool generation = last_generation;
+            last_generation = generation_flags[last_loc];
+            generation_flags[last_loc] = generation;
 
             // Recompute the locs -- unfortunately happens one too many times!
             locs[0] = compute_hash<0>(e);
