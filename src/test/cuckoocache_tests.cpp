@@ -305,4 +305,70 @@ BOOST_AUTO_TEST_CASE(cuckoocache_erase_parallel_ok)
     test_cache_erase_parallel<CuckooCache::cache<uint256, uint256Hasher>>(megabytes);
 }
 
+
+
+template <typename Cache>
+void test_cache_generations()
+{
+    seed_insecure_rand(true);
+    struct activity {
+        std::vector<uint256> reads;
+        activity(uint32_t n_insert, Cache& c) : reads() {
+            std::vector<uint256> inserts;
+            inserts.resize(n_insert);
+            reads.reserve(n_insert/2);
+            for (uint32_t i = 0; i < n_insert; ++i) {
+                uint32_t* ptr = (uint32_t*)inserts[i].begin();
+                for (uint8_t j = 0; j < 8; ++j)
+                    *(ptr++) = insecure_rand();
+            }
+            for (uint32_t i = 0; i < n_insert/4; ++i)
+                reads.push_back(inserts[i]);
+            for (uint32_t i = n_insert - (n_insert/4); i < n_insert; ++i)
+                reads.push_back(inserts[i]);
+            for (auto h : inserts)
+                c.insert(h);
+        }
+    };
+
+    const uint32_t BLOCK_SIZE = 10000;
+    // 35 was experimentally picked for these parameters
+    const uint32_t WINDOW_SIZE = 35;
+    const uint32_t POP_AMOUNT = (BLOCK_SIZE/WINDOW_SIZE)/2;
+    const double load = 10;
+    const size_t megabytes = 40;
+    const size_t bytes = megabytes * (1 << 20);
+    const uint32_t n_insert = static_cast<uint32_t>(load * (bytes / sizeof(uint256)));
+
+    std::vector<activity> hashes;
+    Cache set{};
+    set.setup_bytes(bytes);
+    hashes.reserve(n_insert/BLOCK_SIZE);
+    std::deque<activity> last_few;
+    uint32_t out_of_tight_tolerance = 0;
+    uint32_t total = n_insert/BLOCK_SIZE;
+    for (uint32_t i = 0; i < total; ++i) {
+        if (last_few.size() == WINDOW_SIZE)
+            last_few.pop_front();
+        last_few.emplace_back(BLOCK_SIZE, set);
+        uint32_t count = 0;
+        for (auto& act : last_few)
+            for (uint32_t k = 0; k < POP_AMOUNT; ++k) {
+                count += set.contains(act.reads.back(), true);
+                act.reads.pop_back();
+            }
+        double hit = (double(count))/(last_few.size() * POP_AMOUNT);
+        // Loose Check that we're within 10% of perfect
+        BOOST_CHECK_CLOSE(hit, 1.0, 10.0);
+        // Tighter check of number of times we are more than a percent away.
+        out_of_tight_tolerance += hit < 0.99;
+    }
+    // Check that being out of tolerance happens less than 1% of the time
+    BOOST_CHECK(double(out_of_tight_tolerance)/double(total) < 0.01);
+}
+BOOST_AUTO_TEST_CASE(cuckoocache_generations)
+{
+    test_cache_generations<CuckooCache::cache<uint256, uint256Hasher>>();
+}
+
 BOOST_AUTO_TEST_SUITE_END();
