@@ -164,12 +164,36 @@ private:
     /** table stores all the elements */
     std::vector<Element> table;
 
+    /** size stores the total available slots in the hash table */
+    uint32_t size;
+
     /** The bit_packed_atomic_flags array is marked mutable because we want
      * garbage collection to be allowed to occur from const methods */
     mutable bit_packed_atomic_flags collection_flags;
 
-    /** size stores the total available slots in the hash table */
-    uint32_t size;
+    /** epoch_flags tracks how recently an element was inserted into
+     * the cache. true denotes recent, false denotes not-recent. See insert()
+     * method for full semantics.
+     */
+    mutable std::vector<bool> epoch_flags;
+
+    /** epoch_heuristic_counter is used to determine when a epoch
+     * might be aged & an expensive scan should be done.
+     * epoch_heuristic_counter is incremented on insert and reset to the
+     * new number of inserts which would cause the epoch to reach
+     * epoch_size when it reaches zero.
+     */
+    uint32_t epoch_heuristic_counter;
+
+    /** epoch_size is set to be the number of elements supposed to be in a
+     * epoch. When the number of non-erased elements in a epoch
+     * exceeds epoch_size, a new epoch should be started and all
+     * current entries demoted. epoch_size is set to be 30% of size because
+     * we want to keep load around 60%, and we support 3 epochs at once --
+     * one "dead" which has been erased, one "dying" which has been marked to be
+     * erased next, and one "living" which new inserts add to.
+     */
+    uint32_t epoch_size;
 
     /** depth_limit determines how many elements insert should try to replace.
      * Should be set to log2(n)*/
@@ -219,17 +243,57 @@ private:
         collection_flags.bit_unset(n);
     }
 
+    /** epoch_check handles the changing of epochs for elements stored in the
+     * cache. epoch_check should be run before every insert.
+     *
+     * First, epoch_check decrements and checks the cheap heuristic, and then does
+     * a more expensive scan if the cheap heuristic runs out. If the expensive
+     * scan suceeds, the epochs are aged and old elements are allow_erased. The
+     * cheap heuristic is reset to retrigger after the worst case growth of the
+     * current epoch's elements would exceed the epoch_size.
+     */
+    void epoch_check()
+    {
+        if ((--epoch_heuristic_counter) != 0)
+            return;
+        // count the number of elements from the latest epoch which
+        // have not been erased.
+        uint32_t epoch_unused_count = 0;
+        for (uint32_t i = 0; i < size; ++i)
+            epoch_unused_count += epoch_flags[i] &&
+                !collection_flags.bit_is_set(i);
+        // If we have erased less than our epoch_size, then allow_erase on
+        // all elements in the old epoch (marked false) and move all
+        // elements in the current epoch to the old epoch but do not call
+        // allow_erase on their indices.
+        if (epoch_unused_count >= epoch_size) {
+            for (uint32_t i = 0; i < size; ++i)
+                if (epoch_flags[i])
+                    epoch_flags[i] = false;
+                else
+                    allow_erase(i);
+            epoch_heuristic_counter = epoch_size;
+        } else
+            // reset the epoch_heuristic_counter to next do a scan when worst
+            // case behavior (no intermittent erases) would exceed epoch size,
+            // with a reasonable minimum scan size.
+            epoch_heuristic_counter = std::max(1u, std::max(epoch_size/16,
+                        epoch_size - std::min(epoch_size, epoch_unused_count)));
+    }
+
 public:
     /** You must always construct a cache with some elements, otherwise
      * operations may segfault. By default, construct with 2
      * elements.
      */
-    cache() : table(), collection_flags(0), size(0), depth_limit(0), hash_function()
+    cache() : table(), size(), collection_flags(0), epoch_flags(),
+    epoch_heuristic_counter(), epoch_size(), depth_limit(0), hash_function()
     {
         setup(2);
     }
 
-    /** setup adjusts the container to store new_size elements and clears the cache if new_size != size
+    /** setup adjusts the container to store new_size elements and clears the
+     * cache if new_size != size
      *
      * @param new_size the new number of elements to store
      * @post if new_size == size, no effect
@@ -246,13 +310,18 @@ public:
         size = new_size;
         table.resize(size);
         collection_flags.setup(size);
+        epoch_flags.resize(size);
+        // Set to 30% as described above
+        epoch_size = std::max((uint32_t) 1, (30*size)/100);
+        // Initially set to wait for a whole epoch
+        epoch_heuristic_counter = epoch_size;
         depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(size))));
     }
 
-    /** setup_bytes is a convenience function which accounts for internal
-     * memory usage when deciding how many elements to store. It isn't perfect
-     * because it doesn't account for MallocUsage of collection_flags or table.
-     * This difference is small or 0, so we ignore it.
+    /** setup_bytes is a convenience function which accounts for internal memory
+     * usage when deciding how many elements to store. It isn't perfect because
+     * it doesn't account for MallocUsage of collection_flags or table.  This
+     * difference is small or 0, so we ignore it.
      *
      * @param bytes the approximate number of bytes to use for this data
      * structure.
@@ -261,7 +330,7 @@ public:
     {
         size_t bytes_free = bytes - sizeof(cache<Element, Hash>);
         size_t n = 0;
-        n = (8 * bytes_free) / (8 * sizeof(Element) + sizeof(std::atomic<uint8_t>));
+        n = (8 * bytes_free) / (8 * sizeof(Element) + sizeof(std::atomic<uint8_t>) + sizeof(bool));
         setup(n);
     }
 
@@ -287,13 +356,18 @@ public:
      */
     inline void insert(Element e)
     {
+        epoch_check();
         uint32_t last_loc = invalid();
+        bool last_epoch = true;
         uint32_t locs[2] = {compute_hash<0>(e), compute_hash<1>(e)};
         // Make sure we have not already inserted this element
         // If we have, make sure that it does not get deleted
         for (uint32_t loc : locs)
-            if (table[loc] == e)
-                return please_keep(loc);
+            if (table[loc] == e) {
+                please_keep(loc);
+                epoch_flags[loc] = last_epoch;
+                return;
+            }
         for (uint8_t depth = 0; depth < depth_limit; ++depth) {
             // First try to insert to an empty slot, if one exists
             for (uint32_t loc : locs) {
@@ -301,6 +375,7 @@ public:
                     continue;
                 table[loc] = std::move(e);
                 please_keep(loc);
+                epoch_flags[loc] = last_epoch;
                 return;
             }
             /** Swap with the element at the location that was
@@ -316,6 +391,10 @@ public:
             */
             last_loc = last_loc == locs[0] ? locs[1] : locs[0];
             std::swap(table[last_loc], e);
+            // Can't std::swap a std::vector<bool>::reference and a bool&.
+            bool epoch = last_epoch;
+            last_epoch = epoch_flags[last_loc];
+            epoch_flags[last_loc] = epoch;
 
             // Recompute the locs -- unfortunately happens one too many times!
             locs[0] = compute_hash<0>(e);
