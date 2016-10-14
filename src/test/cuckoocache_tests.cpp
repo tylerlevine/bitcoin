@@ -203,15 +203,9 @@ void test_cache_erase(size_t megabytes)
     /** On just the fresh things, we should be getting near perfect (mul by 2
      * because we divided by n_insert not n_insert/2).
      *
-     * (We Check that our numbers are within 10% of expected)
+     * (We Check that our numbers are within 10.0% of perfect)
      */
     BOOST_CHECK_CLOSE(2 * hit_rate_fresh, 1.0, 10.0);
-    /** On the fresh or semi stale things, we should be getting 75% as they are
-     * that proportion of the sample.
-     *
-     * (We Check that our numbers are within 10% of expected)
-     */
-    BOOST_CHECK_CLOSE(hit_rate_fresh + hit_rate_stale, 0.75, 10.0);
 }
 
 BOOST_AUTO_TEST_CASE(cuckoocache_erase_ok)
@@ -301,15 +295,9 @@ void test_cache_erase_parallel(size_t megabytes)
     /** On just the fresh things, we should be getting near perfect (mul by 2
      * because we divided by n_insert not n_insert/2).
      *
-     * (We Check that our numbers are within 10% of expected)
+     * (We Check that our numbers are within 10.0% of perfect)
      */
     BOOST_CHECK_CLOSE(2 * hit_rate_fresh, 1.0, 10.0);
-    /** On the fresh or semi stale things, we should be getting 75% as they are
-     * that proportion of the sample.
-     *
-     * (We Check that our numbers are within 10% of expected)
-     */
-    BOOST_CHECK_CLOSE(hit_rate_fresh + hit_rate_stale, 0.75, 10.0);
 }
 BOOST_AUTO_TEST_CASE(cuckoocache_erase_parallel_ok)
 {
