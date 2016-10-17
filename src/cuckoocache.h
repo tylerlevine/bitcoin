@@ -365,7 +365,7 @@ public:
         total_boot ++;
         uint32_t last_loc = invalid();
         bool last_epoch = true;
-        uint32_t locs[2] = {compute_hash<0>(e), compute_hash<1>(e)};
+        uint32_t locs[3] = {compute_hash<0>(e), compute_hash<1>(e), compute_hash<2>(e)};
         // Make sure we have not already inserted this element
         // If we have, make sure that it does not get deleted
         for (uint32_t loc : locs)
@@ -395,7 +395,12 @@ public:
             * The swap is not a move -- we must switch onto the evicted element
             * for the next iteration.
             */
-            last_loc = last_loc == locs[0] ? locs[1] : locs[0];
+            if (last_loc == locs[0])
+                last_loc = locs[1];
+            else if (last_loc == locs[1])
+                last_loc = locs[2];
+            else
+                last_loc = locs[0];
             std::swap(table[last_loc], e);
             // Can't std::swap a std::vector<bool>::reference and a bool&.
             bool epoch = last_epoch;
@@ -405,6 +410,7 @@ public:
             // Recompute the locs -- unfortunately happens one too many times!
             locs[0] = compute_hash<0>(e);
             locs[1] = compute_hash<1>(e);
+            locs[2] = compute_hash<2>(e);
         }
         ++counter_boot; 
     }
@@ -437,7 +443,7 @@ public:
     inline bool contains(const Element& e, const bool erase) const
     {
         if (erase) {
-            uint32_t locs[2] = {compute_hash<0>(e), compute_hash<1>(e)};
+            uint32_t locs[3] = {compute_hash<0>(e), compute_hash<1>(e), compute_hash<2>(e)};
             for (uint32_t loc : locs)
                 if (table[loc] == e) {
                     allow_erase(loc);
@@ -445,7 +451,7 @@ public:
                 }
             return false;
         } else
-            return table[compute_hash<0>(e)] == e || table[compute_hash<1>(e)] == e;
+            return table[compute_hash<0>(e)] == e || table[compute_hash<1>(e)] == e || table[compute_hash<2>(e)] == e;
     }
 };
 }
