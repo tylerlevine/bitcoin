@@ -362,12 +362,16 @@ void test_cache_generations()
         BOOST_CHECK_CLOSE(hit, 1.0, 10.0);
         // Tighter check of number of times we are more than a percent away.
         out_of_tight_tolerance += hit < 0.99;
+        BOOST_TEST_MESSAGE(hit);
+        BOOST_TEST_MESSAGE("Booted: " << double(set.counter_boot) / double(set.total_boot) << "   == " << set.counter_boot << "  / " <<set.total_boot);
     }
     // Check that being out of tolerance happens less than 1% of the time
     BOOST_CHECK(double(out_of_tight_tolerance)/double(total) < 0.01);
+    BOOST_TEST_MESSAGE(double(out_of_tight_tolerance)/double(total));
 }
 BOOST_AUTO_TEST_CASE(cuckoocache_generations)
 {
+    fPrintToConsole = true;
     test_cache_generations<CuckooCache::cache<uint256, uint256Hasher>>();
 }
 

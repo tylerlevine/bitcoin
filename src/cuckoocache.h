@@ -11,6 +11,7 @@
 #include <cmath>
 #include <memory>
 #include <vector>
+#include "util.h"
 
 
 /** namespace CuckooCache provides high performance cache primitives
@@ -272,6 +273,7 @@ private:
                     epoch_flags[i] = false;
                 else
                     allow_erase(i);
+            LogPrintf("Epoch Cleared: unused(%lu) e_size %lu\n", epoch_unused_count, epoch_size);
             epoch_heuristic_counter = epoch_size;
         } else
             // reset the epoch_heuristic_counter to next do a scan when worst
@@ -279,6 +281,7 @@ private:
             // with a reasonable minimum scan size.
             epoch_heuristic_counter = std::max(1u, std::max(epoch_size/16,
                         epoch_size - std::min(epoch_size, epoch_unused_count)));
+        LogPrintf("Epoch Status: unused(%lu) new heuristic %lu\n", epoch_unused_count, epoch_heuristic_counter);
     }
 
 public:
@@ -354,9 +357,12 @@ public:
      * table, the entry attempted to be inserted is evicted.
      *
      */
+    size_t counter_boot = 0;
+    size_t total_boot = 0;
     inline void insert(Element e)
     {
         epoch_check();
+        total_boot ++;
         uint32_t last_loc = invalid();
         bool last_epoch = true;
         uint32_t locs[2] = {compute_hash<0>(e), compute_hash<1>(e)};
@@ -400,6 +406,7 @@ public:
             locs[0] = compute_hash<0>(e);
             locs[1] = compute_hash<1>(e);
         }
+        ++counter_boot; 
     }
 
     /* contains iterates through the hash locations for a given element
