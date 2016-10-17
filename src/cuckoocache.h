@@ -135,7 +135,7 @@ public:
  *
  *  Synchronization Free Operations:
  *      - invalid()
- *      - compute_hash()
+ *      - compute_hashes()
  *
  * User Must Guarantee:
  *
@@ -188,7 +188,7 @@ private:
     /** epoch_size is set to be the number of elements supposed to be in a
      * epoch. When the number of non-erased elements in a epoch
      * exceeds epoch_size, a new epoch should be started and all
-     * current entries demoted. epoch_size is set to be 30% of size because
+     * current entries demoted. epoch_size is set to be 45% of size because
      * we want to keep load around 60%, and we support 3 epochs at once --
      * one "dead" which has been erased, one "dying" which has been marked to be
      * erased next, and one "living" which new inserts add to.
@@ -205,17 +205,22 @@ private:
      * */
     const Hash hash_function;
 
-    /** convenience for not having to write this out everywhere we compute a
-     * hash.
+    /** compute_hashes is convenience for not having to write out this
+     * expression everywhere we use the hash values of an Element.
      *
-     * @tparam hash_select the hash position
-     * @param e the element whose hash will be returned
-     * @returns a deterministic hash of type unint32_t derived from e.
+     * @param e the element whose hashes will be returned
+     * @returns std::array<uint32_t, 8> of deterministic hashes derived from e
      */
-    template <uint8_t hash_select>
-    inline uint32_t compute_hash(const Element& e) const
+    inline std::array<uint32_t, 8> compute_hashes(const Element& e) const
     {
-        return hash_function.template operator()<hash_select>(e) % size;
+        return {hash_function.template operator()<0>(e) % size,
+                hash_function.template operator()<1>(e) % size,
+                hash_function.template operator()<2>(e) % size,
+                hash_function.template operator()<3>(e) % size,
+                hash_function.template operator()<4>(e) % size,
+                hash_function.template operator()<5>(e) % size,
+                hash_function.template operator()<6>(e) % size,
+                hash_function.template operator()<7>(e) % size};
     }
 
     /* end
@@ -311,8 +316,8 @@ public:
         table.resize(size);
         collection_flags.setup(size);
         epoch_flags.resize(size);
-        // Set to 30% as described above
-        epoch_size = std::max((uint32_t) 1, (30*size)/100);
+        // Set to 45% as described above
+        epoch_size = std::max((uint32_t) 1, (45*size)/100);
         // Initially set to wait for a whole epoch
         epoch_heuristic_counter = epoch_size;
         depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(size))));
@@ -359,7 +364,7 @@ public:
         epoch_check();
         uint32_t last_loc = invalid();
         bool last_epoch = true;
-        uint32_t locs[2] = {compute_hash<0>(e), compute_hash<1>(e)};
+        std::array<uint32_t, 8> locs = compute_hashes(e);
         // Make sure we have not already inserted this element
         // If we have, make sure that it does not get deleted
         for (uint32_t loc : locs)
@@ -389,7 +394,7 @@ public:
             * The swap is not a move -- we must switch onto the evicted element
             * for the next iteration.
             */
-            last_loc = last_loc == locs[0] ? locs[1] : locs[0];
+            last_loc = locs[(1+(std::find(locs.begin(), locs.end(), last_loc) - locs.begin())) % 8];
             std::swap(table[last_loc], e);
             // Can't std::swap a std::vector<bool>::reference and a bool&.
             bool epoch = last_epoch;
@@ -397,8 +402,7 @@ public:
             epoch_flags[last_loc] = epoch;
 
             // Recompute the locs -- unfortunately happens one too many times!
-            locs[0] = compute_hash<0>(e);
-            locs[1] = compute_hash<1>(e);
+            locs = compute_hashes(e);
         }
     }
 
@@ -429,17 +433,17 @@ public:
      */
     inline bool contains(const Element& e, const bool erase) const
     {
-        if (erase) {
-            uint32_t locs[2] = {compute_hash<0>(e), compute_hash<1>(e)};
-            for (uint32_t loc : locs)
-                if (table[loc] == e) {
+
+        std::array<uint32_t, 8> locs = compute_hashes(e);
+        for (uint32_t loc : locs)
+            if (table[loc] == e) {
+                if (erase) 
                     allow_erase(loc);
-                    return true;
-                }
-            return false;
-        } else
-            return table[compute_hash<0>(e)] == e || table[compute_hash<1>(e)] == e;
+                return true;
+            }
+        return false;
     }
+
 };
 }
 
