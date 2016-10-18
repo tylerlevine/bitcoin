@@ -10,6 +10,7 @@
 #include "random.h"
 #include "uint256.h"
 #include "util.h"
+#include "crypto/blake2b.h"
 
 #include <boost/thread.hpp>
 #include <boost/unordered_set.hpp>
@@ -52,7 +53,7 @@ public:
     void
     ComputeEntry(uint256& entry, const uint256 &hash, const std::vector<unsigned char>& vchSig, const CPubKey& pubkey)
     {
-        CSHA256().Write(nonce.begin(), 32).Write(hash.begin(), 32).Write(&pubkey[0], pubkey.size()).Write(&vchSig[0], vchSig.size()).Finalize(entry.begin());
+        Blake2B().Write(nonce.begin(), 32).Write(hash.begin(), 32).Write(&pubkey[0], pubkey.size()).Write(&vchSig[0], vchSig.size()).Finalize(entry.begin());
     }
 
     bool
