@@ -22,6 +22,7 @@
  *  using BOOST_CHECK_CLOSE to fail.
  *
  */
+FastRandomContext insecure_rand(true);
 
 BOOST_AUTO_TEST_SUITE(cuckoocache_tests);
 /** Arbitrarily selected Hit Rate threshold that happens to work for these tests
@@ -37,7 +38,7 @@ void insecure_GetRandHash(uint256& t)
 {
     uint32_t* ptr = (uint32_t*)t.begin();
     for (uint8_t j = 0; j < 8; ++j)
-        *(ptr++) = insecure_rand();
+        *(ptr++) = insecure_rand.rand32();
 }
 
 /** Definition copied from /src/script/sigcache.cpp
@@ -62,7 +63,7 @@ public:
  */
 BOOST_AUTO_TEST_CASE(test_cuckoocache_no_fakes)
 {
-    seed_insecure_rand(true);
+    insecure_rand = FastRandomContext(true);
     CuckooCache::cache<uint256, uint256Hasher> cc{};
     cc.setup_bytes(40 << 20);
     uint256 v;
@@ -82,7 +83,7 @@ BOOST_AUTO_TEST_CASE(test_cuckoocache_no_fakes)
 template <typename Cache>
 double test_cache(size_t megabytes, double load)
 {
-    seed_insecure_rand(true);
+    insecure_rand = FastRandomContext(true);
     std::vector<uint256> hashes;
     Cache set{};
     size_t bytes = megabytes * (1 << 20);
@@ -92,7 +93,7 @@ double test_cache(size_t megabytes, double load)
     for (uint32_t i = 0; i < n_insert; ++i) {
         uint32_t* ptr = (uint32_t*)hashes[i].begin();
         for (uint8_t j = 0; j < 8; ++j)
-            *(ptr++) = insecure_rand();
+            *(ptr++) = insecure_rand.rand32();
     }
     /** We make a copy of the hashes because future optimizations of the
      * cuckoocache may overwrite the inserted element, so the test is
@@ -149,7 +150,7 @@ template <typename Cache>
 void test_cache_erase(size_t megabytes)
 {
     double load = 1;
-    seed_insecure_rand(true);
+    insecure_rand = FastRandomContext(true);
     std::vector<uint256> hashes;
     Cache set{};
     size_t bytes = megabytes * (1 << 20);
@@ -159,7 +160,7 @@ void test_cache_erase(size_t megabytes)
     for (uint32_t i = 0; i < n_insert; ++i) {
         uint32_t* ptr = (uint32_t*)hashes[i].begin();
         for (uint8_t j = 0; j < 8; ++j)
-            *(ptr++) = insecure_rand();
+            *(ptr++) = insecure_rand.rand32();
     }
     /** We make a copy of the hashes because future optimizations of the
      * cuckoocache may overwrite the inserted element, so the test is
@@ -218,7 +219,7 @@ template <typename Cache>
 void test_cache_erase_parallel(size_t megabytes)
 {
     double load = 1;
-    seed_insecure_rand(true);
+    insecure_rand = FastRandomContext(true);
     std::vector<uint256> hashes;
     Cache set{};
     size_t bytes = megabytes * (1 << 20);
@@ -228,7 +229,7 @@ void test_cache_erase_parallel(size_t megabytes)
     for (uint32_t i = 0; i < n_insert; ++i) {
         uint32_t* ptr = (uint32_t*)hashes[i].begin();
         for (uint8_t j = 0; j < 8; ++j)
-            *(ptr++) = insecure_rand();
+            *(ptr++) = insecure_rand.rand32();
     }
     /** We make a copy of the hashes because future optimizations of the
      * cuckoocache may overwrite the inserted element, so the test is
@@ -310,7 +311,7 @@ BOOST_AUTO_TEST_CASE(cuckoocache_erase_parallel_ok)
 template <typename Cache>
 void test_cache_generations()
 {
-    seed_insecure_rand(true);
+    insecure_rand = FastRandomContext(true);
     struct activity {
         std::vector<uint256> reads;
         activity(uint32_t n_insert, Cache& c) : reads() {
@@ -320,7 +321,7 @@ void test_cache_generations()
             for (uint32_t i = 0; i < n_insert; ++i) {
                 uint32_t* ptr = (uint32_t*)inserts[i].begin();
                 for (uint8_t j = 0; j < 8; ++j)
-                    *(ptr++) = insecure_rand();
+                    *(ptr++) = insecure_rand.rand32();
             }
             for (uint32_t i = 0; i < n_insert/4; ++i)
                 reads.push_back(inserts[i]);
