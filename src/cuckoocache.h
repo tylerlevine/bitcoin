@@ -294,7 +294,6 @@ public:
     cache() : table(), size(), collection_flags(0), epoch_flags(),
     epoch_heuristic_counter(), epoch_size(), depth_limit(0), hash_function()
     {
-        setup(2);
     }
 
     /** setup adjusts the container to store new_size elements and clears the
@@ -305,13 +304,12 @@ public:
      * @post if new_size != size, inserted elements may not be at their correct
      * location and all collection_flags are set. (still possible for some
      * elements to not be evicted).
+     * @returns the maximum number of elements storable
      **/
-    void setup(uint32_t new_size)
+    uint32_t setup(uint32_t new_size)
     {
         // n must be at least one otherwise errors can occur.
         new_size = std::max((uint32_t)2, (uint32_t)((new_size + 1) & (~(uint32_t)1)));
-        if (new_size == size)
-            return;
         size = new_size;
         table.resize(size);
         collection_flags.setup(size);
@@ -321,6 +319,7 @@ public:
         // Initially set to wait for a whole epoch
         epoch_heuristic_counter = epoch_size;
         depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(size))));
+        return size;
     }
 
     /** setup_bytes is a convenience function which accounts for internal memory
@@ -330,13 +329,14 @@ public:
      *
      * @param bytes the approximate number of bytes to use for this data
      * structure.
+     * @returns the maximum number of elements storable
      */
-    void setup_bytes(size_t bytes)
+    uint32_t setup_bytes(size_t bytes)
     {
         size_t bytes_free = bytes - sizeof(cache<Element, Hash>);
         size_t n = 0;
         n = (8 * bytes_free) / (8 * sizeof(Element) + sizeof(std::atomic<uint8_t>) + sizeof(bool));
-        setup(n);
+        return setup(n);
     }
 
     /** insert loops at most depth_limit times trying to insert a hash

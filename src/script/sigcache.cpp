@@ -79,18 +79,26 @@ public:
 
     void Set(uint256& entry)
     {
-        size_t nMaxCacheSize = GetArg("-maxsigcachesize", DEFAULT_MAX_SIG_CACHE_SIZE) * ((size_t) 1 << 20);
-        if (nMaxCacheSize <= 0) return;
         boost::unique_lock<boost::shared_mutex> lock(cs_sigcache);
-        // This can later be refactored to happen once at initialization time
-        // setup_bytes is idempotent for a given nMaxCacheSize.
-        setValid.setup_bytes(nMaxCacheSize);
         setValid.insert(entry);
+    }
+    uint32_t setup_bytes(size_t n)
+    {
+        return setValid.setup_bytes(n);
     }
 };
 
 // Initialized outisde of VerifySignature to avoid atomic operation per call
 static CSignatureCache signatureCache;
+}
+
+// To be called once in AppInit2/TestingSetup to initialize the signatureCache
+void InitSignatureCache()
+{
+    size_t nMaxCacheSize = GetArg("-maxsigcachesize", DEFAULT_MAX_SIG_CACHE_SIZE) * ((size_t) 1 << 20);
+    if (nMaxCacheSize <= 0) return;
+    size_t nElems = signatureCache.setup_bytes(nMaxCacheSize);
+    LogPrintf("Using %zu megabytes for signature cache, able to store %zu elements\n", nMaxCacheSize >>20, nElems);
 }
 
 bool CachingTransactionSignatureChecker::VerifySignature(const std::vector<unsigned char>& vchSig, const CPubKey& pubkey, const uint256& sighash) const
