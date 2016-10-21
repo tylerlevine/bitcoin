@@ -64,17 +64,10 @@ public:
     }
 
     bool
-    Get(const uint256& entry)
+    Get(const uint256& entry, const bool erase)
     {
         boost::shared_lock<boost::shared_mutex> lock(cs_sigcache);
-        return setValid.contains(entry, false);
-    }
-
-    bool
-    GetAndErase(const uint256& entry)
-    {
-        boost::shared_lock<boost::shared_mutex> lock(cs_sigcache);
-        return setValid.contains(entry, true);
+        return setValid.contains(entry, erase);
     }
 
     void Set(uint256& entry)
@@ -105,21 +98,11 @@ bool CachingTransactionSignatureChecker::VerifySignature(const std::vector<unsig
 {
     uint256 entry;
     signatureCache.ComputeEntry(entry, sighash, vchSig, pubkey);
-    if (!store) {
-        if (signatureCache.GetAndErase(entry))
-            return true;
-
-        if (!TransactionSignatureChecker::VerifySignature(vchSig, pubkey, sighash))
-            return false;
-
+    if (signatureCache.Get(entry, !store))
         return true;
-    } else {
-        if(signatureCache.Get(entry))
-            return true;
-        if (!TransactionSignatureChecker::VerifySignature(vchSig, pubkey, sighash))
-            return false;
-
+    if (!TransactionSignatureChecker::VerifySignature(vchSig, pubkey, sighash))
+        return false;
+    if (store)
         signatureCache.Set(entry);
-        return true;
-    }
+    return true;
 }
