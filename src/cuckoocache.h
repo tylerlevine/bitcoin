@@ -266,7 +266,7 @@ private:
         uint32_t epoch_unused_count = 0;
         for (uint32_t i = 0; i < size; ++i)
             epoch_unused_count += epoch_flags[i] &&
-                !collection_flags.bit_is_set(i);
+                                  !collection_flags.bit_is_set(i);
         // If we have erased less than our epoch_size, then allow_erase on
         // all elements in the old epoch (marked false) and move all
         // elements in the current epoch to the old epoch but do not call
@@ -282,7 +282,7 @@ private:
             // reset the epoch_heuristic_counter to next do a scan when worst
             // case behavior (no intermittent erases) would exceed epoch size,
             // with a reasonable minimum scan size.
-            epoch_heuristic_counter = std::max(1u, std::max(epoch_size/16,
+            epoch_heuristic_counter = std::max(1u, std::max(epoch_size / 16,
                         epoch_size - std::min(epoch_size, epoch_unused_count)));
     }
 
@@ -315,7 +315,7 @@ public:
         collection_flags.setup(size);
         epoch_flags.resize(size);
         // Set to 45% as described above
-        epoch_size = std::max((uint32_t) 1, (45*size)/100);
+        epoch_size = std::max((uint32_t)1, (45 * size) / 100);
         // Initially set to wait for a whole epoch
         epoch_heuristic_counter = epoch_size;
         depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(size))));
@@ -394,7 +394,7 @@ public:
             * The swap is not a move -- we must switch onto the evicted element
             * for the next iteration.
             */
-            last_loc = locs[(1+(std::find(locs.begin(), locs.end(), last_loc) - locs.begin())) % 8];
+            last_loc = locs[(1 + (std::find(locs.begin(), locs.end(), last_loc) - locs.begin())) % 8];
             std::swap(table[last_loc], e);
             // Can't std::swap a std::vector<bool>::reference and a bool&.
             bool epoch = last_epoch;
@@ -437,7 +437,7 @@ public:
         std::array<uint32_t, 8> locs = compute_hashes(e);
         for (uint32_t loc : locs)
             if (table[loc] == e) {
-                if (erase) 
+                if (erase)
                     allow_erase(loc);
                 return true;
             }

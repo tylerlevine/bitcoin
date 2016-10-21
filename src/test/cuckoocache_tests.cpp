@@ -131,7 +131,6 @@ double normalize_hit_rate(double hits, double load)
 /** Check the hit rate on loads ranging from 0.1 to 2.0 */
 BOOST_AUTO_TEST_CASE(cuckoocache_hit_rate_ok)
 {
-
     /** Arbitrarily selected Hit Rate threshold that happens to work for this test
      * as a lower bound on performance.
      */
@@ -192,15 +191,15 @@ void test_cache_erase(size_t megabytes)
     for (uint32_t i = (n_insert / 2); i < n_insert; ++i)
         count_fresh += set.contains(hashes[i], false);
 
-    double hit_rate_erased_but_contained = double(count_erased_but_contained) / (double(n_insert)/4.0);
-    double hit_rate_stale = double(count_stale) / (double(n_insert)/4.0);
-    double hit_rate_fresh = double(count_fresh) / (double(n_insert)/2.0);
+    double hit_rate_erased_but_contained = double(count_erased_but_contained) / (double(n_insert) / 4.0);
+    double hit_rate_stale = double(count_stale) / (double(n_insert) / 4.0);
+    double hit_rate_fresh = double(count_fresh) / (double(n_insert) / 2.0);
 
     // Check that our hit_rate_fresh is perfect
     BOOST_CHECK_EQUAL(hit_rate_fresh, 1.0);
     // Check that we have a more than 2x better hit rate on stale elements than
     // erased elements.
-    BOOST_CHECK(hit_rate_stale > 2*hit_rate_erased_but_contained);
+    BOOST_CHECK(hit_rate_stale > 2 * hit_rate_erased_but_contained);
 }
 
 BOOST_AUTO_TEST_CASE(cuckoocache_erase_ok)
@@ -280,22 +279,21 @@ void test_cache_erase_parallel(size_t megabytes)
     for (uint32_t i = (n_insert / 2); i < n_insert; ++i)
         count_fresh += set.contains(hashes[i], false);
 
-    double hit_rate_erased_but_contained = double(count_erased_but_contained) / (double(n_insert)/4.0);
-    double hit_rate_stale = double(count_stale) / (double(n_insert)/4.0);
-    double hit_rate_fresh = double(count_fresh) / (double(n_insert)/2.0);
+    double hit_rate_erased_but_contained = double(count_erased_but_contained) / (double(n_insert) / 4.0);
+    double hit_rate_stale = double(count_stale) / (double(n_insert) / 4.0);
+    double hit_rate_fresh = double(count_fresh) / (double(n_insert) / 2.0);
 
     // Check that our hit_rate_fresh is perfect
     BOOST_CHECK_EQUAL(hit_rate_fresh, 1.0);
     // Check that we have a more than 2x better hit rate on stale elements than
     // erased elements.
-    BOOST_CHECK(hit_rate_stale > 2*hit_rate_erased_but_contained);
+    BOOST_CHECK(hit_rate_stale > 2 * hit_rate_erased_but_contained);
 }
 BOOST_AUTO_TEST_CASE(cuckoocache_erase_parallel_ok)
 {
     size_t megabytes = 40;
     test_cache_erase_parallel<CuckooCache::cache<uint256, uint256Hasher>>(megabytes);
 }
-
 
 
 template <typename Cache>
@@ -325,18 +323,19 @@ void test_cache_generations()
     // immediately and never uses the other half.
     struct block_activity {
         std::vector<uint256> reads;
-        block_activity(uint32_t n_insert, Cache& c) : reads() {
+        block_activity(uint32_t n_insert, Cache& c) : reads()
+        {
             std::vector<uint256> inserts;
             inserts.resize(n_insert);
-            reads.reserve(n_insert/2);
+            reads.reserve(n_insert / 2);
             for (uint32_t i = 0; i < n_insert; ++i) {
                 uint32_t* ptr = (uint32_t*)inserts[i].begin();
                 for (uint8_t j = 0; j < 8; ++j)
                     *(ptr++) = insecure_rand.rand32();
             }
-            for (uint32_t i = 0; i < n_insert/4; ++i)
+            for (uint32_t i = 0; i < n_insert / 4; ++i)
                 reads.push_back(inserts[i]);
-            for (uint32_t i = n_insert - (n_insert/4); i < n_insert; ++i)
+            for (uint32_t i = n_insert - (n_insert / 4); i < n_insert; ++i)
                 reads.push_back(inserts[i]);
             for (auto h : inserts)
                 c.insert(h);
@@ -347,7 +346,7 @@ void test_cache_generations()
     // We expect window size 80 to perform reasonably given that each epoch
     // stores 45% of the cache size (~580k).
     const uint32_t WINDOW_SIZE = 80;
-    const uint32_t POP_AMOUNT = (BLOCK_SIZE/WINDOW_SIZE)/2;
+    const uint32_t POP_AMOUNT = (BLOCK_SIZE / WINDOW_SIZE) / 2;
     const double load = 10;
     const size_t megabytes = 40;
     const size_t bytes = megabytes * (1 << 20);
@@ -356,10 +355,10 @@ void test_cache_generations()
     std::vector<block_activity> hashes;
     Cache set{};
     set.setup_bytes(bytes);
-    hashes.reserve(n_insert/BLOCK_SIZE);
+    hashes.reserve(n_insert / BLOCK_SIZE);
     std::deque<block_activity> last_few;
     uint32_t out_of_tight_tolerance = 0;
-    uint32_t total = n_insert/BLOCK_SIZE;
+    uint32_t total = n_insert / BLOCK_SIZE;
     // we use the deque last_few to model a sliding window of blocks. at each
     // step, each of the last WINDOW_SIZE block_activities checks the cache for
     // POP_AMOUNT of the hashes that they inserted, and marks these erased.
@@ -376,7 +375,7 @@ void test_cache_generations()
         // We use last_few.size() rather than WINDOW_SIZE for the correct
         // behavior on the first WINDOW_SIZE iterations where the deque is not
         // full yet.
-        double hit = (double(count))/(last_few.size() * POP_AMOUNT);
+        double hit = (double(count)) / (last_few.size() * POP_AMOUNT);
         // Loose Check that hit rate is above min_hit_rate
         BOOST_CHECK(hit > min_hit_rate);
         // Tighter check, count number of times we are less than tight_hit_rate
@@ -385,7 +384,7 @@ void test_cache_generations()
     }
     // Check that being out of tolerance happens less than
     // max_rate_less_than_tight_hit_rate of the time
-    BOOST_CHECK(double(out_of_tight_tolerance)/double(total) < max_rate_less_than_tight_hit_rate);
+    BOOST_CHECK(double(out_of_tight_tolerance) / double(total) < max_rate_less_than_tight_hit_rate);
 }
 BOOST_AUTO_TEST_CASE(cuckoocache_generations)
 {
