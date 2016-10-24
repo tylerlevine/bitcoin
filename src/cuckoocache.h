@@ -195,9 +195,16 @@ private:
      */
     uint32_t epoch_size;
 
+    /** hash_mask should be set to appropriately mask out a hash such that every
+     * masked hash is [0,size), eg, if floor(log2(size)) == 20, then hash_mask
+     * should be (1<<20)-1 
+     */
+    uint32_t hash_mask;
+
     /** depth_limit determines how many elements insert should try to replace.
      * Should be set to log2(n)*/
     uint8_t depth_limit;
+
 
     /** hash_function is a const instance of the hash function. It cannot be
      * static or initialized at call time as it may have internal state (such as
@@ -213,14 +220,14 @@ private:
      */
     inline std::array<uint32_t, 8> compute_hashes(const Element& e) const
     {
-        return {hash_function.template operator()<0>(e) % size,
-                hash_function.template operator()<1>(e) % size,
-                hash_function.template operator()<2>(e) % size,
-                hash_function.template operator()<3>(e) % size,
-                hash_function.template operator()<4>(e) % size,
-                hash_function.template operator()<5>(e) % size,
-                hash_function.template operator()<6>(e) % size,
-                hash_function.template operator()<7>(e) % size};
+        return {hash_function.template operator()<0>(e) & hash_mask,
+                hash_function.template operator()<1>(e) & hash_mask,
+                hash_function.template operator()<2>(e) & hash_mask,
+                hash_function.template operator()<3>(e) & hash_mask,
+                hash_function.template operator()<4>(e) & hash_mask,
+                hash_function.template operator()<5>(e) & hash_mask,
+                hash_function.template operator()<6>(e) & hash_mask,
+                hash_function.template operator()<7>(e) & hash_mask};
     }
 
     /* end
@@ -309,8 +316,9 @@ public:
     uint32_t setup(uint32_t new_size)
     {
         // n must be at least one otherwise errors can occur.
-        new_size = std::max((uint32_t)2, (uint32_t)((new_size + 1) & (~(uint32_t)1)));
-        size = new_size;
+        depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(std::max((uint32_t)1, new_size)))));
+        size = 1 << depth_limit;
+        hash_mask = size-1;
         table.resize(size);
         collection_flags.setup(size);
         epoch_flags.resize(size);
@@ -318,7 +326,6 @@ public:
         epoch_size = std::max((uint32_t)1, (45 * size) / 100);
         // Initially set to wait for a whole epoch
         epoch_heuristic_counter = epoch_size;
-        depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(size))));
         return size;
     }
 
@@ -333,10 +340,7 @@ public:
      */
     uint32_t setup_bytes(size_t bytes)
     {
-        size_t bytes_free = bytes - sizeof(cache<Element, Hash>);
-        size_t n = 0;
-        n = (8 * bytes_free) / (8 * sizeof(Element) + sizeof(std::atomic<uint8_t>) + sizeof(bool));
-        return setup(n);
+        return setup(bytes/sizeof(Element));
     }
 
     /** insert loops at most depth_limit times trying to insert a hash
@@ -394,7 +398,7 @@ public:
             * The swap is not a move -- we must switch onto the evicted element
             * for the next iteration.
             */
-            last_loc = locs[(1 + (std::find(locs.begin(), locs.end(), last_loc) - locs.begin())) % 8];
+            last_loc = locs[(1 + (std::find(locs.begin(), locs.end(), last_loc) - locs.begin())) & 7];
             std::swap(table[last_loc], e);
             // Can't std::swap a std::vector<bool>::reference and a bool&.
             bool epoch = last_epoch;
