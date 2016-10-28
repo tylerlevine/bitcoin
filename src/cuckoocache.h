@@ -157,9 +157,6 @@ public:
 template <typename Element, typename Hash>
 class cache
 {
-    static_assert((sizeof(Element) % 32) == 0, "Invalid Element Size.");
-
-public:
 private:
     /** table stores all the elements */
     std::vector<Element> table;
@@ -189,7 +186,7 @@ private:
      * epoch. When the number of non-erased elements in a epoch
      * exceeds epoch_size, a new epoch should be started and all
      * current entries demoted. epoch_size is set to be 45% of size because
-     * we want to keep load around 60%, and we support 3 epochs at once --
+     * we want to keep load around 90%, and we support 3 epochs at once --
      * one "dead" which has been erased, one "dying" which has been marked to be
      * erased next, and one "living" which new inserts add to.
      */
@@ -274,10 +271,10 @@ private:
         for (uint32_t i = 0; i < size; ++i)
             epoch_unused_count += epoch_flags[i] &&
                                   !collection_flags.bit_is_set(i);
-        // If we have erased less than our epoch_size, then allow_erase on
-        // all elements in the old epoch (marked false) and move all
-        // elements in the current epoch to the old epoch but do not call
-        // allow_erase on their indices.
+        // If there are more non-deleted entries in the current epoch than the
+        // epoch size, then allow_erase on all elements in the old epoch (marked
+        // false) and move all elements in the current epoch to the old epoch
+        // but do not call allow_erase on their indices.
         if (epoch_unused_count >= epoch_size) {
             for (uint32_t i = 0; i < size; ++i)
                 if (epoch_flags[i])
@@ -294,29 +291,26 @@ private:
     }
 
 public:
-    /** You must always construct a cache with some elements, otherwise
-     * operations may segfault. By default, construct with 2
-     * elements.
+    /** You must always construct a cache with some elements via a subsequent
+     * call to setup or setup_bytes, otherwise operations may segfault.
      */
     cache() : table(), size(), collection_flags(0), epoch_flags(),
     epoch_heuristic_counter(), epoch_size(), depth_limit(0), hash_function()
     {
     }
 
-    /** setup adjusts the container to store new_size elements and clears the
-     * cache if new_size != size
+    /** setup initializes the container to store no more than new_size
+     * elements. setup rounds down to a power of two size.
      *
-     * @param new_size the new number of elements to store
-     * @post if new_size == size, no effect
-     * @post if new_size != size, inserted elements may not be at their correct
-     * location and all collection_flags are set. (still possible for some
-     * elements to not be evicted).
+     * setup should only be called once.
+     *
+     * @param new_size the desired number of elements to store
      * @returns the maximum number of elements storable
      **/
     uint32_t setup(uint32_t new_size)
     {
-        // n must be at least one otherwise errors can occur.
-        depth_limit = std::max((uint8_t)1, static_cast<uint8_t>(std::log2(static_cast<float>(std::max((uint32_t)1, new_size)))));
+        // depth_limit must be at least one otherwise errors can occur.
+        depth_limit = static_cast<uint8_t>(std::log2(static_cast<float>(std::max((uint32_t)2, new_size))));
         size = 1 << depth_limit;
         hash_mask = size-1;
         table.resize(size);
@@ -331,12 +325,15 @@ public:
 
     /** setup_bytes is a convenience function which accounts for internal memory
      * usage when deciding how many elements to store. It isn't perfect because
-     * it doesn't account for MallocUsage of collection_flags or table.  This
-     * difference is small or 0, so we ignore it.
+     * it doesn't account for any overhead (struct size, MallocUsage, collection
+     * and epoch flags). This was done to simplify selecting a power of two
+     * size. In the expected use case, an extra two bits per entry should be
+     * negligible compared to the size of the elements.
      *
      * @param bytes the approximate number of bytes to use for this data
      * structure.
-     * @returns the maximum number of elements storable
+     * @returns the maximum number of elements storable (see setup()
+     * documentation for more detail)
      */
     uint32_t setup_bytes(size_t bytes)
     {
