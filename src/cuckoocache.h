@@ -82,7 +82,7 @@ public:
         std::swap(mem, d.mem);
     }
 
-    /** bit_set sets an entry as discardable. 
+    /** bit_set sets an entry as discardable.
      *
      * @param s the index of the entry to bit_set.
      * @post immediately subsequent call (assuming proper external memory
@@ -94,7 +94,7 @@ public:
         mem[s >> 3].fetch_or(1 << (s & 7), std::memory_order_relaxed);
     }
 
-    /**  bit_unset marks an entry as something that should not be overwritten  
+    /**  bit_unset marks an entry as something that should not be overwritten
      *
      * @param s the index of the entry to bit_unset.
      * @post immediately subsequent call (assuming proper external memory
@@ -118,13 +118,15 @@ public:
 
 /** cache implements a cache with properties similar to a cuckoo-set
  *
- *  The cache is able to hold up to (~(uint32_t) 1) elements.
+ *  The cache is able to hold up to (~(uint32_t)0) - 1 elements.
  *
  *  Read Operations:
  *      - contains(*, false)
  *
- *  Read/Erase Operations:
+ *  Read+Erase Operations:
  *      - contains(*, true)
+ *
+ *  Erase Operations:
  *      - allow_erase()
  *
  *  Write Operations:
@@ -132,7 +134,6 @@ public:
  *      - setup_bytes()
  *      - insert()
  *      - please_keep()
- *      - rehash()
  *
  *  Synchronization Free Operations:
  *      - invalid()
@@ -143,17 +144,17 @@ public:
  * 1) Write Requires synchronized access (e.g., a lock)
  * 2) Read Requires no concurrent Write, synchronized with the last insert.
  * 3) Erase requires no concurrent Write, synchronized with last insert.
- * 4) An Eraser must release all Erases before allowing a new Writer.
+ * 4) An Erase caller must release all memory before allowing a new Writer.
  *
  *
  * Note on function names:
  *   - The name "allow_erase" is used because the real discard happens later.
  *   - The name "please_keep" is used because elements may be erased anyways on insert.
  *
- * @tparam Element should be a POD type that is 32-alignable
+ * @tparam Element should be a movable and copyable type
  * @tparam Hash should be a function/callable which takes a template parameter
  * hash_select and an Element and extracts a hash from it. Should return
- * high-entropy hashes for `Hash h; h<0>(e) and h<1>(e)`.
+ * high-entropy hashes for `Hash h; h<0>(e) ... h<7>(e)`.
  */
 template <typename Element, typename Hash>
 class cache
@@ -175,11 +176,10 @@ private:
      */
     mutable std::vector<bool> epoch_flags;
 
-    /** epoch_heuristic_counter is used to determine when a epoch
-     * might be aged & an expensive scan should be done.
-     * epoch_heuristic_counter is incremented on insert and reset to the
-     * new number of inserts which would cause the epoch to reach
-     * epoch_size when it reaches zero.
+    /** epoch_heuristic_counter is used to determine when a epoch might be aged
+     * & an expensive scan should be done.  epoch_heuristic_counter is
+     * decremented on insert and reset to the new number of inserts which would
+     * cause the epoch to reach epoch_size when it reaches zero.
      */
     uint32_t epoch_heuristic_counter;
 
@@ -195,7 +195,7 @@ private:
 
     /** hash_mask should be set to appropriately mask out a hash such that every
      * masked hash is [0,size), eg, if floor(log2(size)) == 20, then hash_mask
-     * should be (1<<20)-1 
+     * should be (1<<20)-1
      */
     uint32_t hash_mask;
 
@@ -232,7 +232,7 @@ private:
      * @returns a constexpr index that can never be inserted to */
     constexpr uint32_t invalid() const
     {
-        return ~(uint32_t)1;
+        return ~(uint32_t)0;
     }
 
     /** allow_erase marks the element at index n as discardable. Threadsafe
@@ -264,8 +264,10 @@ private:
      */
     void epoch_check()
     {
-        if ((--epoch_heuristic_counter) != 0)
+        if (epoch_heuristic_counter != 0) {
+            --epoch_heuristic_counter;
             return;
+        }
         // count the number of elements from the latest epoch which
         // have not been erased.
         uint32_t epoch_unused_count = 0;
@@ -287,8 +289,11 @@ private:
             // reset the epoch_heuristic_counter to next do a scan when worst
             // case behavior (no intermittent erases) would exceed epoch size,
             // with a reasonable minimum scan size.
+            // Ordinarily, we would have to sanity check std::min(epoch_size,
+            // epoch_unused_count), but we already know that `epoch_unused_count
+            // < epoch_size` in this branch
             epoch_heuristic_counter = std::max(1u, std::max(epoch_size / 16,
-                        epoch_size - std::min(epoch_size, epoch_unused_count)));
+                        epoch_size - epoch_unused_count));
     }
 
 public:
@@ -343,7 +348,7 @@ public:
 
     /** insert loops at most depth_limit times trying to insert a hash
      * at various locations in the table via a variant of the Cuckoo Algorithm
-     * with two hash locations.
+     * with eight hash locations.
      *
      * It drops the last tried element if it runs out of depth before
      * encountering an open slot.
