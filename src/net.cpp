@@ -65,6 +65,14 @@ const static std::string NET_MESSAGE_COMMAND_OTHER = "*other*";
 
 static const uint64_t RANDOMIZER_ID_NETGROUP = 0x6c0edd8036ef4036ULL; // SHA256("netgroup")[0:8]
 static const uint64_t RANDOMIZER_ID_LOCALHOSTNONCE = 0xd93e69e2bbfa5735ULL; // SHA256("localhostnonce")[0:8]
+
+struct CNullLock
+{
+    static inline void lock() {}
+    static inline void unlock() {}
+};
+
+static const constexpr CNullLock nullLock{};
 //
 // Global state variables
 //
@@ -1042,7 +1050,7 @@ void CConnman::AcceptConnection(const ListenSocket& hListenSocket) {
 void CConnman::ThreadSocketHandler()
 {
     unsigned int nPrevNodeCount = 0;
-    while (true)
+    while (interruptSocketHandler.test_and_set())
     {
         //
         // Disconnect nodes
@@ -1180,7 +1188,9 @@ void CConnman::ThreadSocketHandler()
 
         int nSelect = select(have_fds ? hSocketMax + 1 : 0,
                              &fdsetRecv, &fdsetSend, &fdsetError, &timeout);
-        boost::this_thread::interruption_point();
+
+        if(!interruptSocketHandler.test_and_set())
+            return;
 
         if (nSelect == SOCKET_ERROR)
         {
@@ -1219,7 +1229,8 @@ void CConnman::ThreadSocketHandler()
         }
         BOOST_FOREACH(CNode* pnode, vNodesCopy)
         {
-            boost::this_thread::interruption_point();
+            if(!interruptSocketHandler.test_and_set())
+                return;
 
             //
             // Receive
@@ -1469,7 +1480,11 @@ void CConnman::ThreadDNSAddressSeed()
     //  less influence on the network topology, and reduces traffic to the seeds.
     if ((addrman.size() > 0) &&
         (!GetBoolArg("-forcednsseed", DEFAULT_FORCEDNSSEED))) {
-        MilliSleep(11 * 1000);
+
+        {
+            if(interruptCond.wait_for(nullLock, std::chrono::seconds(11), [this]()->bool{ return !interruptDNSAddressSeed.test_and_set(); }))
+                return;
+        }
 
         LOCK(cs_vNodes);
         int nRelevant = 0;
@@ -1488,6 +1503,8 @@ void CConnman::ThreadDNSAddressSeed()
     LogPrintf("Loading addresses from DNS seeds (could take a while)\n");
 
     BOOST_FOREACH(const CDNSSeedData &seed, vSeeds) {
+        if(!interruptDNSAddressSeed.test_and_set())
+            break;
         if (HaveNameProxy()) {
             AddOneShot(seed.host);
         } else {
@@ -1573,17 +1590,23 @@ void CConnman::ThreadOpenConnections()
     {
         for (int64_t nLoop = 0;; nLoop++)
         {
+            if(!interruptOpenConnections.test_and_set())
+                return;
             ProcessOneShot();
             BOOST_FOREACH(const std::string& strAddr, mapMultiArgs["-connect"])
             {
+                if(!interruptOpenConnections.test_and_set())
+                    return;
                 CAddress addr(CService(), NODE_NONE);
                 OpenNetworkConnection(addr, false, NULL, strAddr.c_str());
                 for (int i = 0; i < 10 && i < nLoop; i++)
                 {
-                    MilliSleep(500);
+                    if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(500), [this]()->bool{ return !interruptOpenConnections.test_and_set(); }))
+                        return;
                 }
             }
-            MilliSleep(500);
+            if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(500), [this]()->bool{ return !interruptOpenConnections.test_and_set(); }))
+                return;
         }
     }
 
@@ -1592,14 +1615,17 @@ void CConnman::ThreadOpenConnections()
 
     // Minimum time before next feeler connection (in microseconds).
     int64_t nNextFeeler = PoissonNextSend(nStart*1000*1000, FEELER_INTERVAL);
-    while (true)
+    while (interruptOpenConnections.test_and_set())
     {
         ProcessOneShot();
 
-        MilliSleep(500);
+        if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(500), [this]()->bool{ return !interruptOpenConnections.test_and_set(); }))
+            return;
 
         CSemaphoreGrant grant(*semOutbound);
-        boost::this_thread::interruption_point();
+
+        if(!interruptOpenConnections.test_and_set())
+            return;
 
         // Add seed nodes if DNS seeds are all down (an infrastructure attack?).
         if (addrman.size() == 0 && (GetTime() - nStart > 60)) {
@@ -1700,10 +1726,13 @@ void CConnman::ThreadOpenConnections()
             if (fFeeler) {
                 // Add small amount of random noise before connection to avoid synchronization.
                 int randsleep = GetRandInt(FEELER_SLEEP_WINDOW * 1000);
-                MilliSleep(randsleep);
+                if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(randsleep), [this]()->bool{ return !interruptOpenConnections.test_and_set(); }))
+                    return;
                 LogPrint("net", "Making feeler connection to %s\n", addrConnect.ToString());
             }
 
+            if(!interruptOpenConnections.test_and_set())
+                return;
             OpenNetworkConnection(addrConnect, (int)setConnected.size() >= std::min(nMaxConnections - 1, 2), &grant, NULL, false, fFeeler);
         }
     }
@@ -1774,15 +1803,18 @@ void CConnman::ThreadOpenAddedConnections()
         for (const AddedNodeInfo& info : vInfo) {
             if (!info.fConnected) {
                 CSemaphoreGrant grant(*semOutbound);
+                if(!interruptOpenAddedConnections.test_and_set())
+                    return;
                 // If strAddedNode is an IP/port, decode it immediately, so
                 // OpenNetworkConnection can detect existing connections to that IP/port.
                 CService service(LookupNumeric(info.strAddedNode.c_str(), Params().GetDefaultPort()));
                 OpenNetworkConnection(CAddress(service, NODE_NONE), false, &grant, info.strAddedNode.c_str(), false);
-                MilliSleep(500);
+                if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(500), [this]()->bool{ return !interruptOpenAddedConnections.test_and_set(); }))
+                    return;
             }
         }
-
-        MilliSleep(120000); // Retry every 2 minutes
+        if(interruptCond.wait_for(nullLock, std::chrono::minutes(2), [this]()->bool{ return !interruptOpenAddedConnections.test_and_set(); }))
+            return;
     }
 }
 
@@ -1792,7 +1824,6 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
     //
     // Initiate outbound network connection
     //
-    boost::this_thread::interruption_point();
     if (!fNetworkActive) {
         return false;
     }
@@ -1805,7 +1836,6 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
         return false;
 
     CNode* pnode = ConnectNode(addrConnect, pszDest, fCountFailure);
-    boost::this_thread::interruption_point();
 
     if (!pnode)
         return false;
@@ -1819,13 +1849,12 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
     return true;
 }
 
-
 void CConnman::ThreadMessageHandler()
 {
     boost::mutex condition_mutex;
     boost::unique_lock<boost::mutex> lock(condition_mutex);
 
-    while (true)
+    while (interruptMessageHandler.test_and_set())
     {
         std::vector<CNode*> vNodesCopy;
         {
@@ -1860,7 +1889,8 @@ void CConnman::ThreadMessageHandler()
                     }
                 }
             }
-            boost::this_thread::interruption_point();
+            if(!interruptMessageHandler.test_and_set())
+                return;
 
             // Send messages
             {
@@ -1868,7 +1898,9 @@ void CConnman::ThreadMessageHandler()
                 if (lockSend)
                     GetNodeSignals().SendMessages(pnode, *this);
             }
-            boost::this_thread::interruption_point();
+
+            if(!interruptMessageHandler.test_and_set())
+                return;
         }
 
         {
@@ -2145,6 +2177,13 @@ bool CConnman::Start(boost::thread_group& threadGroup, CScheduler& scheduler, st
     // Start threads
     //
 
+    interruptSocketHandler.test_and_set();
+    interruptDNSAddressSeed.test_and_set();
+    interruptOpenAddedConnections.test_and_set();
+    interruptOpenConnections.test_and_set();
+    interruptMessageHandler.test_and_set();
+
+
     if (!GetBoolArg("-dnsseed", true))
         LogPrintf("DNS seeding disabled\n");
     else
@@ -2183,13 +2222,27 @@ public:
     }
 }
 instance_of_cnetcleanup;
+void CConnman::Interrupt()
+{
+    LogPrintf("%s\n",__func__);
+    interruptMessageHandler.clear();
+    interruptCond.notify_all();
+    messageHandlerCondition.notify_all();
+
+    interruptOpenConnections.clear();
+    interruptOpenAddedConnections.clear();
+    interruptDNSAddressSeed.clear();
+
+    if (semOutbound)
+        for (int i=0; i<(nMaxOutbound + nMaxFeeler); i++)
+            semOutbound->post();
+
+    interruptSocketHandler.clear();
+}
 
 void CConnman::Stop()
 {
     LogPrintf("%s\n",__func__);
-    if (semOutbound)
-        for (int i=0; i<(nMaxOutbound + nMaxFeeler); i++)
-            semOutbound->post();
 
     if (fAddressesInitialized)
     {
@@ -2232,6 +2285,7 @@ void CConnman::DeleteNode(CNode* pnode)
 
 CConnman::~CConnman()
 {
+    Interrupt();
     Stop();
 }
 

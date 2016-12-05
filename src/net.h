@@ -24,6 +24,7 @@
 #include <deque>
 #include <stdint.h>
 #include <memory>
+#include <condition_variable>
 
 #ifndef WIN32
 #include <arpa/inet.h>
@@ -144,6 +145,7 @@ public:
     ~CConnman();
     bool Start(boost::thread_group& threadGroup, CScheduler& scheduler, std::string& strNodeError, Options options);
     void Stop();
+    void Interrupt();
     bool BindListenPort(const CService &bindAddr, std::string& strError, bool fWhitelisted = false);
     bool GetNetworkActive() const { return fNetworkActive; };
     void SetNetworkActive(bool active);
@@ -419,6 +421,13 @@ private:
 
     /** SipHasher seeds for deterministic randomness */
     const uint64_t nSeed0, nSeed1;
+    std::condition_variable_any interruptCond;
+
+    std::atomic_flag interruptDNSAddressSeed = ATOMIC_FLAG_INIT;
+    std::atomic_flag interruptSocketHandler = ATOMIC_FLAG_INIT;
+    std::atomic_flag interruptOpenAddedConnections = ATOMIC_FLAG_INIT;
+    std::atomic_flag interruptOpenConnections = ATOMIC_FLAG_INIT;
+    std::atomic_flag interruptMessageHandler = ATOMIC_FLAG_INIT;
 };
 extern std::unique_ptr<CConnman> g_connman;
 void Discover(boost::thread_group& threadGroup);
