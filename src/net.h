@@ -23,6 +23,7 @@
 #include <atomic>
 #include <deque>
 #include <stdint.h>
+#include <thread>
 #include <memory>
 #include <condition_variable>
 
@@ -143,7 +144,7 @@ public:
     };
     CConnman(uint64_t seed0, uint64_t seed1);
     ~CConnman();
-    bool Start(boost::thread_group& threadGroup, CScheduler& scheduler, std::string& strNodeError, Options options);
+    bool Start(CScheduler& scheduler, std::string& strNodeError, Options options);
     void Stop();
     void Interrupt();
     bool BindListenPort(const CService &bindAddr, std::string& strError, bool fWhitelisted = false);
@@ -404,7 +405,7 @@ private:
     std::list<CNode*> vNodesDisconnected;
     mutable CCriticalSection cs_vNodes;
     std::atomic<NodeId> nLastNodeId;
-    boost::condition_variable messageHandlerCondition;
+    std::condition_variable_any messageHandlerCondition;
 
     /** Services this instance offers */
     ServiceFlags nLocalServices;
@@ -428,6 +429,12 @@ private:
     std::atomic_flag interruptOpenAddedConnections = ATOMIC_FLAG_INIT;
     std::atomic_flag interruptOpenConnections = ATOMIC_FLAG_INIT;
     std::atomic_flag interruptMessageHandler = ATOMIC_FLAG_INIT;
+
+    std::thread threadDNSAddressSeed;
+    std::thread threadSocketHandler;
+    std::thread threadOpenAddedConnections;
+    std::thread threadOpenConnections;
+    std::thread threadMessageHandler;
 };
 extern std::unique_ptr<CConnman> g_connman;
 void Discover(boost::thread_group& threadGroup);

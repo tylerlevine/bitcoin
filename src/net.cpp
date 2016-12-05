@@ -35,9 +35,6 @@
 #include <miniupnpc/upnperrors.h>
 #endif
 
-#include <boost/filesystem.hpp>
-#include <boost/thread.hpp>
-
 #include <math.h>
 
 // Dump addresses to peers.dat and banlist.dat every 15 minutes (900s)
@@ -1851,9 +1848,6 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
 
 void CConnman::ThreadMessageHandler()
 {
-    boost::mutex condition_mutex;
-    boost::unique_lock<boost::mutex> lock(condition_mutex);
-
     while (interruptMessageHandler.test_and_set())
     {
         std::vector<CNode*> vNodesCopy;
@@ -1909,8 +1903,10 @@ void CConnman::ThreadMessageHandler()
                 pnode->Release();
         }
 
-        if (fSleep)
-            messageHandlerCondition.timed_wait(lock, boost::posix_time::microsec_clock::universal_time() + boost::posix_time::milliseconds(100));
+        if (fSleep) {
+            // TODO: Should ignore spurious wakes?
+            messageHandlerCondition.wait_for(nullLock, std::chrono::milliseconds(100));
+        }
     }
 }
 
@@ -2109,7 +2105,7 @@ NodeId CConnman::GetNewNodeId()
     return nLastNodeId.fetch_add(1, std::memory_order_relaxed);
 }
 
-bool CConnman::Start(boost::thread_group& threadGroup, CScheduler& scheduler, std::string& strNodeError, Options connOptions)
+bool CConnman::Start(CScheduler& scheduler, std::string& strNodeError, Options connOptions)
 {
     nTotalBytesRecv = 0;
     nTotalBytesSent = 0;
@@ -2183,24 +2179,23 @@ bool CConnman::Start(boost::thread_group& threadGroup, CScheduler& scheduler, st
     interruptOpenConnections.test_and_set();
     interruptMessageHandler.test_and_set();
 
+    // Send and receive from sockets, accept connections
+    threadSocketHandler = std::thread(&TraceThread<std::function<void()> >, "net", std::function<void()>(std::bind(&CConnman::ThreadSocketHandler, this)));
 
     if (!GetBoolArg("-dnsseed", true))
         LogPrintf("DNS seeding disabled\n");
     else
-        threadGroup.create_thread(boost::bind(&TraceThread<boost::function<void()> >, "dnsseed", boost::function<void()>(boost::bind(&CConnman::ThreadDNSAddressSeed, this))));
-
-    // Send and receive from sockets, accept connections
-    threadGroup.create_thread(boost::bind(&TraceThread<boost::function<void()> >, "net", boost::function<void()>(boost::bind(&CConnman::ThreadSocketHandler, this))));
+        threadDNSAddressSeed = std::thread(&TraceThread<std::function<void()> >, "dnsseed", std::function<void()>(std::bind(&CConnman::ThreadDNSAddressSeed, this)));
 
     // Initiate outbound connections from -addnode
-    threadGroup.create_thread(boost::bind(&TraceThread<boost::function<void()> >, "addcon", boost::function<void()>(boost::bind(&CConnman::ThreadOpenAddedConnections, this))));
+    threadOpenAddedConnections = std::thread(&TraceThread<std::function<void()> >, "addcon", std::function<void()>(std::bind(&CConnman::ThreadOpenAddedConnections, this)));
 
     // Initiate outbound connections unless connect=0
     if (!mapArgs.count("-connect") || mapMultiArgs["-connect"].size() != 1 || mapMultiArgs["-connect"][0] != "0")
-        threadGroup.create_thread(boost::bind(&TraceThread<boost::function<void()> >, "opencon", boost::function<void()>(boost::bind(&CConnman::ThreadOpenConnections, this))));
+        threadOpenConnections = std::thread(&TraceThread<std::function<void()> >, "opencon", std::function<void()>(std::bind(&CConnman::ThreadOpenConnections, this)));
 
     // Process messages
-    threadGroup.create_thread(boost::bind(&TraceThread<boost::function<void()> >, "msghand", boost::function<void()>(boost::bind(&CConnman::ThreadMessageHandler, this))));
+    threadMessageHandler = std::thread(&TraceThread<std::function<void()> >, "msghand", std::function<void()>(std::bind(&CConnman::ThreadMessageHandler, this)));
 
     // Dump network addresses
     scheduler.scheduleEvery(boost::bind(&CConnman::DumpData, this), DUMP_ADDRESSES_INTERVAL);
@@ -2243,6 +2238,16 @@ void CConnman::Interrupt()
 void CConnman::Stop()
 {
     LogPrintf("%s\n",__func__);
+    if (threadMessageHandler.joinable())
+        threadMessageHandler.join();
+    if (threadOpenConnections.joinable())
+        threadOpenConnections.join();
+    if (threadOpenAddedConnections.joinable())
+        threadOpenAddedConnections.join();
+    if (threadDNSAddressSeed.joinable())
+        threadDNSAddressSeed.join();
+    if (threadSocketHandler.joinable())
+        threadSocketHandler.join();
 
     if (fAddressesInitialized)
     {
