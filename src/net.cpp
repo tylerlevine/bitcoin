@@ -63,13 +63,6 @@ const static std::string NET_MESSAGE_COMMAND_OTHER = "*other*";
 static const uint64_t RANDOMIZER_ID_NETGROUP = 0x6c0edd8036ef4036ULL; // SHA256("netgroup")[0:8]
 static const uint64_t RANDOMIZER_ID_LOCALHOSTNONCE = 0xd93e69e2bbfa5735ULL; // SHA256("localhostnonce")[0:8]
 
-struct CNullLock
-{
-    static inline void lock() {}
-    static inline void unlock() {}
-};
-
-static const constexpr CNullLock nullLock{};
 //
 // Global state variables
 //
@@ -1479,7 +1472,7 @@ void CConnman::ThreadDNSAddressSeed()
         (!GetBoolArg("-forcednsseed", DEFAULT_FORCEDNSSEED))) {
 
         {
-            if(interruptCond.wait_for(nullLock, std::chrono::seconds(11), [this]()->bool{ return !interruptDNSAddressSeed.test_and_set(); }))
+            if(!InterruptibleSleep(std::chrono::seconds(11), interruptCond, interruptDNSAddressSeed))
                 return;
         }
 
@@ -1598,11 +1591,11 @@ void CConnman::ThreadOpenConnections()
                 OpenNetworkConnection(addr, false, NULL, strAddr.c_str());
                 for (int i = 0; i < 10 && i < nLoop; i++)
                 {
-                    if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(500), [this]()->bool{ return !interruptOpenConnections.test_and_set(); }))
+                    if(!InterruptibleSleep(std::chrono::milliseconds(500), interruptCond, interruptOpenConnections))
                         return;
                 }
             }
-            if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(500), [this]()->bool{ return !interruptOpenConnections.test_and_set(); }))
+            if(!InterruptibleSleep(std::chrono::milliseconds(500), interruptCond, interruptOpenConnections))
                 return;
         }
     }
@@ -1616,7 +1609,7 @@ void CConnman::ThreadOpenConnections()
     {
         ProcessOneShot();
 
-        if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(500), [this]()->bool{ return !interruptOpenConnections.test_and_set(); }))
+        if(!InterruptibleSleep(std::chrono::milliseconds(500), interruptCond, interruptOpenConnections))
             return;
 
         CSemaphoreGrant grant(*semOutbound);
@@ -1723,7 +1716,7 @@ void CConnman::ThreadOpenConnections()
             if (fFeeler) {
                 // Add small amount of random noise before connection to avoid synchronization.
                 int randsleep = GetRandInt(FEELER_SLEEP_WINDOW * 1000);
-                if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(randsleep), [this]()->bool{ return !interruptOpenConnections.test_and_set(); }))
+                if(!InterruptibleSleep(std::chrono::milliseconds(randsleep), interruptCond, interruptOpenConnections))
                     return;
                 LogPrint("net", "Making feeler connection to %s\n", addrConnect.ToString());
             }
@@ -1806,11 +1799,11 @@ void CConnman::ThreadOpenAddedConnections()
                 // OpenNetworkConnection can detect existing connections to that IP/port.
                 CService service(LookupNumeric(info.strAddedNode.c_str(), Params().GetDefaultPort()));
                 OpenNetworkConnection(CAddress(service, NODE_NONE), false, &grant, info.strAddedNode.c_str(), false);
-                if(interruptCond.wait_for(nullLock, std::chrono::milliseconds(500), [this]()->bool{ return !interruptOpenAddedConnections.test_and_set(); }))
+                if(!InterruptibleSleep(std::chrono::milliseconds(500), interruptCond, interruptOpenAddedConnections))
                     return;
             }
         }
-        if(interruptCond.wait_for(nullLock, std::chrono::minutes(2), [this]()->bool{ return !interruptOpenAddedConnections.test_and_set(); }))
+        if(!InterruptibleSleep(std::chrono::minutes(2), interruptCond, interruptOpenAddedConnections))
             return;
     }
 }
@@ -1903,9 +1896,8 @@ void CConnman::ThreadMessageHandler()
                 pnode->Release();
         }
 
-        if (fSleep) {
-            // TODO: Should ignore spurious wakes?
-            messageHandlerCondition.wait_for(nullLock, std::chrono::milliseconds(100));
+        if (fSleep && !InterruptibleSleep(std::chrono::milliseconds(100), messageHandlerCondition, interruptMessageHandler)) {
+            return;
         }
     }
 }
