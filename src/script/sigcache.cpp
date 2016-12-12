@@ -22,7 +22,7 @@ namespace {
  *
  * This may exhibit platform endian dependent behavior but because these are
  * nonced hashes (random) and this state is only ever used locally it is safe.
- * All that matter is local consistency.
+ * All that matters is local consistency.
  */
 class SignatureCacheHasher
 {
@@ -81,7 +81,12 @@ public:
     }
 };
 
-// Initialized outisde of VerifySignature to avoid atomic operation per call
+/* In previous versions of this code, signatureCache was a local static variable
+ * in CachingTransactionSignatureChecker::VerifySignature.  We initialize
+ * signatureCache outside of VerifySignature to avoid the atomic operation per
+ * call overhead associated with local static variables even though
+ * signatureCache could be made local to VerifySignature.
+*/
 static CSignatureCache signatureCache;
 }
 

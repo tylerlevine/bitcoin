@@ -203,7 +203,6 @@ private:
      * Should be set to log2(n)*/
     uint8_t depth_limit;
 
-
     /** hash_function is a const instance of the hash function. It cannot be
      * static or initialized at call time as it may have internal state (such as
      * a nonce).
@@ -393,8 +392,11 @@ public:
             /** Swap with the element at the location that was
             * not the last one looked at. Example:
             *
-            * 1) On first iter, always false so defaults to locs[0]
-            * 2) Second iter, last_loc == locs[0] so will go to locs[1]
+            * 1) On first iteration, last_loc == invalid(), find returns last, so
+            *    last_loc defaults to locs[0].
+            * 2) On further iterations, where last_loc == locs[k], last_loc will
+            *    go to locs[k+1 % 8], i.e., next of the 8 indicies wrapping around
+            *    to 0 if needed.
             *
             * This prevents moving the element we just put in.
             *
@@ -440,7 +442,6 @@ public:
      */
     inline bool contains(const Element& e, const bool erase) const
     {
-
         std::array<uint32_t, 8> locs = compute_hashes(e);
         for (uint32_t loc : locs)
             if (table[loc] == e) {
@@ -450,8 +451,7 @@ public:
             }
         return false;
     }
-
 };
-}
+} // namespace CuckooCache
 
 #endif
