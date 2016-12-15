@@ -2166,6 +2166,7 @@ bool CConnman::Start(CScheduler& scheduler, std::string& strNodeError, Options c
     //
 
     interruptSocketHandler.test_and_set();
+    InterruptSocks5(false);
     interruptDNSAddressSeed.test_and_set();
     interruptOpenAddedConnections.test_and_set();
     interruptOpenConnections.test_and_set();
@@ -2219,6 +2220,7 @@ void CConnman::Interrupt()
     interruptOpenConnections.clear();
     interruptOpenAddedConnections.clear();
     interruptDNSAddressSeed.clear();
+    InterruptSocks5(true);
 
     if (semOutbound)
         for (int i=0; i<(nMaxOutbound + nMaxFeeler); i++)
