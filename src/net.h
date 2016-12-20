@@ -366,6 +366,13 @@ private:
 
     unsigned int GetReceiveFloodSize() const;
 
+    template <typename Duration>
+    inline bool InterruptibleSleep(const Duration& rel_time, std::condition_variable& cond, std::atomic_flag& flag)
+    {
+        std::unique_lock<std::mutex> lock(interruptMutex);
+        return !cond.wait_for(lock, rel_time, [&flag](){ return !flag.test_and_set(); });
+    }
+
     // Network stats
     void RecordBytesRecv(uint64_t bytes);
     void RecordBytesSent(uint64_t bytes);
@@ -405,7 +412,7 @@ private:
     std::list<CNode*> vNodesDisconnected;
     mutable CCriticalSection cs_vNodes;
     std::atomic<NodeId> nLastNodeId;
-    std::condition_variable_any messageHandlerCondition;
+    std::condition_variable messageHandlerCondition;
 
     /** Services this instance offers */
     ServiceFlags nLocalServices;
@@ -422,7 +429,8 @@ private:
 
     /** SipHasher seeds for deterministic randomness */
     const uint64_t nSeed0, nSeed1;
-    std::condition_variable_any interruptCond;
+    std::condition_variable interruptCond;
+    std::mutex interruptMutex;
 
     std::atomic_flag interruptDNSAddressSeed = ATOMIC_FLAG_INIT;
     std::atomic_flag interruptSocketHandler = ATOMIC_FLAG_INIT;
