@@ -2214,7 +2214,6 @@ void CConnman::Interrupt()
 {
     LogPrintf("%s\n",__func__);
     interruptMessageHandler.clear();
-    interruptCond.notify_all();
     messageHandlerCondition.notify_all();
 
     interruptOpenConnections.clear();
@@ -2227,6 +2226,7 @@ void CConnman::Interrupt()
             semOutbound->post();
 
     interruptSocketHandler.clear();
+    interruptCond.notify_all();
 }
 
 void CConnman::Stop()
