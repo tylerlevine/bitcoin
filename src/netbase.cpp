@@ -11,6 +11,7 @@
 
 #include "hash.h"
 #include "sync.h"
+#include "interrupt.h"
 #include "uint256.h"
 #include "random.h"
 #include "util.h"
@@ -41,7 +42,7 @@ static proxyType nameProxy;
 static CCriticalSection cs_proxyInfos;
 int nConnectTimeout = DEFAULT_CONNECT_TIMEOUT;
 bool fNameLookup = DEFAULT_NAME_LOOKUP;
-std::atomic<bool> interruptSocks5(false);
+interruption_point interruptSocks5{};
 
 // Need ample time for negotiation for very slow proxies such as Tor (milliseconds)
 static const int SOCKS5_RECV_TIMEOUT = 20 * 1000;
@@ -247,8 +248,7 @@ bool static InterruptibleRecv(char* data, size_t len, int timeout, SOCKET& hSock
                 return false;
             }
         }
-        if (interruptSocks5)
-            return false;
+        interruptSocks5.check_interrupt();
         curTime = GetTimeMillis();
     }
     return len == 0;
@@ -718,7 +718,7 @@ bool SetSocketNonBlocking(SOCKET& hSocket, bool fNonBlocking)
     return true;
 }
 
-void InterruptSocks5(bool interrupt)
+void InterruptSocks5()
 {
-    interruptSocks5 = interrupt;
+    interruptSocks5.interrupt();
 }

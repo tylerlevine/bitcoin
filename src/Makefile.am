@@ -99,6 +99,7 @@ BITCOIN_CORE_H = \
   httprpc.h \
   httpserver.h \
   indirectmap.h \
+  interrupt.h \
   init.h \
   key.h \
   keystore.h \

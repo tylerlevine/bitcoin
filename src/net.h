@@ -19,6 +19,7 @@
 #include "streams.h"
 #include "sync.h"
 #include "uint256.h"
+#include "interrupt.h"
 
 #include <atomic>
 #include <deque>
@@ -366,12 +367,6 @@ private:
 
     unsigned int GetReceiveFloodSize() const;
 
-    template <typename Duration>
-    inline bool InterruptibleSleep(const Duration& rel_time, std::condition_variable& cond, std::atomic_flag& flag)
-    {
-        std::unique_lock<std::mutex> lock(interruptMutex);
-        return !cond.wait_for(lock, rel_time, [&flag](){ return !flag.test_and_set(); });
-    }
 
     // Network stats
     void RecordBytesRecv(uint64_t bytes);
@@ -430,13 +425,12 @@ private:
     /** SipHasher seeds for deterministic randomness */
     const uint64_t nSeed0, nSeed1;
     std::condition_variable interruptCond;
-    std::mutex interruptMutex;
 
-    std::atomic_flag interruptDNSAddressSeed = ATOMIC_FLAG_INIT;
-    std::atomic_flag interruptSocketHandler = ATOMIC_FLAG_INIT;
-    std::atomic_flag interruptOpenAddedConnections = ATOMIC_FLAG_INIT;
-    std::atomic_flag interruptOpenConnections = ATOMIC_FLAG_INIT;
-    std::atomic_flag interruptMessageHandler = ATOMIC_FLAG_INIT;
+    interruption_point interruptDNSAddressSeed{};
+    interruption_point interruptSocketHandler{};
+    interruption_point interruptOpenAddedConnections{};
+    interruption_point interruptOpenConnections{};
+    interruption_point interruptMessageHandler{};
 
     std::thread threadDNSAddressSeed;
     std::thread threadSocketHandler;

@@ -12,6 +12,7 @@
 #include "consensus/validation.h"
 #include "hash.h"
 #include "init.h"
+#include "interrupt.h"
 #include "validation.h"
 #include "merkleblock.h"
 #include "net.h"
@@ -38,7 +39,7 @@ using namespace std;
 # error "Bitcoin cannot be compiled without assertions."
 #endif
 
-std::atomic<bool> interruptNetProcessing(false);
+interruption_point interruptNetProcessing{};
 
 int64_t nTimeBestReceived = 0; // Used only to inform the wallet of when we last received a block
 
@@ -554,7 +555,7 @@ void FindNextBlocksToDownload(NodeId nodeid, unsigned int count, std::vector<CBl
 
 void InterruptNetProcessing()
 {
-    interruptNetProcessing = true;
+    interruptNetProcessing.interrupt();
 }
 
 bool GetNodeStateStats(NodeId nodeid, CNodeStateStats &stats) {
@@ -908,8 +909,7 @@ void static ProcessGetData(CNode* pfrom, const Consensus::Params& consensusParam
 
         const CInv &inv = *it;
         {
-            if(interruptNetProcessing)
-                return;
+            interruptNetProcessing.check_interrupt();
 
             it++;
 
@@ -1304,8 +1304,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         int64_t nSince = nNow - 10 * 60;
         BOOST_FOREACH(CAddress& addr, vAddr)
         {
-            if(interruptNetProcessing)
-                return true;
+            interruptNetProcessing.check_interrupt();
 
             if ((addr.nServices & REQUIRED_SERVICES) != REQUIRED_SERVICES)
                 continue;
@@ -1387,8 +1386,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         {
             CInv &inv = vInv[nInv];
 
-            if(interruptNetProcessing)
-                return true;
+            interruptNetProcessing.check_interrupt();
 
             bool fAlreadyHave = AlreadyHave(inv);
             LogPrint("net", "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom->id);
@@ -2468,8 +2466,7 @@ bool ProcessMessages(CNode* pfrom, CConnman& connman)
         try
         {
             fRet = ProcessMessage(pfrom, strCommand, vRecv, msg.nTime, chainparams, connman);
-            if(interruptNetProcessing)
-                return true;
+            interruptNetProcessing.check_interrupt();
         }
         catch (const std::ios_base::failure& e)
         {
