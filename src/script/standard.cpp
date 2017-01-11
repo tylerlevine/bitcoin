@@ -7,8 +7,8 @@
 
 #include "pubkey.h"
 #include "script/script.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 
 #include <boost/foreach.hpp>
 

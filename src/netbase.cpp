@@ -13,8 +13,8 @@
 #include "sync.h"
 #include "uint256.h"
 #include "random.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 
 #include <atomic>
 

@@ -11,12 +11,12 @@
 #include "rpc/server.h"
 #include "random.h"
 #include "sync.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 #include "ui_interface.h"
 #include "crypto/hmac_sha256.h"
 #include <stdio.h>
-#include "utilstrencodings.h"
+#include "util/strencodings.h"
 
 #include <boost/algorithm/string.hpp> // boost::trim
 #include <boost/foreach.hpp> //BOOST_FOREACH

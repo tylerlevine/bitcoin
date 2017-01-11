@@ -14,8 +14,8 @@
 #include "policy/rbf.h"
 #include "rpc/server.h"
 #include "timedata.h"
-#include "util.h"
-#include "utilmoneystr.h"
+#include "util/base.h"
+#include "util/moneystr.h"
 #include "wallet.h"
 #include "walletdb.h"
 

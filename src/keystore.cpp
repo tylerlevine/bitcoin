@@ -7,7 +7,7 @@
 
 #include "key.h"
 #include "pubkey.h"
-#include "util.h"
+#include "util/base.h"
 
 #include <boost/foreach.hpp>
 

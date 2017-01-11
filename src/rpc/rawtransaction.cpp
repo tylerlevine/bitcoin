@@ -22,7 +22,7 @@
 #include "script/standard.h"
 #include "txmempool.h"
 #include "uint256.h"
-#include "utilstrencodings.h"
+#include "util/strencodings.h"
 #ifdef ENABLE_WALLET
 #include "wallet/wallet.h"
 #endif

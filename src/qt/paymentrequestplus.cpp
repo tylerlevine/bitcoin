@@ -9,7 +9,7 @@
 
 #include "paymentrequestplus.h"
 
-#include "util.h"
+#include "util/base.h"
 
 #include <stdexcept>
 

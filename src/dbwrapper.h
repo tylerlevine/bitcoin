@@ -8,8 +8,8 @@
 #include "clientversion.h"
 #include "serialize.h"
 #include "streams.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 #include "version.h"
 
 #include <boost/filesystem/path.hpp>

@@ -16,8 +16,8 @@
 #include "streams.h"
 #include "sync.h"
 #include "txmempool.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 #include "hash.h"
 
 #include <stdint.h>

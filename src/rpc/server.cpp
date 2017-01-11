@@ -10,8 +10,8 @@
 #include "random.h"
 #include "sync.h"
 #include "ui_interface.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 
 #include <univalue.h>
 

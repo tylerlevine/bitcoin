@@ -4,7 +4,7 @@
 
 #include "policy/policy.h"
 #include "txmempool.h"
-#include "util.h"
+#include "util/base.h"
 
 #include "test/test_bitcoin.h"
 

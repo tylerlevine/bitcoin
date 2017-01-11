@@ -12,8 +12,8 @@
 #include "serialize.h"
 #include "streams.h"
 #include "uint256.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 #include "test/test_bitcoin.h"
 
 #include <vector>

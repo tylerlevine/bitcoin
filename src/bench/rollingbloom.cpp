@@ -6,7 +6,7 @@
 
 #include "bench.h"
 #include "bloom.h"
-#include "utiltime.h"
+#include "util/time.h"
 
 static void RollingBloom(benchmark::State& state)
 {

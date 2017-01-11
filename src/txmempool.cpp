@@ -13,9 +13,9 @@
 #include "policy/fees.h"
 #include "streams.h"
 #include "timedata.h"
-#include "util.h"
-#include "utilmoneystr.h"
-#include "utiltime.h"
+#include "util/base.h"
+#include "util/moneystr.h"
+#include "util/time.h"
 #include "version.h"
 
 using namespace std;

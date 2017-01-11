@@ -11,7 +11,7 @@
 #include "random.h"
 #include "streams.h"
 #include "txmempool.h"
-#include "util.h"
+#include "util/base.h"
 
 void TxConfirmStats::Initialize(std::vector<double>& defaultBuckets,
                                 unsigned int maxConfirms, double _decay)

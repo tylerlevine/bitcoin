@@ -14,8 +14,8 @@
 #include "sync.h"
 #include "timedata.h"
 #include "ui_interface.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 #include "version.h"
 
 #include <boost/foreach.hpp>

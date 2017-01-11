@@ -12,7 +12,7 @@
 #include "rpcconsole.h"
 #include "test/testutil.h"
 #include "univalue.h"
-#include "util.h"
+#include "util/base.h"
 
 #include <QDir>
 #include <QtGlobal>

@@ -29,7 +29,7 @@
 #include "rpc/server.h"
 #include "scheduler.h"
 #include "ui_interface.h"
-#include "util.h"
+#include "util/base.h"
 #include "warnings.h"
 
 #ifdef ENABLE_WALLET

@@ -8,8 +8,8 @@
 #include "addrman.h"
 #include "hash.h"
 #include "protocol.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 
 #include <stdint.h>
 

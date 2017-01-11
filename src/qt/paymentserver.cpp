@@ -12,7 +12,7 @@
 #include "chainparams.h"
 #include "validation.h" // For minRelayTxFee
 #include "ui_interface.h"
-#include "util.h"
+#include "util/base.h"
 #include "wallet/wallet.h"
 
 #include <cstdlib>

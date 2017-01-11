@@ -18,8 +18,8 @@
 #include "pow.h"
 #include "rpc/server.h"
 #include "txmempool.h"
-#include "util.h"
-#include "utilstrencodings.h"
+#include "util/base.h"
+#include "util/strencodings.h"
 #include "validationinterface.h"
 
 #include <memory>

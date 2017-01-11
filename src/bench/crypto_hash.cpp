@@ -8,7 +8,7 @@
 #include "bloom.h"
 #include "hash.h"
 #include "uint256.h"
-#include "utiltime.h"
+#include "util/time.h"
 #include "crypto/ripemd160.h"
 #include "crypto/sha1.h"
 #include "crypto/sha256.h"

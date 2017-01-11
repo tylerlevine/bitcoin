@@ -11,7 +11,7 @@
 
 #include "guiutil.h"
 
-#include "util.h"
+#include "util/base.h"
 
 #include <boost/filesystem.hpp>
 

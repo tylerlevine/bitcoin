@@ -6,7 +6,7 @@
 
 #include "key.h"
 #include "validation.h"
-#include "util.h"
+#include "util/base.h"
 
 int
 main(int argc, char** argv)

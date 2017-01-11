@@ -33,7 +33,7 @@
 
 #include "init.h"
 #include "ui_interface.h"
-#include "util.h"
+#include "util/base.h"
 
 #include <iostream>
 

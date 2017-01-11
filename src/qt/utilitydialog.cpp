@@ -19,7 +19,7 @@
 
 #include "clientversion.h"
 #include "init.h"
-#include "util.h"
+#include "util/base.h"
 
 #include <stdio.h>
 
