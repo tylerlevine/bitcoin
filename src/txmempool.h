@@ -15,7 +15,7 @@
 
 #include "amount.h"
 #include "coins.h"
-#include "indirectmap.h"
+#include "datastructures/indirectmap.h"
 #include "primitives/transaction.h"
 #include "sync.h"
 #include "random.h"

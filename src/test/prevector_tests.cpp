@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <vector>
-#include "prevector.h"
+#include "datastructures/prevector.h"
 
 #include "serialize.h"
 #include "streams.h"

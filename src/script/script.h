@@ -7,7 +7,7 @@
 #define BITCOIN_SCRIPT_SCRIPT_H
 
 #include "crypto/common.h"
-#include "prevector.h"
+#include "datastructures/prevector.h"
 
 #include <assert.h>
 #include <climits>

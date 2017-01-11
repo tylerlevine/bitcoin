@@ -11,7 +11,7 @@
 #include "uint256.h"
 #include "util.h"
 
-#include "cuckoocache.h"
+#include "datastructures/cuckoocache.h"
 #include <boost/thread.hpp>
 
 namespace {

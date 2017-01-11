@@ -5,7 +5,7 @@
 #ifndef BITCOIN_MEMUSAGE_H
 #define BITCOIN_MEMUSAGE_H
 
-#include "indirectmap.h"
+#include "datastructures/indirectmap.h"
 
 #include <stdlib.h>
 
