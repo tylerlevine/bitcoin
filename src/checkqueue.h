@@ -46,6 +46,9 @@ private:
      */
     std::atomic<unsigned int> nAwake;
 
+    /** If there is presently a master process either in the queue or adding jobs */
+    std::atomic<bool> fMasterPresent;
+
     //! Whether we're shutting down.
     bool fQuit;
 
@@ -111,8 +114,12 @@ private:
                     // Unfortunately we need this lock for this to be safe
                     // We hold it for the min time possible
                     {
-                        boost::unique_lock<boost::mutex> lock(mutex);
-                        condWorker.wait(lock, jobs_left);
+                        if (!fMasterPresent) { // Read once outside the lock and once inside
+                            boost::unique_lock<boost::mutex> lock(mutex);
+                            if (!fMasterPresent) {
+                                condWorker.wait(lock, jobs_left);
+                            }
+                        }
                     }
                     ++nAwake;
                 }
@@ -143,7 +150,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nAwake(0), fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_top_bot(0) {}
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_top_bot(0) {}
 
     //! Worker thread
     void Thread()
@@ -163,16 +170,20 @@ public:
     {
         check_mem = check_mem_in;
         check_mem_top_bot = 0;
+        fMasterPresent = true;
+        boost::unique_lock<boost::mutex> lock(mutex);
+        condWorker.notify_all();
     }
+    void Cleanup()
+    {
+        boost::unique_lock<boost::mutex> lock(mutex);
+        fMasterPresent = false;
+    }
+
     //! Add a batch of checks to the queue
     void Add(size_t size)
     {
         check_mem_top_bot += size<<32;
-        boost::unique_lock<boost::mutex> lock(mutex);
-        if (size == 1)
-            condWorker.notify_one();
-        else if (size > 1)
-            condWorker.notify_all();
     }
 
     ~CCheckQueue()
@@ -254,6 +265,7 @@ public:
         if (!fDone)
             Wait();
         if (pqueue != NULL) {
+            pqueue->Cleanup();
             LEAVE_CRITICAL_SECTION(pqueue->ControlMutex);
         }
     }
