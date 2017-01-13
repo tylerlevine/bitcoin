@@ -58,38 +58,34 @@ private:
     //! A pointer to contiguous memory that contains all checks
     T* check_mem {nullptr};
 
-    /** A bit-packed {uint32_t, uint32_t} representing the begin and end
-     * pointers into check_mem. They are packed into one atomic so that they can
-     * be atomically read and modified together.
-     */
-    std::atomic<uint64_t> check_mem_top_bot {0};
+    /** The begin and end offsets into check_mem. 128 bytes of padding is
+     * inserted before and after check_mem_top to eliminate false sharing*/
+    std::atomic<uint32_t> check_mem_bot {0};
+    unsigned char _padding[128];
+    std::atomic<uint32_t> check_mem_top {0};
+    unsigned char _padding2[128];
 
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false)
     {
-        // no_work_left returns true if there isn't work to be done
-        // it reads the version of the state cached in v
-        uint64_t v;
-        auto no_work_left = [&]{
-            return ((uint32_t) (v >> 32)) == ((uint32_t) v);
-        };
 
         uint8_t fOk = 1;
         // first iteration, only count non-master threads
         if (!fMaster)
             ++nAwake;
         for (;;) {
-            v = check_mem_top_bot;
-            // Try to increment v by 1 if our version of v indicates that there
-            // is work to be done.
-            // E.g., if v = 10<<32 + 10, don't attempt to exchange.
-            //       if v = 10<<32 + 9, then do attempt to exchange
+            uint32_t top_cache = check_mem_top;
+            uint32_t bottom_cache = check_mem_bot;
+            // Try to increment bottom_cache by 1 if our version of bottom_cache
+            // indicates that there is work to be done.
+            // E.g., if bottom_cache = top_cache, don't attempt to exchange.
+            //       if  bottom_cache < top_cache, then do attempt to exchange 
             //
-            // compare_exchange_weak, on failure, updates v to latest
-            while (!no_work_left() &&
-                    !check_mem_top_bot.compare_exchange_weak( v, v+1));
+            // compare_exchange_weak, on failure, updates bottom_cache to latest
+            while (top_cache > bottom_cache && 
+                    !check_mem_bot.compare_exchange_weak( bottom_cache, bottom_cache+1));
             // If our loop terminated because of no_work_left...
-            if (no_work_left())
+            if (top_cache <= bottom_cache)
             {
                 if (fMaster) {
                     fMasterPresent = false;
@@ -113,8 +109,8 @@ private:
                     ++nAwake;
                 }
             } else {
-                // We compute using v (not v+1 as above) because it is 0-indexed
-                T * pT = check_mem + ((uint32_t) v);
+                // We compute using bottom_cache (not bottom_cache + 1 as above) because it is 0-indexed
+                T * pT = check_mem + bottom_cache;
                 // Check whether we need to do work at all (can be read outside
                 // of lock because it's fine if a worker executes checks
                 // anyways)
@@ -139,7 +135,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_top_bot(0) {}
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(0) {}
 
     //! Worker thread
     void Thread()
@@ -158,7 +154,8 @@ public:
     void Setup(T* check_mem_in)
     {
         check_mem = check_mem_in;
-        check_mem_top_bot = 0;
+        check_mem_top = 0;
+        check_mem_bot = 0;
         fMasterPresent = true;
         boost::unique_lock<boost::mutex> lock(mutex);
         condWorker.notify_all();
@@ -167,7 +164,7 @@ public:
     //! Add a batch of checks to the queue
     void Add(size_t size)
     {
-        check_mem_top_bot += size<<32;
+        check_mem_top += size;
     }
 
     ~CCheckQueue()
