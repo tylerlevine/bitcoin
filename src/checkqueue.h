@@ -69,7 +69,6 @@ private:
     {
         boost::condition_variable& cond = fMaster ? condMaster : condWorker;
         typename std::vector<T>::iterator checks_iterator;
-        unsigned int nNow = 0;
         bool fOk = 1;
         // first iteration
         nTotal++;
@@ -93,27 +92,20 @@ private:
                     cond.wait(lock); // wait
                     nIdle--;
                 }
-                // Decide how many work units to process now.
-                // * Do not try to do everything at once, but aim for increasingly smaller batches so
-                //   all workers finish approximately simultaneously.
-                // * Try to account for idle jobs which will instantly start helping.
-                // * Don't do batches smaller than 1 (duh), or larger than nBatchSize.
-                nNow = std::max(1U, std::min(nBatchSize, (unsigned int)(check_mem_top - check_mem_bottom) / (nTotal + nIdle + 1)));
                 checks_iterator = check_mem_bottom;
-                std::advance(check_mem_bottom, nNow);
+                std::advance(check_mem_bottom, 1);
             }
             // Check whether we need to do work at all (can be read outside of
             // lock because it's fine if a worker executes checks anyways)
             fOk = fAllOk;
             // execute work
-            for (unsigned int i = 0; i < nNow && fOk; i++) {
-                fOk = (*checks_iterator)();
-                auto t = T();
-                checks_iterator->swap(t);
-                std::advance(checks_iterator, 1);
-            }
+            fOk &= fOk && (*checks_iterator)();
+            // free work
+            auto t = T();
+            checks_iterator->swap(t);
+            // Can't reveal result until after destructor called.
             fAllOk &= fOk;
-            nTodo.fetch_sub(nNow);
+            nTodo.fetch_sub(1);
         } while (true);
     }
 
