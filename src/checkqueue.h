@@ -76,24 +76,22 @@ private:
         do {
             {
                 boost::unique_lock<boost::mutex> lock(mutex);
-                // logically, the do loop starts here
-                if (fMaster && check_mem_top == check_mem_bottom) {
-                    // There's no harm to the master holding the lock
-                    // at this point because all the jobs are taken.
-                    // so busy spin
-                    while (nTodo != 0) {}
-                    nTotal--;
-                    bool fRet = fAllOk;
-                    // reset the status for new work later
-                    fAllOk = 1;
-                    // return the current status
-                    return fRet;
-                } else {
-                    while (check_mem_top == check_mem_bottom) { // while (empty)
-                        nIdle++;
-                        cond.wait(lock); // wait
-                        nIdle--;
-                    }
+                while (check_mem_top == check_mem_bottom) { // while (empty)
+                    if (fMaster) {
+                        // There's no harm to the master holding the lock
+                        // at this point because all the jobs are taken.
+                        // so busy spin
+                        while (nTodo != 0) {}
+                        nTotal--;
+                        bool fRet = fAllOk;
+                        // reset the status for new work later
+                        fAllOk = 1;
+                        // return the current status
+                        return fRet;
+                    } 
+                    nIdle++;
+                    cond.wait(lock); // wait
+                    nIdle--;
                 }
                 // Decide how many work units to process now.
                 // * Do not try to do everything at once, but aim for increasingly smaller batches so
@@ -103,9 +101,10 @@ private:
                 nNow = std::max(1U, std::min(nBatchSize, (unsigned int)(check_mem_top - check_mem_bottom) / (nTotal + nIdle + 1)));
                 checks_iterator = check_mem_bottom;
                 std::advance(check_mem_bottom, nNow);
-                // Check whether we need to do work at all
-                fOk = fAllOk;
             }
+            // Check whether we need to do work at all (can be read outside of
+            // lock because it's fine if a worker executes checks anyways)
+            fOk = fAllOk;
             // execute work
             for (unsigned int i = 0; i < nNow && fOk; i++) {
                 fOk = (*checks_iterator)();
