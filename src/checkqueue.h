@@ -73,9 +73,9 @@ private:
         };
         bool fOk = 1;
         // first iteration
-        ++nAwake;
+        if (!fMaster)
+            ++nAwake;
         do {
-            --nAwake; // Technically, we're asleep here...
             if (fMaster && !jobs_left()) {
                 // There's no harm to the master holding the lock
                 // at this point because all the jobs are taken.
@@ -87,19 +87,19 @@ private:
                 // return the current status
                 return fRet;
             } 
-            {
-                if (!fMaster) {
-                    boost::mutex m;
-                    boost::unique_lock<boost::mutex> lock(m);
-                    condWorker.wait(lock, jobs_left); // wait if not master
-                }
-            }
-            ++nAwake;
             v = check_mem_top_bot;
             while (!no_work_left() && 
                     !check_mem_top_bot.compare_exchange_weak( v, v+1));
             if (no_work_left())
+            {
+                if (!fMaster) {
+                    boost::unique_lock<boost::mutex> lock(mutex);
+                    --nAwake; // Technically, we're asleep here...
+                    condWorker.wait(lock, jobs_left); // wait if not master
+                    ++nAwake;
+                }
                 continue;
+            }
             T * checks_iterator = check_mem + ((uint32_t) v);
             // Check whether we need to do work at all (can be read outside of
             // lock because it's fine if a worker executes checks anyways)
