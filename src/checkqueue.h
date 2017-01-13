@@ -67,8 +67,7 @@ private:
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false)
     {
-        boost::condition_variable& cond = fMaster ? condMaster : condWorker;
-        typename std::vector<T>::iterator checks_iterator;
+        T* checks_iterator;
         bool fOk = 1;
         // first iteration
         nTotal++;
@@ -89,11 +88,11 @@ private:
                         return fRet;
                     } 
                     nIdle++;
-                    cond.wait(lock); // wait
+                    condWorker.wait(lock); // wait
                     nIdle--;
                 }
-                checks_iterator = check_mem_bottom;
-                std::advance(check_mem_bottom, 1);
+                checks_iterator = check_mem + check_mem_bottom;
+                check_mem_bottom += 1;
             }
             // Check whether we need to do work at all (can be read outside of
             // lock because it's fine if a worker executes checks anyways)
@@ -128,15 +127,15 @@ public:
         return Loop(true);
     }
 
-    typename std::vector<T>::iterator check_mem;
-    typename std::vector<T>::iterator check_mem_top;
-    typename std::vector<T>::iterator check_mem_bottom;
-    void Setup(typename std::vector<T>::iterator check_mem_in) 
+    T* check_mem {nullptr};
+    uint32_t check_mem_top {0};
+    uint32_t check_mem_bottom {0};
+    void Setup(T* check_mem_in) 
     {
         boost::unique_lock<boost::mutex> lock(mutex);
         check_mem = check_mem_in;
-        check_mem_top = check_mem_in;
-        check_mem_bottom = check_mem_in;
+        check_mem_top = 0;
+        check_mem_bottom = 0;
     }
     //! Add a batch of checks to the queue
     void Add(size_t size)
@@ -178,7 +177,7 @@ public:
         if (pqueue != NULL) {
             ENTER_CRITICAL_SECTION(pqueue->ControlMutex);
             check_mem.reserve(size);
-            pqueue->Setup(check_mem.begin());
+            pqueue->Setup(&check_mem[0]);
         }
     }
 
