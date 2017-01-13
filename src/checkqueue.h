@@ -46,17 +46,17 @@ private:
     int nIdle;
 
     //! The total number of workers (including the master).
-    int nTotal;
+    std::atomic<int> nTotal;
 
     //! The temporary evaluation result.
-    bool fAllOk;
+    std::atomic<uint8_t> fAllOk;
 
     /**
      * Number of verifications that haven't completed yet.
      * This includes elements that are no longer queued, but still in the
      * worker's own batches.
      */
-    unsigned int nTodo;
+    std::atomic<unsigned int> nTodo;
 
     //! Whether we're shutting down.
     bool fQuit;
@@ -70,35 +70,30 @@ private:
         boost::condition_variable& cond = fMaster ? condMaster : condWorker;
         typename std::vector<T>::iterator checks_iterator;
         unsigned int nNow = 0;
-        bool fOk = true;
+        bool fOk = 1;
+        // first iteration
+        nTotal++;
         do {
             {
                 boost::unique_lock<boost::mutex> lock(mutex);
-                // first do the clean-up of the previous loop run (allowing us to do it in the same critsect)
-                if (nNow) {
-                    fAllOk &= fOk;
-                    nTodo -= nNow;
-                    if (nTodo == 0 && !fMaster)
-                        // We processed the last element; inform the master it can exit and return the result
-                        condMaster.notify_one();
-                } else {
-                    // first iteration
-                    nTotal++;
-                }
                 // logically, the do loop starts here
-                while (check_mem_top == check_mem_bottom) { // while (empty)
-                    if ((fMaster || fQuit) && nTodo == 0) {
-                        nTotal--;
-                        bool fRet = fAllOk;
-                        // reset the status for new work later
-                        if (fMaster)
-                            fAllOk = true;
-                        // return the current status
-                        return fRet;
+                if (fMaster && check_mem_top == check_mem_bottom) {
+                    // There's no harm to the master holding the lock
+                    // at this point because all the jobs are taken.
+                    // so busy spin
+                    while (nTodo != 0) {}
+                    nTotal--;
+                    bool fRet = fAllOk;
+                    // reset the status for new work later
+                    fAllOk = 1;
+                    // return the current status
+                    return fRet;
+                } else {
+                    while (check_mem_top == check_mem_bottom) { // while (empty)
+                        nIdle++;
+                        cond.wait(lock); // wait
+                        nIdle--;
                     }
-                    nIdle++;
-                    cond.wait(lock); // wait
-                    nIdle--;
                 }
                 // Decide how many work units to process now.
                 // * Do not try to do everything at once, but aim for increasingly smaller batches so
@@ -118,6 +113,8 @@ private:
                 checks_iterator->swap(t);
                 std::advance(checks_iterator, 1);
             }
+            fAllOk &= fOk;
+            nTodo.fetch_sub(nNow);
         } while (true);
     }
 
@@ -126,7 +123,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) : nIdle(0), nTotal(0), fAllOk(true), nTodo(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
+    CCheckQueue(unsigned int nBatchSizeIn) : nIdle(0), nTotal(0), fAllOk(1), nTodo(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
 
     //! Worker thread
     void Thread()
