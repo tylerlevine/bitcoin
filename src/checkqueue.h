@@ -100,6 +100,7 @@ private:
             if (no_work_left())
             {
                 if (fMaster) {
+                    fMasterPresent = false;
                     // There's no harm to the master holding the lock
                     // at this point because all the jobs are taken.
                     // so busy spin until no one else is awake
@@ -109,16 +110,14 @@ private:
                     fAllOk = 1;
                     // return the current status
                     return fRet;
-                } else {
-                    --nAwake;
+                } else  if (!fMasterPresent) { // Read once outside the lock and once inside
+                    --nAwake; 
                     // Unfortunately we need this lock for this to be safe
                     // We hold it for the min time possible
                     {
-                        if (!fMasterPresent) { // Read once outside the lock and once inside
-                            boost::unique_lock<boost::mutex> lock(mutex);
-                            if (!fMasterPresent) {
-                                condWorker.wait(lock, jobs_left);
-                            }
+                        boost::unique_lock<boost::mutex> lock(mutex);
+                        if (!fMasterPresent) {
+                            condWorker.wait(lock, jobs_left);
                         }
                     }
                     ++nAwake;
@@ -173,11 +172,6 @@ public:
         fMasterPresent = true;
         boost::unique_lock<boost::mutex> lock(mutex);
         condWorker.notify_all();
-    }
-    void Cleanup()
-    {
-        boost::unique_lock<boost::mutex> lock(mutex);
-        fMasterPresent = false;
     }
 
     //! Add a batch of checks to the queue
@@ -265,7 +259,6 @@ public:
         if (!fDone)
             Wait();
         if (pqueue != NULL) {
-            pqueue->Cleanup();
             LEAVE_CRITICAL_SECTION(pqueue->ControlMutex);
         }
     }
