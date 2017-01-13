@@ -42,11 +42,7 @@ private:
     //! The queue of elements to be processed.
     //! As the order of booleans doesn't matter, it is used as a LIFO (stack)
 
-    //! The number of workers (including the master) that are idle.
-    int nIdle;
 
-    //! The total number of workers (including the master).
-    std::atomic<int> nTotal;
 
     //! The temporary evaluation result.
     std::atomic<uint8_t> fAllOk;
@@ -67,33 +63,38 @@ private:
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false)
     {
+        auto jobs_remaining = [&]{ 
+            uint64_t x = check_mem_top_bot; 
+            return ((uint32_t) (x >> 32)) - ((uint32_t) x);
+        };
         T* checks_iterator;
         bool fOk = 1;
         // first iteration
-        nTotal++;
         do {
             {
                 boost::unique_lock<boost::mutex> lock(mutex);
-                for (uint64_t x = check_mem_top_bot; 
-                        ((x >> 32) << 32) == (x << 32);
-                        x = check_mem_top_bot) {
-                    if (fMaster) {
-                        // There's no harm to the master holding the lock
-                        // at this point because all the jobs are taken.
-                        // so busy spin
-                        while (nTodo != 0) {}
-                        nTotal--;
-                        bool fRet = fAllOk;
-                        // reset the status for new work later
-                        fAllOk = 1;
-                        // return the current status
-                        return fRet;
-                    } 
-                    nIdle++;
-                    condWorker.wait(lock); // wait
-                    nIdle--;
-                }
-                checks_iterator = check_mem + ((check_mem_top_bot++<<32)>>32);
+                if (fMaster && jobs_remaining() == 0) {
+                    // There's no harm to the master holding the lock
+                    // at this point because all the jobs are taken.
+                    // so busy spin
+                    while (nTodo != 0) {}
+                    bool fRet = fAllOk;
+                    // reset the status for new work later
+                    fAllOk = 1;
+                    // return the current status
+                    return fRet;
+                } 
+                condWorker.wait(lock, jobs_remaining); // wait
+                uint64_t v = check_mem_top_bot;
+                auto has_work_left = [&]{
+                    return ((uint32_t) (v >> 32)) != ((uint32_t) v);
+                };
+                while (has_work_left() && 
+                        !check_mem_top_bot.compare_exchange_weak(
+                            v, v+1));
+                if (!has_work_left())
+                    continue;
+                checks_iterator = check_mem + ((v<<32)>>32);
             }
             // Check whether we need to do work at all (can be read outside of
             // lock because it's fine if a worker executes checks anyways)
@@ -114,7 +115,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) : nIdle(0), nTotal(0), fAllOk(1), nTodo(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nTodo(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
 
     //! Worker thread
     void Thread()
@@ -129,19 +130,19 @@ public:
     }
 
     T* check_mem {nullptr};
-    uint64_t check_mem_top_bot {0};
+    std::atomic<uint64_t> check_mem_top_bot {0};
     void Setup(T* check_mem_in) 
     {
-        boost::unique_lock<boost::mutex> lock(mutex);
         check_mem = check_mem_in;
         check_mem_top_bot = 0;
     }
     //! Add a batch of checks to the queue
     void Add(size_t size)
     {
-        boost::unique_lock<boost::mutex> lock(mutex);
         check_mem_top_bot += size<<32;
         nTodo += size;
+
+        boost::unique_lock<boost::mutex> lock(mutex);
         if (size == 1)
             condWorker.notify_one();
         else if (size > 1)
