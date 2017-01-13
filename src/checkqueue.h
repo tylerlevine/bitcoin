@@ -52,7 +52,7 @@ private:
      * This includes elements that are no longer queued, but still in the
      * worker's own batches.
      */
-    std::atomic<unsigned int> nTodo;
+    std::atomic<unsigned int> nAwake;
 
     //! Whether we're shutting down.
     bool fQuit;
@@ -63,39 +63,44 @@ private:
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false)
     {
-        auto jobs_remaining = [&]{ 
+        auto jobs_left = [&]{ 
             uint64_t x = check_mem_top_bot; 
-            return ((uint32_t) (x >> 32)) - ((uint32_t) x);
+            return ((uint32_t) (x >> 32)) > ((uint32_t) x);
         };
-        T* checks_iterator;
+        uint64_t v;
+        auto no_work_left = [&]{
+            return ((uint32_t) (v >> 32)) == ((uint32_t) v);
+        };
         bool fOk = 1;
         // first iteration
+        ++nAwake;
         do {
+            --nAwake; // Technically, we're asleep here...
+            if (fMaster && !jobs_left()) {
+                // There's no harm to the master holding the lock
+                // at this point because all the jobs are taken.
+                // so busy spin until no one else is awake
+                while (nAwake) {}
+                bool fRet = fAllOk;
+                // reset the status for new work later
+                fAllOk = 1;
+                // return the current status
+                return fRet;
+            } 
             {
-                boost::unique_lock<boost::mutex> lock(mutex);
-                if (fMaster && jobs_remaining() == 0) {
-                    // There's no harm to the master holding the lock
-                    // at this point because all the jobs are taken.
-                    // so busy spin
-                    while (nTodo != 0) {}
-                    bool fRet = fAllOk;
-                    // reset the status for new work later
-                    fAllOk = 1;
-                    // return the current status
-                    return fRet;
-                } 
-                condWorker.wait(lock, jobs_remaining); // wait
-                uint64_t v = check_mem_top_bot;
-                auto has_work_left = [&]{
-                    return ((uint32_t) (v >> 32)) != ((uint32_t) v);
-                };
-                while (has_work_left() && 
-                        !check_mem_top_bot.compare_exchange_weak(
-                            v, v+1));
-                if (!has_work_left())
-                    continue;
-                checks_iterator = check_mem + ((v<<32)>>32);
+                if (!fMaster) {
+                    boost::mutex m;
+                    boost::unique_lock<boost::mutex> lock(m);
+                    condWorker.wait(lock, jobs_left); // wait if not master
+                }
             }
+            ++nAwake;
+            v = check_mem_top_bot;
+            while (!no_work_left() && 
+                    !check_mem_top_bot.compare_exchange_weak( v, v+1));
+            if (no_work_left())
+                continue;
+            T * checks_iterator = check_mem + ((uint32_t) v);
             // Check whether we need to do work at all (can be read outside of
             // lock because it's fine if a worker executes checks anyways)
             fOk = fAllOk;
@@ -106,7 +111,6 @@ private:
             checks_iterator->swap(t);
             // Can't reveal result until after destructor called.
             fAllOk &= fOk;
-            nTodo.fetch_sub(1);
         } while (true);
     }
 
@@ -115,7 +119,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nTodo(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nAwake(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
 
     //! Worker thread
     void Thread()
@@ -140,8 +144,6 @@ public:
     void Add(size_t size)
     {
         check_mem_top_bot += size<<32;
-        nTodo += size;
-
         boost::unique_lock<boost::mutex> lock(mutex);
         if (size == 1)
             condWorker.notify_one();
