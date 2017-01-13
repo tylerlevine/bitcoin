@@ -67,14 +67,6 @@ private:
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false)
     {
-        // jobs_left returns true if there is work to be done
-        // it reads the latest version of the state without
-        // updating v (enforced by compiler by scope order)
-        auto jobs_left = [&]{
-            uint64_t x = check_mem_top_bot;
-            return ((uint32_t) (x >> 32)) > ((uint32_t) x);
-        };
-
         // no_work_left returns true if there isn't work to be done
         // it reads the version of the state cached in v
         uint64_t v;
@@ -116,9 +108,7 @@ private:
                     // We hold it for the min time possible
                     {
                         boost::unique_lock<boost::mutex> lock(mutex);
-                        if (!fMasterPresent) {
-                            condWorker.wait(lock, jobs_left);
-                        }
+                        condWorker.wait(lock, [&]{ return fMasterPresent.load();});
                     }
                     ++nAwake;
                 }
