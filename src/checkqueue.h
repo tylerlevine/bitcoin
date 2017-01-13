@@ -16,7 +16,7 @@
 template <typename T>
 class CCheckQueueControl;
 
-/** 
+/**
  * Queue for verifications that have to be performed.
   * The verifications are represented by a type T, which must provide an
   * operator(), returning a bool.
@@ -30,27 +30,19 @@ template <typename T>
 class CCheckQueue
 {
 private:
-    //! Mutex to protect the inner state
+    //! Mutex to ensure that sleeping threads are woken.
     boost::mutex mutex;
 
     //! Worker threads block on this when out of work
     boost::condition_variable condWorker;
 
-    //! Master thread blocks on this when out of work
-    boost::condition_variable condMaster;
-
-    //! The queue of elements to be processed.
-    //! As the order of booleans doesn't matter, it is used as a LIFO (stack)
-
-
-
     //! The temporary evaluation result.
     std::atomic<uint8_t> fAllOk;
 
     /**
-     * Number of verifications that haven't completed yet.
-     * This includes elements that are no longer queued, but still in the
-     * worker's own batches.
+     * Number of verification threads that aren't in stand-by. When a thread is
+     * awake it may have a job that will return false, but is yet to report the
+     * result through fAllOk.
      */
     std::atomic<unsigned int> nAwake;
 
@@ -60,58 +52,90 @@ private:
     //! The maximum number of elements to be processed in one batch
     unsigned int nBatchSize;
 
+    //! A pointer to contiguous memory that contains all checks
+    T* check_mem {nullptr};
+
+    /** A bit-packed {uint32_t, uint32_t} representing the begin and end
+     * pointers into check_mem. They are packed into one atomic so that they can
+     * be atomically read and modified together.
+     */
+    std::atomic<uint64_t> check_mem_top_bot {0};
+
     /** Internal function that does bulk of the verification work. */
     bool Loop(bool fMaster = false)
     {
-        auto jobs_left = [&]{ 
-            uint64_t x = check_mem_top_bot; 
+        // jobs_left returns true if there is work to be done
+        // it reads the latest version of the state without
+        // updating v (enforced by compiler by scope order)
+        auto jobs_left = [&]{
+            uint64_t x = check_mem_top_bot;
             return ((uint32_t) (x >> 32)) > ((uint32_t) x);
         };
+
+        // no_work_left returns true if there isn't work to be done
+        // it reads the version of the state cached in v
         uint64_t v;
         auto no_work_left = [&]{
             return ((uint32_t) (v >> 32)) == ((uint32_t) v);
         };
-        bool fOk = 1;
-        // first iteration
+
+        uint8_t fOk = 1;
+        // first iteration, only count non-master threads
         if (!fMaster)
             ++nAwake;
-        do {
-            if (fMaster && !jobs_left()) {
-                // There's no harm to the master holding the lock
-                // at this point because all the jobs are taken.
-                // so busy spin until no one else is awake
-                while (nAwake) {}
-                bool fRet = fAllOk;
-                // reset the status for new work later
-                fAllOk = 1;
-                // return the current status
-                return fRet;
-            } 
+        for (;;) {
             v = check_mem_top_bot;
-            while (!no_work_left() && 
+            // Try to increment v by 1 if our version of v indicates that there
+            // is work to be done.
+            // E.g., if v = 10<<32 + 10, don't attempt to exchange.
+            //       if v = 10<<32 + 9, then do attempt to exchange
+            //
+            // compare_exchange_weak, on failure, updates v to latest
+            while (!no_work_left() &&
                     !check_mem_top_bot.compare_exchange_weak( v, v+1));
+            // If our loop terminated because of no_work_left...
             if (no_work_left())
             {
-                if (!fMaster) {
-                    boost::unique_lock<boost::mutex> lock(mutex);
-                    --nAwake; // Technically, we're asleep here...
-                    condWorker.wait(lock, jobs_left); // wait if not master
+                if (fMaster) {
+                    // There's no harm to the master holding the lock
+                    // at this point because all the jobs are taken.
+                    // so busy spin until no one else is awake
+                    while (nAwake) {}
+                    bool fRet = fAllOk;
+                    // reset the status for new work later
+                    fAllOk = 1;
+                    // return the current status
+                    return fRet;
+                } else {
+                    --nAwake;
+                    // Unfortunately we need this lock for this to be safe
+                    // We hold it for the min time possible
+                    {
+                        boost::unique_lock<boost::mutex> lock(mutex);
+                        condWorker.wait(lock, jobs_left);
+                    }
                     ++nAwake;
                 }
-                continue;
+            } else {
+                // We compute using v (not v+1 as above) because it is 0-indexed
+                T * pT = check_mem + ((uint32_t) v);
+                // Check whether we need to do work at all (can be read outside
+                // of lock because it's fine if a worker executes checks
+                // anyways)
+                fOk = fAllOk;
+                // execute work
+                fOk &= fOk && (*pT)();
+                // We swap in a default constructed value onto pT before freeing
+                // so that we don't accidentally double free when check_mem is
+                // freed. We don't strictly need to free here, but it's good
+                // practice in case T uses a lot of memory.
+                auto t = T();
+                pT->swap(t);
+                // Can't reveal result until after swapped, otherwise
+                // the master thread might exit and we'd double free pT
+                fAllOk &= fOk;
             }
-            T * checks_iterator = check_mem + ((uint32_t) v);
-            // Check whether we need to do work at all (can be read outside of
-            // lock because it's fine if a worker executes checks anyways)
-            fOk = fAllOk;
-            // execute work
-            fOk &= fOk && (*checks_iterator)();
-            // free work
-            auto t = T();
-            checks_iterator->swap(t);
-            // Can't reveal result until after destructor called.
-            fAllOk &= fOk;
-        } while (true);
+        }
     }
 
 public:
@@ -119,7 +143,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nAwake(0), fQuit(false), nBatchSize(nBatchSizeIn) {}
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nAwake(0), fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_top_bot(0) {}
 
     //! Worker thread
     void Thread()
@@ -133,9 +157,9 @@ public:
         return Loop(true);
     }
 
-    T* check_mem {nullptr};
-    std::atomic<uint64_t> check_mem_top_bot {0};
-    void Setup(T* check_mem_in) 
+    //! Setup is called once per batch to point the CheckQueue to the
+    // checks & restart the counters.
+    void Setup(T* check_mem_in)
     {
         check_mem = check_mem_in;
         check_mem_top_bot = 0;
@@ -157,7 +181,7 @@ public:
 
 };
 
-/** 
+/**
  * RAII-style controller object for a CCheckQueue that guarantees the passed
  * queue is finished before continuing.
  */
@@ -192,6 +216,8 @@ public:
         return fRet;
     }
 
+    //! Deprecated. emplacement Add + Flush are the preferred method for adding
+    // checks to the queue.
     void Add(std::vector<T>& vChecks)
     {
         if (pqueue != NULL) {
@@ -203,6 +229,10 @@ public:
             pqueue->Add(s);
         }
     }
+
+    //! Add directly constructs a check on the Controller's memory
+    // Checks created via emplacement Add won't be executed
+    // until a subsequent Flush call.
     template<typename ... Args>
     void Add(Args && ... args)
     {
@@ -210,6 +240,8 @@ public:
             check_mem.emplace_back(std::forward<Args>(args)...);
         }
     }
+
+    //! FLush is called to inform the worker of new jobs
     void Flush(size_t s)
     {
         if (pqueue != NULL) {
