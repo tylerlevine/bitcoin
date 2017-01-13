@@ -74,7 +74,9 @@ private:
         do {
             {
                 boost::unique_lock<boost::mutex> lock(mutex);
-                while (check_mem_top == check_mem_bottom) { // while (empty)
+                for (uint64_t x = check_mem_top_bot; 
+                        ((x >> 32) << 32) == (x << 32);
+                        x = check_mem_top_bot) {
                     if (fMaster) {
                         // There's no harm to the master holding the lock
                         // at this point because all the jobs are taken.
@@ -91,8 +93,7 @@ private:
                     condWorker.wait(lock); // wait
                     nIdle--;
                 }
-                checks_iterator = check_mem + check_mem_bottom;
-                check_mem_bottom += 1;
+                checks_iterator = check_mem + ((check_mem_top_bot++<<32)>>32);
             }
             // Check whether we need to do work at all (can be read outside of
             // lock because it's fine if a worker executes checks anyways)
@@ -128,20 +129,18 @@ public:
     }
 
     T* check_mem {nullptr};
-    uint32_t check_mem_top {0};
-    uint32_t check_mem_bottom {0};
+    uint64_t check_mem_top_bot {0};
     void Setup(T* check_mem_in) 
     {
         boost::unique_lock<boost::mutex> lock(mutex);
         check_mem = check_mem_in;
-        check_mem_top = 0;
-        check_mem_bottom = 0;
+        check_mem_top_bot = 0;
     }
     //! Add a batch of checks to the queue
     void Add(size_t size)
     {
         boost::unique_lock<boost::mutex> lock(mutex);
-        check_mem_top += size;
+        check_mem_top_bot += size<<32;
         nTodo += size;
         if (size == 1)
             condWorker.notify_one();
