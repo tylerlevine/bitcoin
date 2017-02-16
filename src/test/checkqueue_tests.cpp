@@ -82,16 +82,20 @@ struct MemoryCheck {
         return true;
     }
     MemoryCheck(){};
+    MemoryCheck(const MemoryCheck& x)
+    {
+        // We have to do this to make sure that destructor calls are paired
+        //
+        // Really, copy constructor should be deletable, but CCheckQueue breaks
+        // if it is deleted because of internal push_back.
+        fake_allocated_memory += b;
+    };
     MemoryCheck(bool b_) : b(b_)
     {
-        if (b) {
-            fake_allocated_memory += 1;
-        }
+        fake_allocated_memory += b;
     };
     ~MemoryCheck(){
-        if (b) {
-            fake_allocated_memory += 1;
-        }
+        fake_allocated_memory -= b;
     
     };
     void swap(MemoryCheck& x) { std::swap(b, x.b); };
@@ -162,7 +166,7 @@ void Correct_Queue_range(std::vector<size_t> range)
         }
         BOOST_REQUIRE(control.Wait());
         if (FakeCheckCheckCompletion::n_calls != i) {
-            BOOST_REQUIRE(FakeCheckCheckCompletion::n_calls == i);
+            BOOST_REQUIRE_EQUAL(FakeCheckCheckCompletion::n_calls, i);
             BOOST_TEST_MESSAGE("Failure on trial " << i << " expected, got " << FakeCheckCheckCompletion::n_calls);
         }
     }
@@ -243,7 +247,6 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Catches_Failure)
 BOOST_AUTO_TEST_CASE(test_CheckQueue_Recovers_From_Failure)
 {
     auto fail_queue = std::unique_ptr<Failing_Queue>(new Failing_Queue {QUEUE_BATCH_SIZE});
-    std::array<FailingCheck, 100> checks;
     boost::thread_group tg;
     for (auto x = 0; x < nScriptCheckThreads; ++x) {
        tg.create_thread([&]{fail_queue->Thread();});
@@ -291,7 +294,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_UniqueCheck)
         }
     }
     bool r = true;
-    BOOST_REQUIRE(UniqueCheck::results.size() == COUNT);
+    BOOST_REQUIRE_EQUAL(UniqueCheck::results.size(), COUNT);
     for (size_t i = 0; i < COUNT; ++i)
         r = r && UniqueCheck::results.count(i) == 1;
     BOOST_REQUIRE(r);
@@ -312,7 +315,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Memory)
     for (auto x = 0; x < nScriptCheckThreads; ++x) {
        tg.create_thread([&]{queue->Thread();});
     }
-    for (size_t i = 9999; i < 9999; --i) {
+    for (size_t i = 0; i < 1000; ++i) {
         size_t total = i;
         {
             CCheckQueueControl<MemoryCheck> control(queue.get());
@@ -328,7 +331,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_Memory)
                 control.Add(vChecks);
             }
         }
-        BOOST_REQUIRE(MemoryCheck::fake_allocated_memory == 0);
+        BOOST_REQUIRE_EQUAL(MemoryCheck::fake_allocated_memory, 0);
     }
     tg.interrupt_all();
     tg.join_all();
@@ -359,8 +362,8 @@ BOOST_AUTO_TEST_CASE(test_CheckQueue_FrozenCleanup)
         // Wait until the queue has finished all jobs and frozen
         FrozenCleanupCheck::cv.wait(l, [](){return FrozenCleanupCheck::nFrozen == 1;});
         // Try to get control of the queue a bunch of times
-        for (auto x = 0; x < 100; ++x) {
-            fails = fails || queue->ControlMutex.try_lock();
+        for (auto x = 0; x < 100 && !fails; ++x) {
+            fails = queue->ControlMutex.try_lock();
         }
         // Unfreeze
         FrozenCleanupCheck::nFrozen = 0;
@@ -394,7 +397,7 @@ BOOST_AUTO_TEST_CASE(test_CheckQueueControl_Locks)
                     });
         }
         tg.join_all();
-        BOOST_REQUIRE(fails == 0);
+        BOOST_REQUIRE_EQUAL(fails, 0);
     }
     {
         boost::thread_group tg;
@@ -421,8 +424,8 @@ BOOST_AUTO_TEST_CASE(test_CheckQueueControl_Locks)
             // Wait for thread to get the lock
             cv.wait(l, [&](){return has_lock;});
             bool fails = false;
-            for (auto x = 0; x < 100; ++x) {
-                fails = fails || queue->ControlMutex.try_lock();
+            for (auto x = 0; x < 100 && !fails; ++x) {
+                fails = queue->ControlMutex.try_lock();
             }
             has_tried = true;
             cv.notify_one();
