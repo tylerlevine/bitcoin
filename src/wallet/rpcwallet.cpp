@@ -1146,7 +1146,7 @@ UniValue ListReceived(const UniValue& params, bool fByAccounts)
             filter = filter | ISMINE_WATCH_ONLY;
 
     bool fFilterAddress = false;
-    CTxDestination filterAddress =  CBitcoinAddress{}.Get();
+    CTxDestination filterAddress =  CNoDestination();
     if (!fByAccounts && params.size() > 3) {
         filterAddress =  CBitcoinAddress(params[3].get_str()).Get();
         CTxDestination nulladdress = CNoDestination();
@@ -1283,7 +1283,7 @@ UniValue listreceivedbyaddress(const JSONRPCRequest& request)
 
     if (request.fHelp || request.params.size() > 4)
         throw runtime_error(
-            "listreceivedbyaddress ( minconf include_empty include_watchonly only_address)\n"
+            "listreceivedbyaddress (minconf include_empty include_watchonly only_address)\n"
             "\nList balances by receiving address.\n"
             "\nArguments:\n"
             "1. minconf           (numeric, optional, default=1) The minimum number of confirmations before payments are included.\n"
