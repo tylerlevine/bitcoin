@@ -195,7 +195,7 @@ public:
         if (pqueue != NULL) {
             ENTER_CRITICAL_SECTION(pqueue->ControlMutex);
             check_mem.reserve(size);
-            pqueue->Setup(&check_mem[0]);
+            pqueue->Setup(check_mem.data());
         }
     }
 
