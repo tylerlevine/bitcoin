@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <string>
 #include <vector>
+#include <thread>
 
 #include <boost/filesystem/path.hpp>
 #include <boost/signals2/signal.hpp>
@@ -234,5 +235,27 @@ template <typename Callable> void TraceThread(const char* name,  Callable func)
 }
 
 std::string CopyrightHolders(const std::string& strPrefix);
+
+[[noreturn]] void new_handler_terminate()
+{
+    // Rather than throwing std::bad-alloc if allocation fails, terminate
+    // immediately to (try to) avoid chain corruption.
+    static std::thread::id first_entrant{std::this_thread::get_id()};
+    // Since LogPrintf may itself allocate memory, we set a re-entry flag to
+    // true on the first pass 
+    static bool single_fault {true};
+    if (first_entrant == std::this_thread::get_id()) {
+        if (single_fault) {
+            // Single faulted
+            single_fault = false;
+            LogPrintf("Error: Out of memory. Terminating.\n");
+        }
+        // In either case, terminate now
+        std::terminate();
+    } else {
+        // Wait for first caller to handle the OOM and terminate the process
+        for (;;) {}
+    }
+};
 
 #endif // BITCOIN_UTIL_H
