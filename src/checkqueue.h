@@ -37,7 +37,7 @@ private:
     boost::condition_variable condWorker;
 
     //! The temporary evaluation result.
-    std::atomic<uint8_t> fAllOk;
+    std::atomic<bool> fAllOk;
 
     /**
      * Number of verification threads that aren't in stand-by. When a thread is
@@ -69,10 +69,8 @@ private:
     bool Loop(bool fMaster = false)
     {
 
-        uint8_t fOk = 1;
         // first iteration, only count non-master threads
-        if (!fMaster)
-            ++nAwake;
+        if (!fMaster) ++nAwake;
         for (;;) {
             uint32_t top_cache = check_mem_top.load(std::memory_order_acquire);
             uint32_t bottom_cache = check_mem_bot.load(std::memory_order_relaxed);
@@ -95,7 +93,7 @@ private:
                     while (nAwake.load(std::memory_order_acquire)) {}
                     bool fRet = fAllOk.load(std::memory_order_relaxed);
                     // reset the status for new work later
-                    fAllOk.store(1, std::memory_order_release);
+                    fAllOk.store(true, std::memory_order_release);
                     // return the current status
                     return fRet;
                 } else  if (!fMasterPresent) { // Read once outside the lock and once inside
@@ -109,22 +107,18 @@ private:
                     nAwake.fetch_add(1, std::memory_order_relaxed);
                 }
             } else {
-                // We compute using bottom_cache (not bottom_cache + 1 as above) because it is 0-indexed
-                T * pT = check_mem + bottom_cache;
                 // Check whether we need to do work at all (can be read outside
                 // of lock because it's fine if a worker executes checks
-                // anyways)
-                fOk = fAllOk.load(std::memory_order_relaxed);
-                if (fOk) {
-                    // execute work
-                    fOk = (*pT)();
-                    if (!fOk) {
-                        // Fast Exit
-                        // Heuristic that this will set check_mem_bot appropriately so that workers aren't spinning for a long time.
-                        check_mem_bot.store(check_mem_top.load(std::memory_order_acquire), std::memory_order_relaxed);
-                        fAllOk.store(false, std::memory_order_relaxed);
-                        fMasterPresent.store(false, std::memory_order_relaxed);
-                    }
+                // anyways).
+                if (!fAllOk.load(std::memory_order_relaxed)) continue;
+                // execute work
+                // We compute using bottom_cache (not bottom_cache + 1 as above) because it is 0-indexed
+                if (!(*(check_mem + bottom_cache))()) {
+                    // Fast Exit
+                    // Heuristic that this will set check_mem_bot appropriately so that workers aren't spinning for a long time.
+                    check_mem_bot.store(check_mem_top.load(std::memory_order_acquire), std::memory_order_relaxed);
+                    fAllOk.store(false, std::memory_order_relaxed);
+                    fMasterPresent.store(false, std::memory_order_relaxed);
                 }
             }
         }
@@ -135,7 +129,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(1), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(0) {}
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(true), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(0) {}
 
     //! Worker thread
     void Thread()
