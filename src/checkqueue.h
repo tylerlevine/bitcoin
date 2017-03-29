@@ -96,7 +96,7 @@ private:
                     fAllOk.store(true, std::memory_order_release);
                     // return the current status
                     return fRet;
-                } else  if (!fMasterPresent) { // Read once outside the lock and once inside
+                } else if (!fMasterPresent.load(std::memory_order_relaxed)) { // Read once outside the lock and once inside
                     nAwake.fetch_sub(1, std::memory_order_release); //  Release all writes to fAllOk before sleeping!
                     // Unfortunately we need this lock for this to be safe
                     // We hold it for the min time possible
