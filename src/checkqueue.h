@@ -118,14 +118,7 @@ private:
                 if (fOk) {
                     // execute work
                     fOk = (*pT)();
-                    if (fOk) {
-                        // We swap in a default constructed value onto pT before freeing
-                        // so that we don't accidentally double free when check_mem is
-                        // freed. We don't strictly need to free here, but it's good
-                        // practice in case T uses a lot of memory.
-                        auto t = T();
-                        pT->swap(t);
-                    } else {
+                    if (!fOk) {
                         // Fast Exit
                         // Heuristic that this will set check_mem_bot appropriately so that workers aren't spinning for a long time.
                         check_mem_bot.store(check_mem_top.load(std::memory_order_acquire), std::memory_order_relaxed);

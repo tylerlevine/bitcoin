@@ -76,9 +76,12 @@ struct UniqueCheck {
 
 struct MemoryCheck {
     static std::atomic<size_t> fake_allocated_memory;
+    bool called {false};
     bool b {false};
     bool operator()()
     {
+        called = true;
+        fake_allocated_memory -= b;
         return true;
     }
     MemoryCheck(){};
@@ -95,8 +98,7 @@ struct MemoryCheck {
         fake_allocated_memory += b;
     };
     ~MemoryCheck(){
-        fake_allocated_memory -= b;
-    
+        fake_allocated_memory -= b && !called;
     };
     void swap(MemoryCheck& x) { std::swap(b, x.b); };
 };
@@ -110,17 +112,17 @@ struct FrozenCleanupCheck {
     bool should_freeze {false};
     bool operator()()
     {
-        return true;
-    }
-    FrozenCleanupCheck() {}
-    ~FrozenCleanupCheck()
-    {
         if (should_freeze) {
             std::unique_lock<std::mutex> l(m);
             nFrozen = 1;
             cv.notify_one();
             cv.wait(l, []{ return nFrozen == 0;});
         }
+        return true;
+    }
+    FrozenCleanupCheck() {}
+    ~FrozenCleanupCheck()
+    {
     }
     void swap(FrozenCleanupCheck& x){std::swap(should_freeze, x.should_freeze);};
 };
