@@ -74,39 +74,39 @@ private:
         if (!fMaster)
             ++nAwake;
         for (;;) {
-            uint32_t top_cache = check_mem_top;
-            uint32_t bottom_cache = check_mem_bot;
+            uint32_t top_cache = check_mem_top.load(std::memory_order_acquire);
+            uint32_t bottom_cache = check_mem_bot.load(std::memory_order_relaxed);
             // Try to increment bottom_cache by 1 if our version of bottom_cache
             // indicates that there is work to be done.
             // E.g., if bottom_cache = top_cache, don't attempt to exchange.
-            //       if  bottom_cache < top_cache, then do attempt to exchange 
+            //       if  bottom_cache < top_cache, then do attempt to exchange
             //
             // compare_exchange_weak, on failure, updates bottom_cache to latest
-            while (top_cache > bottom_cache && 
-                    !check_mem_bot.compare_exchange_weak( bottom_cache, bottom_cache+1));
+            while (top_cache > bottom_cache &&
+                    !check_mem_bot.compare_exchange_weak( bottom_cache, bottom_cache+1, std::memory_order_relaxed));
             // If our loop terminated because of no_work_left...
             if (top_cache <= bottom_cache)
             {
                 if (fMaster) {
-                    fMasterPresent = false;
+                    fMasterPresent.store(false, std::memory_order_relaxed);
                     // There's no harm to the master holding the lock
                     // at this point because all the jobs are taken.
                     // so busy spin until no one else is awake
-                    while (nAwake) {}
-                    bool fRet = fAllOk;
+                    while (nAwake.load(std::memory_order_acquire)) {}
+                    bool fRet = fAllOk.load(std::memory_order_relaxed);
                     // reset the status for new work later
-                    fAllOk = 1;
+                    fAllOk.store(1, std::memory_order_release);
                     // return the current status
                     return fRet;
                 } else  if (!fMasterPresent) { // Read once outside the lock and once inside
-                    --nAwake; 
+                    nAwake.fetch_sub(1, std::memory_order_release); //  Release all writes to fAllOk before sleeping!
                     // Unfortunately we need this lock for this to be safe
                     // We hold it for the min time possible
                     {
                         boost::unique_lock<boost::mutex> lock(mutex);
-                        condWorker.wait(lock, [&]{ return fMasterPresent.load();});
+                        condWorker.wait(lock, [&]{ return fMasterPresent.load(std::memory_order_relaxed);});
                     }
-                    ++nAwake;
+                    nAwake.fetch_add(1, std::memory_order_relaxed);
                 }
             } else {
                 // We compute using bottom_cache (not bottom_cache + 1 as above) because it is 0-indexed
@@ -114,18 +114,25 @@ private:
                 // Check whether we need to do work at all (can be read outside
                 // of lock because it's fine if a worker executes checks
                 // anyways)
-                fOk = fAllOk;
-                // execute work
-                fOk &= fOk && (*pT)();
-                // We swap in a default constructed value onto pT before freeing
-                // so that we don't accidentally double free when check_mem is
-                // freed. We don't strictly need to free here, but it's good
-                // practice in case T uses a lot of memory.
-                auto t = T();
-                pT->swap(t);
-                // Can't reveal result until after swapped, otherwise
-                // the master thread might exit and we'd double free pT
-                fAllOk &= fOk;
+                fOk = fAllOk.load(std::memory_order_relaxed);
+                if (fOk) {
+                    // execute work
+                    fOk = (*pT)();
+                    if (fOk) {
+                        // We swap in a default constructed value onto pT before freeing
+                        // so that we don't accidentally double free when check_mem is
+                        // freed. We don't strictly need to free here, but it's good
+                        // practice in case T uses a lot of memory.
+                        auto t = T();
+                        pT->swap(t);
+                    } else {
+                        // Fast Exit
+                        // Heuristic that this will set check_mem_bot appropriately so that workers aren't spinning for a long time.
+                        check_mem_bot.store(check_mem_top.load(std::memory_order_acquire), std::memory_order_relaxed);
+                        fAllOk.store(false, std::memory_order_relaxed);
+                        fMasterPresent.store(false, std::memory_order_relaxed);
+                    }
+                }
             }
         }
     }
@@ -164,7 +171,7 @@ public:
     //! Add a batch of checks to the queue
     void Add(size_t size)
     {
-        check_mem_top += size;
+        check_mem_top.fetch_add(size, std::memory_order_release);
     }
 
     ~CCheckQueue()
