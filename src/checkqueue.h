@@ -104,10 +104,17 @@ private:
                 while (nAwake.load(std::memory_order_acquire)) {}
                 return fAllOk.test_and_set(std::memory_order_release);
             }
+            if (!final_check_added) {
+                top_cache = check_mem_top.load(std::memory_order_acquire);
+                final_check_added = top_cache >> 31;
+                top_cache &= ~(1<<31);
+                // if this is our first time observing that the final check was
+                // added, skip back to the top to complete all work
+                if (final_check_added) continue;
+            }
             if (!fMasterPresent.load(std::memory_order_relaxed)) {
                 // ^^ Read once outside the lock and once inside
                 nAwake.fetch_sub(1, std::memory_order_release); //  Release all writes to fAllOk before sleeping!
-                final_check_added = false;
                 // Unfortunately we need this lock for this to be safe
                 // We hold it for the min time possible
                 {
@@ -116,14 +123,9 @@ private:
                 }
                 nAwake.fetch_add(1, std::memory_order_release);
                 top_cache = check_mem_top.load(std::memory_order_acquire);
-                final_check_added = top_cache & (1 << 31);
+                final_check_added = top_cache >> 31;
                 top_cache &= ~(1<<31);
                 continue;
-            }
-            if (!final_check_added) {
-                top_cache = check_mem_top.load(std::memory_order_acquire);
-                final_check_added = top_cache & (1 << 31);
-                top_cache &= ~(1<<31);
             }
         }
     }
@@ -134,7 +136,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(0) 
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(0)
     {
         fAllOk.test_and_set();
     }
@@ -148,6 +150,7 @@ public:
     //! Wait until execution finishes, and return whether all evaluations were successful.
     bool Wait()
     {
+        DoneAdding();
         return Loop(true);
     }
 
@@ -167,6 +170,12 @@ public:
     void Add(size_t size)
     {
         check_mem_top.fetch_add(size, std::memory_order_release);
+    }
+
+    //! Signal that no more checks will be added
+    void DoneAdding()
+    {
+        check_mem_top.fetch_or(1<<31, std::memory_order_relaxed);
     }
 
     ~CCheckQueue()
@@ -205,7 +214,6 @@ public:
     {
         if (pqueue == NULL)
             return true;
-        pqueue->Add(1<<31);
         bool fRet = pqueue->Wait();
         fDone = true;
         return fRet;
