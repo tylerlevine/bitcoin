@@ -71,7 +71,8 @@ private:
 
         // first iteration, only count non-master threads
         if (!fMaster) ++nAwake;
-        uint32_t top_cache = fMaster ? check_mem_top.load(std::memory_order_relaxed) : 0;
+        uint32_t top_cache = fMaster ? check_mem_top.load(std::memory_order_relaxed) & ~(1 << 31) : 0;
+        bool final_check_added = fMaster;
         for (;;) {
             uint32_t bottom_cache = check_mem_bot.load(std::memory_order_relaxed);
             // Try to increment bottom_cache by 1 if our version of bottom_cache
@@ -89,7 +90,7 @@ private:
                 if (!(*(check_mem + bottom_cache))()) {
                     // Fast Exit
                     // Heuristic that this will set check_mem_bot appropriately so that workers aren't spinning for a long time.
-                    check_mem_bot.store(check_mem_top.load(std::memory_order_acquire), std::memory_order_relaxed);
+                    check_mem_bot.store(std::numeric_limits<uint32_t>::max(), std::memory_order_relaxed);
                     fAllOk.store(false, std::memory_order_relaxed);
                     fMasterPresent.store(false, std::memory_order_relaxed);
                 }
@@ -110,6 +111,7 @@ private:
             if (!fMasterPresent.load(std::memory_order_relaxed)) {
                 // ^^ Read once outside the lock and once inside
                 nAwake.fetch_sub(1, std::memory_order_release); //  Release all writes to fAllOk before sleeping!
+                final_check_added = false;
                 // Unfortunately we need this lock for this to be safe
                 // We hold it for the min time possible
                 {
@@ -118,9 +120,15 @@ private:
                 }
                 nAwake.fetch_add(1, std::memory_order_release);
                 top_cache = check_mem_top.load(std::memory_order_acquire);
+                final_check_added = top_cache & (1 << 31);
+                top_cache &= ~(1<<31);
                 continue;
             }
-            top_cache = check_mem_top.load(std::memory_order_acquire);
+            if (!final_check_added) {
+                top_cache = check_mem_top.load(std::memory_order_acquire);
+                final_check_added = top_cache & (1 << 31);
+                top_cache &= ~(1<<31);
+            }
         }
     }
 
@@ -198,6 +206,7 @@ public:
     {
         if (pqueue == NULL)
             return true;
+        pqueue->Add(1<<31);
         bool fRet = pqueue->Wait();
         fDone = true;
         return fRet;
