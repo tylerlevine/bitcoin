@@ -71,8 +71,8 @@ private:
 
         // first iteration, only count non-master threads
         if (!fMaster) ++nAwake;
+        uint32_t top_cache = fMaster ? check_mem_top.load(std::memory_order_relaxed) : 0;
         for (;;) {
-            uint32_t top_cache = check_mem_top.load(std::memory_order_acquire);
             uint32_t bottom_cache = check_mem_bot.load(std::memory_order_relaxed);
             // Try to increment bottom_cache by 1 if our version of bottom_cache
             // indicates that there is work to be done.
@@ -82,37 +82,10 @@ private:
             // compare_exchange_weak, on failure, updates bottom_cache to latest
             while (top_cache > bottom_cache &&
                     !check_mem_bot.compare_exchange_weak( bottom_cache, bottom_cache+1, std::memory_order_relaxed));
-            // If our loop terminated because of no_work_left...
-            if (top_cache <= bottom_cache)
-            {
-                if (fMaster) {
-                    fMasterPresent.store(false, std::memory_order_relaxed);
-                    // There's no harm to the master holding the lock
-                    // at this point because all the jobs are taken.
-                    // so busy spin until no one else is awake
-                    while (nAwake.load(std::memory_order_acquire)) {}
-                    bool fRet = fAllOk.load(std::memory_order_relaxed);
-                    // reset the status for new work later
-                    fAllOk.store(true, std::memory_order_release);
-                    // return the current status
-                    return fRet;
-                } else if (!fMasterPresent.load(std::memory_order_relaxed)) { // Read once outside the lock and once inside
-                    nAwake.fetch_sub(1, std::memory_order_release); //  Release all writes to fAllOk before sleeping!
-                    // Unfortunately we need this lock for this to be safe
-                    // We hold it for the min time possible
-                    {
-                        boost::unique_lock<boost::mutex> lock(mutex);
-                        condWorker.wait(lock, [&]{ return fMasterPresent.load(std::memory_order_relaxed);});
-                    }
-                    nAwake.fetch_add(1, std::memory_order_relaxed);
-                }
-            } else {
-                // Check whether we need to do work at all (can be read outside
-                // of lock because it's fine if a worker executes checks
-                // anyways).
-                if (!fAllOk.load(std::memory_order_relaxed)) continue;
-                // execute work
-                // We compute using bottom_cache (not bottom_cache + 1 as above) because it is 0-indexed
+            if (top_cache > bottom_cache) {
+                // ^^ If we have work to do execute work.
+                // We compute using bottom_cache (not bottom_cache + 1 as
+                // above) because it is 0-indexed
                 if (!(*(check_mem + bottom_cache))()) {
                     // Fast Exit
                     // Heuristic that this will set check_mem_bot appropriately so that workers aren't spinning for a long time.
@@ -120,9 +93,37 @@ private:
                     fAllOk.store(false, std::memory_order_relaxed);
                     fMasterPresent.store(false, std::memory_order_relaxed);
                 }
+                continue;
             }
+            if (fMaster) {
+                fMasterPresent.store(false, std::memory_order_relaxed);
+                // There's no harm to the master holding the lock
+                // at this point because all the jobs are taken.
+                // so busy spin until no one else is awake
+                while (nAwake.load(std::memory_order_acquire)) {}
+                bool fRet = fAllOk.load(std::memory_order_relaxed);
+                // reset the status for new work later
+                fAllOk.store(true, std::memory_order_release);
+                // return the current status
+                return fRet;
+            }
+            if (!fMasterPresent.load(std::memory_order_relaxed)) {
+                // ^^ Read once outside the lock and once inside
+                nAwake.fetch_sub(1, std::memory_order_release); //  Release all writes to fAllOk before sleeping!
+                // Unfortunately we need this lock for this to be safe
+                // We hold it for the min time possible
+                {
+                    boost::unique_lock<boost::mutex> lock(mutex);
+                    condWorker.wait(lock, [&]{ return fMasterPresent.load(std::memory_order_relaxed);});
+                }
+                nAwake.fetch_add(1, std::memory_order_release);
+                top_cache = check_mem_top.load(std::memory_order_acquire);
+                continue;
+            }
+            top_cache = check_mem_top.load(std::memory_order_acquire);
         }
     }
+
 
 public:
     //! Mutex to ensure only one concurrent CCheckQueueControl
