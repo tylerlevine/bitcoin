@@ -37,7 +37,7 @@ private:
     boost::condition_variable condWorker;
 
     //! The temporary evaluation result.
-    std::atomic<bool> fAllOk;
+    std::atomic_flag fAllOk;
 
     /**
      * Number of verification threads that aren't in stand-by. When a thread is
@@ -91,7 +91,7 @@ private:
                     // Fast Exit
                     // Heuristic that this will set check_mem_bot appropriately so that workers aren't spinning for a long time.
                     check_mem_bot.store(std::numeric_limits<uint32_t>::max(), std::memory_order_relaxed);
-                    fAllOk.store(false, std::memory_order_relaxed);
+                    fAllOk.clear(std::memory_order_relaxed);
                     fMasterPresent.store(false, std::memory_order_relaxed);
                 }
                 continue;
@@ -102,11 +102,7 @@ private:
                 // at this point because all the jobs are taken.
                 // so busy spin until no one else is awake
                 while (nAwake.load(std::memory_order_acquire)) {}
-                bool fRet = fAllOk.load(std::memory_order_relaxed);
-                // reset the status for new work later
-                fAllOk.store(true, std::memory_order_release);
-                // return the current status
-                return fRet;
+                return fAllOk.test_and_set(std::memory_order_release);
             }
             if (!fMasterPresent.load(std::memory_order_relaxed)) {
                 // ^^ Read once outside the lock and once inside
@@ -138,7 +134,10 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(true), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(0) {}
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(0) 
+    {
+        fAllOk.test_and_set();
+    }
 
     //! Worker thread
     void Thread()
