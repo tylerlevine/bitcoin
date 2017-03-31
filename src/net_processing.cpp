@@ -1193,6 +1193,12 @@ const int SENDCMPCT = 22;
 const int CMPCTBLOCK = 23;
 const int GETBLOCKTXN = 24;
 const int BLOCKTXN = 25;
+constexpr int AFTER_VERACK(int a) {
+    return a | (1<<30);
+}
+constexpr int WITH_VERACK(int a, bool b) {
+    return a | (b<<30);
+}
 };
 const static int allNetMessageTypesEnum[] = {
     NetMsgTypeEnum::VERSION,
@@ -1255,8 +1261,28 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         }
     }
 
-    switch (msg_type) {
+    // Each connection can only send one version message
+    if (pfrom->nVersion != 0 && msg_type == NetMsgTypeEnum::VERSION)
+    {
+        connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_DUPLICATE, std::string("Duplicate version message")));
+        LOCK(cs_main);
+        Misbehaving(pfrom->GetId(), 1);
+        return false;
+    }
+
+    if (pfrom->nVersion == 0 && !(msg_type == NetMsgTypeEnum::VERSION || msg_type == NetMsgTypeEnum::REJECT))
+    {
+        // Must have a version message before anything else
+        LOCK(cs_main);
+        Misbehaving(pfrom->GetId(), 1);
+        return false;
+    }
+    // At this point, the outgoing message serialization version can't change.
+    // unless we're a REJECT or VERSION, but then we don't use msgMaker
+    const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
+    switch (NetMsgTypeEnum::WITH_VERACK(msg_type, pfrom->fSuccessfullyConnected)) {
         case NetMsgTypeEnum::REJECT:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::REJECT):
             {
                 if (fDebug) {
                     try {
@@ -1281,18 +1307,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 }
             }
             break;
-
         case NetMsgTypeEnum::VERSION:
             {
-                // Each connection can only send one version message
-                if (pfrom->nVersion != 0)
-                {
-                    connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_DUPLICATE, std::string("Duplicate version message")));
-                    LOCK(cs_main);
-                    Misbehaving(pfrom->GetId(), 1);
-                    return false;
-                }
-
                 int64_t nTime;
                 CAddress addrMe;
                 CAddress addrFrom;
@@ -1448,65 +1464,42 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
             break;
-        default:
-            break;
-    }
+        case NetMsgTypeEnum::VERACK:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::VERACK):
+            {
+                pfrom->SetRecvVersion(std::min(pfrom->nVersion.load(), PROTOCOL_VERSION));
 
+                if (!pfrom->fInbound) {
+                    // Mark this node as currently connected, so we update its timestamp later.
+                    LOCK(cs_main);
+                    State(pfrom->GetId())->fCurrentlyConnected = true;
+                }
 
-    if (pfrom->nVersion == 0)
-    {
-        // Must have a version message before anything else
-        LOCK(cs_main);
-        Misbehaving(pfrom->GetId(), 1);
-        return false;
-    }
+                if (pfrom->nVersion >= SENDHEADERS_VERSION) {
+                    // Tell our peer we prefer to receive headers rather than inv's
+                    // We send this to non-NODE NETWORK peers as well, because even
+                    // non-NODE NETWORK peers can announce blocks (such as pruning
+                    // nodes)
+                    connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDHEADERS));
+                }
+                if (pfrom->nVersion >= SHORT_IDS_BLOCKS_VERSION) {
+                    // Tell our peer we are willing to provide version 1 or 2 cmpctblocks
+                    // However, we do not request new block announcements using
+                    // cmpctblock messages.
+                    // We send this to non-NODE NETWORK peers as well, because
+                    // they may wish to request compact blocks from us
+                    bool fAnnounceUsingCMPCTBLOCK = false;
+                    uint64_t nCMPCTBLOCKVersion = 2;
+                    if (pfrom->GetLocalServices() & NODE_WITNESS)
+                        connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion));
+                    nCMPCTBLOCKVersion = 1;
+                    connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion));
+                }
+                pfrom->fSuccessfullyConnected = true;
+                return true;
+            }
 
-    // At this point, the outgoing message serialization version can't change.
-    const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
-
-    if (msg_type == NetMsgTypeEnum::VERACK)
-    {
-        pfrom->SetRecvVersion(std::min(pfrom->nVersion.load(), PROTOCOL_VERSION));
-
-        if (!pfrom->fInbound) {
-            // Mark this node as currently connected, so we update its timestamp later.
-            LOCK(cs_main);
-            State(pfrom->GetId())->fCurrentlyConnected = true;
-        }
-
-        if (pfrom->nVersion >= SENDHEADERS_VERSION) {
-            // Tell our peer we prefer to receive headers rather than inv's
-            // We send this to non-NODE NETWORK peers as well, because even
-            // non-NODE NETWORK peers can announce blocks (such as pruning
-            // nodes)
-            connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDHEADERS));
-        }
-        if (pfrom->nVersion >= SHORT_IDS_BLOCKS_VERSION) {
-            // Tell our peer we are willing to provide version 1 or 2 cmpctblocks
-            // However, we do not request new block announcements using
-            // cmpctblock messages.
-            // We send this to non-NODE NETWORK peers as well, because
-            // they may wish to request compact blocks from us
-            bool fAnnounceUsingCMPCTBLOCK = false;
-            uint64_t nCMPCTBLOCKVersion = 2;
-            if (pfrom->GetLocalServices() & NODE_WITNESS)
-                connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion));
-            nCMPCTBLOCKVersion = 1;
-            connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion));
-        }
-        pfrom->fSuccessfullyConnected = true;
-    }
-
-    else if (!pfrom->fSuccessfullyConnected)
-    {
-        // Must have a verack message before anything else
-        LOCK(cs_main);
-        Misbehaving(pfrom->GetId(), 1);
-        return false;
-    }
-
-    switch (msg_type) {
-        case NetMsgTypeEnum::ADDR:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::ADDR):
             {
                 std::vector<CAddress> vAddr;
                 vRecv >> vAddr;
@@ -1554,14 +1547,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::SENDHEADERS:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::SENDHEADERS):
             {
                 LOCK(cs_main);
                 State(pfrom->GetId())->fPreferHeaders = true;
                 return true;
             }
 
-        case NetMsgTypeEnum::SENDCMPCT:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::SENDCMPCT):
             {
                 bool fAnnounceUsingCMPCTBLOCK = false;
                 uint64_t nCMPCTBLOCKVersion = 0;
@@ -1586,7 +1579,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::INV:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::INV):
             {
                 std::vector<CInv> vInv;
                 vRecv >> vInv;
@@ -1654,7 +1647,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::GETDATA:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETDATA):
             {
                 std::vector<CInv> vInv;
                 vRecv >> vInv;
@@ -1677,7 +1670,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::GETBLOCKS:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETBLOCKS):
             {
                 CBlockLocator locator;
                 uint256 hashStop;
@@ -1739,7 +1732,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::GETBLOCKTXN:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETBLOCKTXN):
             {
                 BlockTransactionsRequest req;
                 vRecv >> req;
@@ -1790,7 +1783,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::GETHEADERS:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETHEADERS):
             {
                 CBlockLocator locator;
                 uint256 hashStop;
@@ -1848,7 +1841,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::TX:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::TX):
             {
                 // Stop processing the transaction early if
                 // We are in blocks only mode and peer is either not whitelisted or whitelistrelay is off
@@ -2034,7 +2027,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::CMPCTBLOCK:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::CMPCTBLOCK):
             {
                 if (!fImporting && !fReindex) // Ignore blocks received while importing
                     return true;
@@ -2233,7 +2226,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
             }
 
-        case NetMsgTypeEnum::BLOCKTXN:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::BLOCKTXN):
             {
                 if (!fImporting && !fReindex) // Ignore blocks received while importing
                     return true;
@@ -2304,7 +2297,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::HEADERS:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::HEADERS):
             {
                 if (!fImporting && !fReindex) // Ignore blocks received while importing
                     return true;
@@ -2456,7 +2449,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::BLOCK:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::BLOCK):
             {
                 if (!fImporting && !fReindex) // Ignore blocks received while importing
                     return true;
@@ -2488,7 +2481,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::GETADDR:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETADDR):
             {
                 // This asymmetric behavior for inbound and outbound connections was introduced
                 // to prevent a fingerprinting attack: an attacker can send specific fake addresses
@@ -2517,7 +2510,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::MEMPOOL:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::MEMPOOL):
             {
                 if (!(pfrom->GetLocalServices() & NODE_BLOOM) && !pfrom->fWhitelisted)
                 {
@@ -2539,7 +2532,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::PING:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::PING):
             {
                 if (pfrom->nVersion > BIP0031_VERSION)
                 {
@@ -2562,7 +2555,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::PONG:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::PONG):
             {
                 int64_t pingUsecEnd = nTimeReceived;
                 uint64_t nonce = 0;
@@ -2620,7 +2613,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::FILTERLOAD:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::FILTERLOAD):
             {
                 CBloomFilter filter;
                 vRecv >> filter;
@@ -2643,7 +2636,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::FILTERADD:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::FILTERADD):
             {
                 std::vector<unsigned char> vData;
                 vRecv >> vData;
@@ -2669,7 +2662,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::FILTERCLEAR:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::FILTERCLEAR):
             {
                 LOCK(pfrom->cs_filter);
                 if (pfrom->GetLocalServices() & NODE_BLOOM) {
@@ -2680,7 +2673,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::FEEFILTER:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::FEEFILTER):
             {
                 CAmount newFeeFilter = 0;
                 vRecv >> newFeeFilter;
@@ -2694,7 +2687,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::NOTFOUND:
+        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::NOTFOUND):
             {
                 // We do not care about the NOTFOUND message, but logging an Unknown Command
                 // message would be undesirable as we transmit it ourselves.
@@ -2703,6 +2696,13 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         default:
             {
+                if (!pfrom->fSuccessfullyConnected)
+                {
+                    // Must have a verack message before anything else
+                    LOCK(cs_main);
+                    Misbehaving(pfrom->GetId(), 1);
+                    return false;
+                }
                 // Ignore unknown commands for extensibility
                 LogPrint("net", "Unknown command \"%s\" from peer=%d\n", SanitizeString(strCommand), pfrom->id);
                 return true;
