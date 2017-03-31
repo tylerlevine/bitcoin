@@ -7,11 +7,9 @@
 
 #include <algorithm>
 #include <vector>
-
-#include <boost/foreach.hpp>
-#include <boost/thread/condition_variable.hpp>
-#include <boost/thread/locks.hpp>
-#include <boost/thread/mutex.hpp>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 template <typename T>
 class CCheckQueueControl;
@@ -31,14 +29,16 @@ class CCheckQueue
 {
 private:
     //! Mutex to ensure that sleeping threads are woken.
-    boost::mutex mutex;
+    std::mutex mutex;
 
     //! Worker threads block on this when out of work
-    boost::condition_variable condWorker;
+    std::condition_variable condWorker;
 
     //! The temporary evaluation result.
     std::atomic_flag fAllOk;
 
+    //! Container for worker threads
+    std::vector<std::thread> threads;
     /**
      * Number of verification threads that aren't in stand-by. When a thread is
      * awake it may have a job that will return false, but is yet to report the
@@ -120,11 +120,13 @@ private:
                 // Unfortunately we need this lock for this to be safe
                 // We hold it for the min time possible
                 {
-                    boost::unique_lock<boost::mutex> lock(mutex);
+                    std::unique_lock<std::mutex> lock(mutex);
                     // Technically this won't wake up if a master thread joins
                     // and leaves very quickly without adding jobs, before the
                     // notify is processed, but that's OK.
-                    condWorker.wait(lock, [&]{ return check_mem_top.load(std::memory_order_relaxed) != (1u<<31);});
+                    condWorker.wait(lock, [&]{ return fQuit || check_mem_top.load(std::memory_order_relaxed) != (1u<<31);});
+                    if (fQuit)
+                        return false;
                 }
                 nAwake.fetch_add(1, std::memory_order_release);
                 top_cache = check_mem_top.load(std::memory_order_acquire);
@@ -138,7 +140,7 @@ private:
 
 public:
     //! Mutex to ensure only one concurrent CCheckQueueControl
-    boost::mutex ControlMutex;
+    std::mutex ControlMutex;
 
     //! Create a new check queue
     CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(), nAwake(0), fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(1u<<31)
@@ -149,7 +151,7 @@ public:
     //! Worker thread
     void Thread()
     {
-        Loop();
+        threads.emplace_back(&CCheckQueue::Loop, this, false);
     }
 
     //! Wait until execution finishes, and return whether all evaluations were successful.
@@ -164,7 +166,7 @@ public:
     void Setup(T* check_mem_in)
     {
         {
-            boost::unique_lock<boost::mutex> lock(mutex);
+            std::lock_guard<std::mutex> lock(mutex);
             check_mem = check_mem_in;
             check_mem_top.store(0, std::memory_order_relaxed);
             check_mem_bot.store(0, std::memory_order_relaxed);
@@ -184,8 +186,29 @@ public:
         check_mem_top.fetch_or(1u<<31, std::memory_order_relaxed);
     }
 
+    void Interrupt()
+    {
+        {
+            while (nAwake.load());
+            std::lock_guard<std::mutex> control_lock(ControlMutex);
+            std::lock_guard<std::mutex> notify_lock(mutex);
+            fQuit = true;
+            check_mem_top = (1u<<31);
+        }
+        condWorker.notify_all();
+    }
+
+    void Stop()
+    {
+        for (auto& t: threads)
+            t.join();
+        threads.clear();
+    }
+
     ~CCheckQueue()
     {
+        Interrupt();
+        Stop();
     }
 
 };

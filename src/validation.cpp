@@ -1655,6 +1655,12 @@ void ThreadScriptCheck() {
     RenameThread("bitcoin-scriptch");
     scriptcheckqueue.Thread();
 }
+void InterruptCheckQueue() {
+    scriptcheckqueue.Interrupt();
+}
+void StopCheckQueue() {
+    scriptcheckqueue.Stop();
+}
 
 // Protected by cs_main
 VersionBitsCache versionbitscache;
