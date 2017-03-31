@@ -1195,17 +1195,123 @@ const uint32_t GETBLOCKTXN = 24;
 const uint32_t BLOCKTXN = 25;
 const uint32_t NONE = 26;
 
-constexpr uint32_t BEFORE_VERACK(uint32_t a) {
-    // to enable before a verack, set bit 30
-    return a | (1<<30);
-}
-constexpr uint32_t AFTER_VERACK(uint32_t a) {
-    return a &  ~(1<<30);
-}
-constexpr uint32_t WITH_CONNECTION_INFO(uint32_t a, bool after_verack) {
-    // if b is false, (e.g before verack) set bit 30
-    return a | ((!after_verack)<<30);
-}
+
+const uint64_t ALL_MESSAGES =
+(1u << VERSION)|
+(1u << VERACK)|
+(1u << ADDR)|
+(1u << INV)|
+(1u << GETDATA)|
+(1u << MERKLEBLOCK)|
+(1u << GETBLOCKS)|
+(1u << GETHEADERS)|
+(1u << TX)|
+(1u << HEADERS)|
+(1u << BLOCK)|
+(1u << GETADDR)|
+(1u << MEMPOOL)|
+(1u << PING)|
+(1u << PONG)|
+(1u << NOTFOUND)|
+(1u << FILTERLOAD)|
+(1u << FILTERADD)|
+(1u << FILTERCLEAR)|
+(1u << REJECT)|
+(1u << SENDHEADERS)|
+(1u << FEEFILTER)|
+(1u << SENDCMPCT)|
+(1u << CMPCTBLOCK)|
+(1u << GETBLOCKTXN)|
+(1u << BLOCKTXN)|
+(1u << NONE);
+
+const uint64_t DURING_IMPORT =
+(1u << VERSION)|
+(1u << VERACK)|
+(1u << ADDR)|
+(1u << INV)|
+(1u << GETDATA)|
+(1u << MERKLEBLOCK)|
+(1u << GETBLOCKS)|
+(1u << GETHEADERS)|
+(1u << TX)|
+(0u << HEADERS)|
+(0u << BLOCK)|
+(1u << GETADDR)|
+(1u << MEMPOOL)|
+(1u << PING)|
+(1u << PONG)|
+(1u << NOTFOUND)|
+(1u << FILTERLOAD)|
+(1u << FILTERADD)|
+(1u << FILTERCLEAR)|
+(1u << REJECT)|
+(1u << SENDHEADERS)|
+(1u << FEEFILTER)|
+(1u << SENDCMPCT)|
+(0u << CMPCTBLOCK)|
+(1u << GETBLOCKTXN)|
+(0u << BLOCKTXN)|
+(0u << NONE);
+
+const uint64_t BEFORE_VERACK =
+(1u << VERSION)|
+(1u << VERACK)|
+(0u << ADDR)|
+(0u << INV)|
+(0u << GETDATA)|
+(0u << MERKLEBLOCK)|
+(0u << GETBLOCKS)|
+(0u << GETHEADERS)|
+(0u << TX)|
+(0u << HEADERS)|
+(0u << BLOCK)|
+(0u << GETADDR)|
+(0u << MEMPOOL)|
+(0u << PING)|
+(0u << PONG)|
+(0u << NOTFOUND)|
+(0u << FILTERLOAD)|
+(0u << FILTERADD)|
+(0u << FILTERCLEAR)|
+(1u << REJECT)|
+(0u << SENDHEADERS)|
+(0u << FEEFILTER)|
+(0u << SENDCMPCT)|
+(0u << CMPCTBLOCK)|
+(0u << GETBLOCKTXN)|
+(0u << BLOCKTXN)|
+(0u << NONE);
+
+const uint64_t AFTER_VERACK =
+(0u << VERSION)|
+(1u << VERACK)|
+(1u << ADDR)|
+(1u << INV)|
+(1u << GETDATA)|
+(1u << MERKLEBLOCK)|
+(1u << GETBLOCKS)|
+(1u << GETHEADERS)|
+(1u << TX)|
+(1u << HEADERS)|
+(1u << BLOCK)|
+(1u << GETADDR)|
+(1u << MEMPOOL)|
+(1u << PING)|
+(1u << PONG)|
+(1u << NOTFOUND)|
+(1u << FILTERLOAD)|
+(1u << FILTERADD)|
+(1u << FILTERCLEAR)|
+(1u << REJECT)|
+(1u << SENDHEADERS)|
+(1u << FEEFILTER)|
+(1u << SENDCMPCT)|
+(1u << CMPCTBLOCK)|
+(1u << GETBLOCKTXN)|
+(1u << BLOCKTXN)|
+(0u << NONE);
+
 };
 const static uint32_t allNetMessageTypesEnum[] = {
     NetMsgTypeEnum::VERSION,
@@ -1247,6 +1353,25 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 {
     LogPrint("net", "received: %s (%u bytes) peer=%d\n", SanitizeString(strCommand), vRecv.size(), pfrom->id);
     const uint32_t msg_type = strCommandToEnum(strCommand);
+    // If not on our msg whitelist, reject
+    uint64_t mask = 1u<<msg_type;
+    bool importing = fImporting || fReindex;
+    bool veracked = pfrom->fSuccessfullyConnected;
+    if (    !(!importing || (NetMsgTypeEnum::DURING_IMPORT & mask)) &&
+            !(!veracked  && (NetMsgTypeEnum::BEFORE_VERACK & mask)) &&
+            !(veracked   && (NetMsgTypeEnum::AFTER_VERACK & mask))) {
+        if (!veracked) {
+            // Must have a verack message before anything else
+            LOCK(cs_main);
+            Misbehaving(pfrom->GetId(), 1);
+            return false;
+        }
+        if (mask == (1<<NetMsgTypeEnum::NONE)) {
+            // Ignore unknown commands for extensibility
+            LogPrint("net", "Unknown command \"%s\" from peer=%d\n", SanitizeString(strCommand), pfrom->id);
+        }
+        return true;
+    }
     if (IsArgSet("-dropmessagestest") && GetRand(GetArg("-dropmessagestest", 0)) == 0)
     {
         LogPrintf("dropmessagestest DROPPING RECV MESSAGE\n");
@@ -1287,9 +1412,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     // At this point, the outgoing message serialization version can't change.
     // unless we're a REJECT or VERSION, but then we don't use msgMaker
     const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
-    switch (NetMsgTypeEnum::WITH_CONNECTION_INFO(msg_type, pfrom->fSuccessfullyConnected)) {
-        case NetMsgTypeEnum::BEFORE_VERACK(NetMsgTypeEnum::REJECT):
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::REJECT):
+    switch (msg_type) {
+        case NetMsgTypeEnum::REJECT:
             {
                 if (fDebug) {
                     try {
@@ -1314,7 +1438,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 }
                 return true;
             }
-        case NetMsgTypeEnum::BEFORE_VERACK(NetMsgTypeEnum::VERSION):
+        case NetMsgTypeEnum::VERSION:
             {
                 int64_t nTime;
                 CAddress addrMe;
@@ -1470,8 +1594,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 }
                 return true;
             }
-        case NetMsgTypeEnum::BEFORE_VERACK(NetMsgTypeEnum::VERACK):
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::VERACK):
+        case NetMsgTypeEnum::VERACK:
             {
                 pfrom->SetRecvVersion(std::min(pfrom->nVersion.load(), PROTOCOL_VERSION));
 
@@ -1505,7 +1628,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::ADDR):
+        case NetMsgTypeEnum::ADDR:
             {
                 std::vector<CAddress> vAddr;
                 vRecv >> vAddr;
@@ -1553,14 +1676,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::SENDHEADERS):
+        case NetMsgTypeEnum::SENDHEADERS:
             {
                 LOCK(cs_main);
                 State(pfrom->GetId())->fPreferHeaders = true;
                 return true;
             }
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::SENDCMPCT):
+        case NetMsgTypeEnum::SENDCMPCT:
             {
                 bool fAnnounceUsingCMPCTBLOCK = false;
                 uint64_t nCMPCTBLOCKVersion = 0;
@@ -1585,7 +1708,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::INV):
+        case NetMsgTypeEnum::INV:
             {
                 std::vector<CInv> vInv;
                 vRecv >> vInv;
@@ -1653,7 +1776,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETDATA):
+        case NetMsgTypeEnum::GETDATA:
             {
                 std::vector<CInv> vInv;
                 vRecv >> vInv;
@@ -1676,7 +1799,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETBLOCKS):
+        case NetMsgTypeEnum::GETBLOCKS:
             {
                 CBlockLocator locator;
                 uint256 hashStop;
@@ -1738,7 +1861,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETBLOCKTXN):
+        case NetMsgTypeEnum::GETBLOCKTXN:
             {
                 BlockTransactionsRequest req;
                 vRecv >> req;
@@ -1789,7 +1912,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETHEADERS):
+        case NetMsgTypeEnum::GETHEADERS:
             {
                 CBlockLocator locator;
                 uint256 hashStop;
@@ -1847,7 +1970,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::TX):
+        case NetMsgTypeEnum::TX:
             {
                 // Stop processing the transaction early if
                 // We are in blocks only mode and peer is either not whitelisted or whitelistrelay is off
@@ -2033,10 +2156,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::CMPCTBLOCK):
+        case NetMsgTypeEnum::CMPCTBLOCK:
             {
-                if (!fImporting && !fReindex) // Ignore blocks received while importing
-                    return true;
                 CBlockHeaderAndShortTxIDs cmpctblock;
                 vRecv >> cmpctblock;
 
@@ -2232,10 +2353,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
             }
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::BLOCKTXN):
+        case NetMsgTypeEnum::BLOCKTXN:
             {
-                if (!fImporting && !fReindex) // Ignore blocks received while importing
-                    return true;
                 BlockTransactions resp;
                 vRecv >> resp;
 
@@ -2303,10 +2422,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::HEADERS):
+        case NetMsgTypeEnum::HEADERS:
             {
-                if (!fImporting && !fReindex) // Ignore blocks received while importing
-                    return true;
                 std::vector<CBlockHeader> headers;
 
                 // Bypass the normal CBlock deserialization, as we don't want to risk deserializing 2000 full blocks.
@@ -2455,10 +2572,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::BLOCK):
+        case NetMsgTypeEnum::BLOCK:
             {
-                if (!fImporting && !fReindex) // Ignore blocks received while importing
-                    return true;
                 std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
                 vRecv >> *pblock;
 
@@ -2487,7 +2602,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::GETADDR):
+        case NetMsgTypeEnum::GETADDR:
             {
                 // This asymmetric behavior for inbound and outbound connections was introduced
                 // to prevent a fingerprinting attack: an attacker can send specific fake addresses
@@ -2516,7 +2631,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::MEMPOOL):
+        case NetMsgTypeEnum::MEMPOOL:
             {
                 if (!(pfrom->GetLocalServices() & NODE_BLOOM) && !pfrom->fWhitelisted)
                 {
@@ -2538,7 +2653,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::PING):
+        case NetMsgTypeEnum::PING:
             {
                 if (pfrom->nVersion > BIP0031_VERSION)
                 {
@@ -2561,7 +2676,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::PONG):
+        case NetMsgTypeEnum::PONG:
             {
                 int64_t pingUsecEnd = nTimeReceived;
                 uint64_t nonce = 0;
@@ -2619,7 +2734,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::FILTERLOAD):
+        case NetMsgTypeEnum::FILTERLOAD:
             {
                 CBloomFilter filter;
                 vRecv >> filter;
@@ -2642,7 +2757,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::FILTERADD):
+        case NetMsgTypeEnum::FILTERADD:
             {
                 std::vector<unsigned char> vData;
                 vRecv >> vData;
@@ -2668,7 +2783,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
 
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::FILTERCLEAR):
+        case NetMsgTypeEnum::FILTERCLEAR:
             {
                 LOCK(pfrom->cs_filter);
                 if (pfrom->GetLocalServices() & NODE_BLOOM) {
@@ -2679,7 +2794,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::FEEFILTER):
+        case NetMsgTypeEnum::FEEFILTER:
             {
                 CAmount newFeeFilter = 0;
                 vRecv >> newFeeFilter;
@@ -2693,27 +2808,15 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
 
-        case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::NOTFOUND):
+        case NetMsgTypeEnum::NOTFOUND:
             {
                 // We do not care about the NOTFOUND message, but logging an Unknown Command
                 // message would be undesirable as we transmit it ourselves.
                 return true;
             }
 
-        default:
-            {
-                if (!pfrom->fSuccessfullyConnected)
-                {
-                    // Must have a verack message before anything else
-                    LOCK(cs_main);
-                    Misbehaving(pfrom->GetId(), 1);
-                    return false;
-                }
-                // Ignore unknown commands for extensibility
-                LogPrint("net", "Unknown command \"%s\" from peer=%d\n", SanitizeString(strCommand), pfrom->id);
-                return true;
-            }
     }
+    return false;
 
 
 }
