@@ -46,8 +46,6 @@ private:
      */
     std::atomic<unsigned int> nAwake;
 
-    /** If there is presently a master process either in the queue or adding jobs */
-    std::atomic<bool> fMasterPresent;
 
     //! Whether we're shutting down.
     bool fQuit;
@@ -62,6 +60,11 @@ private:
      * inserted before and after check_mem_top to eliminate false sharing*/
     std::atomic<uint32_t> check_mem_bot {0};
     unsigned char _padding[128];
+    /** check_mem_top stores the upper offset. The msb of check_mem_top stores
+     * if the last check has been added in a given round, which is also used to
+     * detect if there is presently a master process either in the queue or
+     * adding jobs.
+     */
     std::atomic<uint32_t> check_mem_top {0};
     unsigned char _padding2[128];
 
@@ -71,7 +74,7 @@ private:
 
         // first iteration, only count non-master threads
         if (!fMaster) ++nAwake;
-        uint32_t top_cache = fMaster ? check_mem_top.load(std::memory_order_relaxed) & ~(1 << 31) : 0;
+        uint32_t top_cache = fMaster ? check_mem_top.load(std::memory_order_relaxed) & ~(1u<<31) : 0;
         bool final_check_added = fMaster;
         for (;;) {
             uint32_t bottom_cache = check_mem_bot.load(std::memory_order_relaxed);
@@ -92,12 +95,11 @@ private:
                     // Heuristic that this will set check_mem_bot appropriately so that workers aren't spinning for a long time.
                     check_mem_bot.store(std::numeric_limits<uint32_t>::max(), std::memory_order_relaxed);
                     fAllOk.clear(std::memory_order_relaxed);
-                    fMasterPresent.store(false, std::memory_order_relaxed);
                 }
                 continue;
             }
             if (fMaster) {
-                fMasterPresent.store(false, std::memory_order_relaxed);
+                check_mem_top.store(1u<<31, std::memory_order_relaxed);
                 // There's no harm to the master holding the lock
                 // at this point because all the jobs are taken.
                 // so busy spin until no one else is awake
@@ -107,24 +109,27 @@ private:
             if (!final_check_added) {
                 top_cache = check_mem_top.load(std::memory_order_acquire);
                 final_check_added = top_cache >> 31;
-                top_cache &= ~(1<<31);
+                top_cache &= ~(1u<<31);
                 // if this is our first time observing that the final check was
                 // added, skip back to the top to complete all work
                 if (final_check_added) continue;
             }
-            if (!fMasterPresent.load(std::memory_order_relaxed)) {
+            if (final_check_added) {
                 // ^^ Read once outside the lock and once inside
                 nAwake.fetch_sub(1, std::memory_order_release); //  Release all writes to fAllOk before sleeping!
                 // Unfortunately we need this lock for this to be safe
                 // We hold it for the min time possible
                 {
                     boost::unique_lock<boost::mutex> lock(mutex);
-                    condWorker.wait(lock, [&]{ return fMasterPresent.load(std::memory_order_relaxed);});
+                    // Technically this won't wake up if a master thread joins
+                    // and leaves very quickly without adding jobs, before the
+                    // notify is processed, but that's OK.
+                    condWorker.wait(lock, [&]{ return check_mem_top.load(std::memory_order_relaxed) != (1u<<31);});
                 }
                 nAwake.fetch_add(1, std::memory_order_release);
                 top_cache = check_mem_top.load(std::memory_order_acquire);
                 final_check_added = top_cache >> 31;
-                top_cache &= ~(1<<31);
+                top_cache &= ~(1u<<31);
                 continue;
             }
         }
@@ -136,7 +141,7 @@ public:
     boost::mutex ControlMutex;
 
     //! Create a new check queue
-    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(), nAwake(0), fMasterPresent(false),  fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(0)
+    CCheckQueue(unsigned int nBatchSizeIn) :  fAllOk(), nAwake(0), fQuit(false), nBatchSize(nBatchSizeIn), check_mem(nullptr), check_mem_bot(0), check_mem_top(1u<<31)
     {
         fAllOk.test_and_set();
     }
@@ -158,11 +163,12 @@ public:
     // checks & restart the counters.
     void Setup(T* check_mem_in)
     {
-        check_mem = check_mem_in;
-        check_mem_top = 0;
-        check_mem_bot = 0;
-        fMasterPresent = true;
-        boost::unique_lock<boost::mutex> lock(mutex);
+        {
+            boost::unique_lock<boost::mutex> lock(mutex);
+            check_mem = check_mem_in;
+            check_mem_top.store(0, std::memory_order_relaxed);
+            check_mem_bot.store(0, std::memory_order_relaxed);
+        }
         condWorker.notify_all();
     }
 
@@ -175,7 +181,7 @@ public:
     //! Signal that no more checks will be added
     void DoneAdding()
     {
-        check_mem_top.fetch_or(1<<31, std::memory_order_relaxed);
+        check_mem_top.fetch_or(1u<<31, std::memory_order_relaxed);
     }
 
     ~CCheckQueue()
