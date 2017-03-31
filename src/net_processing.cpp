@@ -1167,7 +1167,148 @@ inline void static SendBlockTransactions(const CBlock& block, const BlockTransac
     connman.PushMessage(pfrom, msgMaker.Make(nSendFlags, NetMsgType::BLOCKTXN, resp));
 }
 
-bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
+namespace NetMsgTypeEnum {
+    enum tag : uint64_t {
+        VERSION,
+        VERACK,
+        ADDR,
+        INV,
+        GETDATA,
+        MERKLEBLOCK,
+        GETBLOCKS,
+        GETHEADERS,
+        TX,
+        HEADERS,
+        BLOCK,
+        GETADDR,
+        MEMPOOL,
+        PING,
+        PONG,
+        NOTFOUND,
+        FILTERLOAD,
+        FILTERADD,
+        FILTERCLEAR,
+        REJECT,
+        SENDHEADERS,
+        FEEFILTER,
+        SENDCMPCT,
+        CMPCTBLOCK,
+        GETBLOCKTXN,
+        BLOCKTXN,
+        UNKNOWN,
+        // For static assert correctness
+        MAX_TAG,
+    };
+    static_assert(MAX_TAG <= 64, "Too many message types are defined in net_processing.cpp");
+
+    uint64_t CommandToEnum(const std::string& command)
+    {
+        const std::vector<std::string>& msgs = getAllNetMessageTypes();
+        for (size_t x = 0; x < msgs.size(); ++x)
+            if (command == msgs[x])
+                return x;
+        return UNKNOWN;
+    }
+
+    const std::string EnumToCommand(uint64_t e)
+    {
+        const std::vector<std::string>& msgs = getAllNetMessageTypes();
+        return msgs[e];
+    }
+
+    //! Message Processing Whitelists
+    const uint64_t ALLOWED_MSGS =
+          (1u << VERSION)
+        | (1u << VERACK)
+        | (1u << ADDR)
+        | (1u << INV)
+        | (1u << GETDATA)
+        | (1u << MERKLEBLOCK)
+        | (1u << GETBLOCKS)
+        | (1u << GETHEADERS)
+        | (1u << TX)
+        | (1u << HEADERS)
+        | (1u << BLOCK)
+        | (1u << GETADDR)
+        | (1u << MEMPOOL)
+        | (1u << PING)
+        | (1u << PONG)
+        | (1u << NOTFOUND)
+        | (1u << FILTERLOAD)
+        | (1u << FILTERADD)
+        | (1u << FILTERCLEAR)
+        | (1u << REJECT)
+        | (1u << SENDHEADERS)
+        | (1u << FEEFILTER)
+        | (1u << SENDCMPCT)
+        | (1u << CMPCTBLOCK)
+        | (1u << GETBLOCKTXN)
+        | (1u << BLOCKTXN);
+
+    const uint64_t WHILE_IMPORT =
+          (1u << VERSION)
+        | (1u << VERACK)
+        | (1u << ADDR)
+        | (1u << INV)
+        | (1u << GETDATA)
+        | (1u << MERKLEBLOCK)
+        | (1u << GETBLOCKS)
+        | (1u << GETHEADERS)
+        | (1u << TX)
+        | (1u << GETADDR)
+        | (1u << MEMPOOL)
+        | (1u << PING)
+        | (1u << PONG)
+        | (1u << NOTFOUND)
+        | (1u << FILTERLOAD)
+        | (1u << FILTERADD)
+        | (1u << FILTERCLEAR)
+        | (1u << REJECT)
+        | (1u << SENDHEADERS)
+        | (1u << FEEFILTER)
+        | (1u << SENDCMPCT)
+        | (1u << GETBLOCKTXN);
+
+    const uint64_t BEFORE_VERACK =
+          (1u << VERSION)
+        | (1u << VERACK)
+        | (1u << REJECT);
+
+    const uint64_t AFTER_VERACK =
+          (1u << VERACK)
+        | (1u << ADDR)
+        | (1u << INV)
+        | (1u << GETDATA)
+        | (1u << MERKLEBLOCK)
+        | (1u << GETBLOCKS)
+        | (1u << GETHEADERS)
+        | (1u << TX)
+        | (1u << HEADERS)
+        | (1u << BLOCK)
+        | (1u << GETADDR)
+        | (1u << MEMPOOL)
+        | (1u << PING)
+        | (1u << PONG)
+        | (1u << NOTFOUND)
+        | (1u << FILTERLOAD)
+        | (1u << FILTERADD)
+        | (1u << FILTERCLEAR)
+        | (1u << REJECT)
+        | (1u << SENDHEADERS)
+        | (1u << FEEFILTER)
+        | (1u << SENDCMPCT)
+        | (1u << CMPCTBLOCK)
+        | (1u << GETBLOCKTXN)
+        | (1u << BLOCKTXN);
+
+    //! Note FILTERCLEAR has to be 0, because filterclear was overloaded in #8709
+    const uint64_t FILTER_TYPES =
+          (1u << FILTERLOAD)
+        | (1u << FILTERADD)
+        | (0u << FILTERCLEAR);
+};
+bool static ProcessMessage(CNode* pfrom, uint64_t msg_type, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc);
+bool static ContextualProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
 {
     LogPrint(BCLog::NET, "received: %s (%u bytes) peer=%d\n", SanitizeString(strCommand), vRecv.size(), pfrom->id);
     if (IsArgSet("-dropmessagestest") && GetRand(GetArg("-dropmessagestest", 0)) == 0)
@@ -1175,23 +1316,63 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         LogPrintf("dropmessagestest DROPPING RECV MESSAGE\n");
         return true;
     }
+    const uint32_t msg_type = NetMsgTypeEnum::CommandToEnum(strCommand);
 
+    // Generate all whitelist checks
+    uint64_t mask = 1u<<msg_type;
+    bool importing = fImporting || fReindex;
+    bool gotVerack = pfrom->fSuccessfullyConnected;
+    // import_filter: not importing, or allowed during import
+    bool import_filter = !importing  || (NetMsgTypeEnum::WHILE_IMPORT & mask);
+    // before_verack: gotten verack, or allowed before verack
+    bool before_verack_filter = gotVerack || (NetMsgTypeEnum::BEFORE_VERACK & mask);
+    // after_verack: not veracked, or allowed after verack
+    bool after_verack_filter  = !gotVerack  || (NetMsgTypeEnum::AFTER_VERACK & mask);
+    // bloom_disabled_filter: bloom is enabled or message is not a bloom type
+    bool bloom_disabled_filter = (pfrom->GetLocalServices() & NODE_BLOOM) || !(NetMsgTypeEnum::FILTER_TYPES & mask);
+    // We get only one version message
+    bool one_version_filter = pfrom->nVersion == 0 || msg_type != NetMsgTypeEnum::VERSION;
+    // Must get a version or reject before others
+    bool version_first_filter = pfrom->nVersion != 0 || (((1 << NetMsgTypeEnum::VERSION) | (1<<NetMsgTypeEnum::REJECT)) & mask);
+    // Must be a known message
+    bool known_message_filter = mask & NetMsgTypeEnum::ALLOWED_MSGS;
 
-    if (!(pfrom->GetLocalServices() & NODE_BLOOM) &&
-              (strCommand == NetMsgType::FILTERLOAD ||
-               strCommand == NetMsgType::FILTERADD))
-    {
-        if (pfrom->nVersion >= NO_BLOOM_VERSION) {
-            LOCK(cs_main);
-            Misbehaving(pfrom->GetId(), 100);
-            return false;
-        } else {
-            pfrom->fDisconnect = true;
-            return false;
-        }
+    // If all whitelist checks pass, safe to call ProcessMessage
+    bool whitelisted = import_filter && before_verack_filter &&
+        after_verack_filter && bloom_disabled_filter && one_version_filter &&
+        version_first_filter && known_message_filter;
+    if (whitelisted) {
+        return ProcessMessage(pfrom, msg_type, vRecv, nTimeReceived, chainparams, connman, interruptMsgProc);
     }
 
-    if (strCommand == NetMsgType::REJECT)
+    // The following code is a bit messy to maintain identical behavior with
+    // prior version.
+    if (!bloom_disabled_filter && pfrom->nVersion < NO_BLOOM_VERSION)
+    {
+        pfrom->fDisconnect = true;
+        return false;
+    }
+    if (!one_version_filter)
+        connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_DUPLICATE, std::string("Duplicate version message")));
+    bool misbehaving = !before_verack_filter || !version_first_filter || !one_version_filter || !bloom_disabled_filter;
+    if (misbehaving) {
+        // Must have a verack message before anything else
+        LOCK(cs_main);
+        Misbehaving(pfrom->GetId(), 1);
+        return false;
+    }
+
+    if (!known_message_filter) {
+        // Ignore unknown commands for extensibility
+        LogPrint(BCLog::NET, "Unknown command \"%s\" from peer=%d\n", SanitizeString(strCommand), pfrom->id);
+    }
+    return true;
+}
+bool static ProcessMessage(CNode* pfrom, uint64_t msg_type, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
+{
+    const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
+    switch (msg_type) {
+    case NetMsgTypeEnum::REJECT:
     {
         if (LogAcceptCategory(BCLog::NET)) {
             try {
@@ -1200,8 +1381,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
                 std::ostringstream ss;
                 ss << strMsg << " code " << itostr(ccode) << ": " << strReason;
+                const uint32_t msg_type2 = NetMsgTypeEnum::CommandToEnum(strMsg);
 
-                if (strMsg == NetMsgType::BLOCK || strMsg == NetMsgType::TX)
+                if (msg_type2 == NetMsgTypeEnum::BLOCK || msg_type2 == NetMsgTypeEnum::TX)
                 {
                     uint256 hash;
                     vRecv >> hash;
@@ -1213,19 +1395,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 LogPrint(BCLog::NET, "Unparseable reject message received\n");
             }
         }
+        return true;
     }
-
-    else if (strCommand == NetMsgType::VERSION)
+    case NetMsgTypeEnum::VERSION:
     {
-        // Each connection can only send one version message
-        if (pfrom->nVersion != 0)
-        {
-            connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_DUPLICATE, std::string("Duplicate version message")));
-            LOCK(cs_main);
-            Misbehaving(pfrom->GetId(), 1);
-            return false;
-        }
-
         int64_t nTime;
         CAddress addrMe;
         CAddress addrFrom;
@@ -1249,7 +1422,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         if (pfrom->nServicesExpected & ~nServices)
         {
             LogPrint(BCLog::NET, "peer=%d does not offer the expected services (%08x offered, %08x expected); disconnecting\n", pfrom->id, nServices, pfrom->nServicesExpected);
-            connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_NONSTANDARD,
+            connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, NetMsgTypeEnum::EnumToCommand(msg_type), REJECT_NONSTANDARD,
                                strprintf("Expected to offer services %08x", pfrom->nServicesExpected)));
             pfrom->fDisconnect = true;
             return false;
@@ -1259,7 +1432,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         {
             // disconnect from peers older than this proto version
             LogPrintf("peer=%d using obsolete version %i; disconnecting\n", pfrom->id, nVersion);
-            connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_OBSOLETE,
+            connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, NetMsgTypeEnum::EnumToCommand(msg_type), REJECT_OBSOLETE,
                                strprintf("Version must be %d or greater", MIN_PEER_PROTO_VERSION)));
             pfrom->fDisconnect = true;
             return false;
@@ -1380,20 +1553,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         }
         return true;
     }
-
-
-    else if (pfrom->nVersion == 0)
-    {
-        // Must have a version message before anything else
-        LOCK(cs_main);
-        Misbehaving(pfrom->GetId(), 1);
-        return false;
-    }
-
-    // At this point, the outgoing message serialization version can't change.
-    const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
-
-    if (strCommand == NetMsgType::VERACK)
+    case NetMsgTypeEnum::VERACK:
     {
         pfrom->SetRecvVersion(std::min(pfrom->nVersion.load(), PROTOCOL_VERSION));
 
@@ -1424,17 +1584,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion));
         }
         pfrom->fSuccessfullyConnected = true;
+        return true;
     }
 
-    else if (!pfrom->fSuccessfullyConnected)
-    {
-        // Must have a verack message before anything else
-        LOCK(cs_main);
-        Misbehaving(pfrom->GetId(), 1);
-        return false;
-    }
-
-    else if (strCommand == NetMsgType::ADDR)
+    case NetMsgTypeEnum::ADDR:
     {
         std::vector<CAddress> vAddr;
         vRecv >> vAddr;
@@ -1479,15 +1632,17 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             pfrom->fGetAddr = false;
         if (pfrom->fOneShot)
             pfrom->fDisconnect = true;
+        return true;
     }
 
-    else if (strCommand == NetMsgType::SENDHEADERS)
+    case NetMsgTypeEnum::SENDHEADERS:
     {
         LOCK(cs_main);
         State(pfrom->GetId())->fPreferHeaders = true;
+        return true;
     }
 
-    else if (strCommand == NetMsgType::SENDCMPCT)
+    case NetMsgTypeEnum::SENDCMPCT:
     {
         bool fAnnounceUsingCMPCTBLOCK = false;
         uint64_t nCMPCTBLOCKVersion = 0;
@@ -1508,10 +1663,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                     State(pfrom->GetId())->fSupportsDesiredCmpctVersion = (nCMPCTBLOCKVersion == 1);
             }
         }
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::INV)
+    case NetMsgTypeEnum::INV:
     {
         std::vector<CInv> vInv;
         vRecv >> vInv;
@@ -1576,10 +1732,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         if (!vToFetch.empty())
             connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::GETDATA, vToFetch));
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::GETDATA)
+    case NetMsgTypeEnum::GETDATA:
     {
         std::vector<CInv> vInv;
         vRecv >> vInv;
@@ -1598,10 +1755,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         pfrom->vRecvGetData.insert(pfrom->vRecvGetData.end(), vInv.begin(), vInv.end());
         ProcessGetData(pfrom, chainparams.GetConsensus(), connman, interruptMsgProc);
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::GETBLOCKS)
+    case NetMsgTypeEnum::GETBLOCKS:
     {
         CBlockLocator locator;
         uint256 hashStop;
@@ -1659,10 +1817,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 break;
             }
         }
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::GETBLOCKTXN)
+    case NetMsgTypeEnum::GETBLOCKTXN:
     {
         BlockTransactionsRequest req;
         vRecv >> req;
@@ -1709,10 +1868,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         assert(ret);
 
         SendBlockTransactions(block, req, pfrom, connman);
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::GETHEADERS)
+    case NetMsgTypeEnum::GETHEADERS:
     {
         CBlockLocator locator;
         uint256 hashStop;
@@ -1766,10 +1926,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         // in the SendMessages logic.
         nodestate->pindexBestHeaderSent = pindex ? pindex : chainActive.Tip();
         connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::HEADERS, vHeaders));
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::TX)
+    case NetMsgTypeEnum::TX:
     {
         // Stop processing the transaction early if
         // We are in blocks only mode and peer is either not whitelisted or whitelistrelay is off
@@ -1876,7 +2037,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         else if (fMissingInputs)
         {
             bool fRejectedParents = false; // It may be the case that the orphans parents have all been rejected
-            BOOST_FOREACH(const CTxIn& txin, tx.vin) {
+            for (const CTxIn& txin : tx.vin) {
                 if (recentRejects->contains(txin.prevout.hash)) {
                     fRejectedParents = true;
                     break;
@@ -1946,16 +2107,17 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 pfrom->id,
                 FormatStateMessage(state));
             if (state.GetRejectCode() < REJECT_INTERNAL) // Never send AcceptToMemoryPool's internal codes over P2P
-                connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::REJECT, strCommand, (unsigned char)state.GetRejectCode(),
+                connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::REJECT, NetMsgTypeEnum::EnumToCommand(msg_type), (unsigned char)state.GetRejectCode(),
                                    state.GetRejectReason().substr(0, MAX_REJECT_MESSAGE_LENGTH), inv.hash));
             if (nDoS > 0) {
                 Misbehaving(pfrom->GetId(), nDoS);
             }
         }
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::CMPCTBLOCK && !fImporting && !fReindex) // Ignore blocks received while importing
+    case NetMsgTypeEnum::CMPCTBLOCK:
     {
         CBlockHeaderAndShortTxIDs cmpctblock;
         vRecv >> cmpctblock;
@@ -2122,10 +2284,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         } // cs_main
 
         if (fProcessBLOCKTXN)
-            return ProcessMessage(pfrom, NetMsgType::BLOCKTXN, blockTxnMsg, nTimeReceived, chainparams, connman, interruptMsgProc);
+            return ContextualProcessMessage(pfrom, NetMsgType::BLOCKTXN, blockTxnMsg, nTimeReceived, chainparams, connman, interruptMsgProc);
 
         if (fRevertToHeaderProcessing)
-            return ProcessMessage(pfrom, NetMsgType::HEADERS, vHeadersMsg, nTimeReceived, chainparams, connman, interruptMsgProc);
+            return ContextualProcessMessage(pfrom, NetMsgType::HEADERS, vHeadersMsg, nTimeReceived, chainparams, connman, interruptMsgProc);
 
         if (fBlockReconstructed) {
             // If we got here, we were able to optimistically reconstruct a
@@ -2148,10 +2310,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 MarkBlockAsReceived(pblock->GetHash());
             }
         }
+        return true;
 
     }
 
-    else if (strCommand == NetMsgType::BLOCKTXN && !fImporting && !fReindex) // Ignore blocks received while importing
+    case NetMsgTypeEnum::BLOCKTXN:
     {
         BlockTransactions resp;
         vRecv >> resp;
@@ -2216,10 +2379,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             if (fNewBlock)
                 pfrom->nLastBlockTime = GetTime();
         }
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::HEADERS && !fImporting && !fReindex) // Ignore headers received while importing
+    case NetMsgTypeEnum::HEADERS:
     {
         std::vector<CBlockHeader> headers;
 
@@ -2366,9 +2530,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
         }
         }
+        return true;
     }
 
-    else if (strCommand == NetMsgType::BLOCK && !fImporting && !fReindex) // Ignore blocks received while importing
+    case NetMsgTypeEnum::BLOCK:
     {
         std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
         vRecv >> *pblock;
@@ -2394,10 +2559,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         ProcessNewBlock(chainparams, pblock, forceProcessing, &fNewBlock);
         if (fNewBlock)
             pfrom->nLastBlockTime = GetTime();
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::GETADDR)
+    case NetMsgTypeEnum::GETADDR:
     {
         // This asymmetric behavior for inbound and outbound connections was introduced
         // to prevent a fingerprinting attack: an attacker can send specific fake addresses
@@ -2422,10 +2588,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         FastRandomContext insecure_rand;
         BOOST_FOREACH(const CAddress &addr, vAddr)
             pfrom->PushAddress(addr, insecure_rand);
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::MEMPOOL)
+    case NetMsgTypeEnum::MEMPOOL:
     {
         if (!(pfrom->GetLocalServices() & NODE_BLOOM) && !pfrom->fWhitelisted)
         {
@@ -2443,10 +2610,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
         LOCK(pfrom->cs_inventory);
         pfrom->fSendMempool = true;
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::PING)
+    case NetMsgTypeEnum::PING:
     {
         if (pfrom->nVersion > BIP0031_VERSION)
         {
@@ -2465,10 +2633,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             // return very quickly.
             connman.PushMessage(pfrom, msgMaker.Make(NetMsgType::PONG, nonce));
         }
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::PONG)
+    case NetMsgTypeEnum::PONG:
     {
         int64_t pingUsecEnd = nTimeReceived;
         uint64_t nonce = 0;
@@ -2522,10 +2691,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         if (bPingFinished) {
             pfrom->nPingNonceSent = 0;
         }
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::FILTERLOAD)
+    case NetMsgTypeEnum::FILTERLOAD:
     {
         CBloomFilter filter;
         vRecv >> filter;
@@ -2544,10 +2714,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             pfrom->pfilter->UpdateEmptyFull();
             pfrom->fRelayTxes = true;
         }
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::FILTERADD)
+    case NetMsgTypeEnum::FILTERADD:
     {
         std::vector<unsigned char> vData;
         vRecv >> vData;
@@ -2569,10 +2740,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             LOCK(cs_main);
             Misbehaving(pfrom->GetId(), 100);
         }
+        return true;
     }
 
 
-    else if (strCommand == NetMsgType::FILTERCLEAR)
+    case NetMsgTypeEnum::FILTERCLEAR:
     {
         LOCK(pfrom->cs_filter);
         if (pfrom->GetLocalServices() & NODE_BLOOM) {
@@ -2580,9 +2752,11 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             pfrom->pfilter = new CBloomFilter();
         }
         pfrom->fRelayTxes = true;
+        return true;
     }
 
-    else if (strCommand == NetMsgType::FEEFILTER) {
+    case NetMsgTypeEnum::FEEFILTER:
+    {
         CAmount newFeeFilter = 0;
         vRecv >> newFeeFilter;
         if (MoneyRange(newFeeFilter)) {
@@ -2592,21 +2766,17 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             }
             LogPrint(BCLog::NET, "received: feefilter of %s from peer=%d\n", CFeeRate(newFeeFilter).ToString(), pfrom->id);
         }
+        return true;
     }
 
-    else if (strCommand == NetMsgType::NOTFOUND) {
+    case NetMsgTypeEnum::NOTFOUND:
+    {
         // We do not care about the NOTFOUND message, but logging an Unknown Command
         // message would be undesirable as we transmit it ourselves.
+        return true;
     }
-
-    else {
-        // Ignore unknown commands for extensibility
-        LogPrint(BCLog::NET, "Unknown command \"%s\" from peer=%d\n", SanitizeString(strCommand), pfrom->id);
     }
-
-
-
-    return true;
+    return false;
 }
 
 static bool SendRejectsAndCheckIfBanned(CNode* pnode, CConnman& connman)
@@ -2714,7 +2884,7 @@ bool ProcessMessages(CNode* pfrom, CConnman& connman, const std::atomic<bool>& i
         bool fRet = false;
         try
         {
-            fRet = ProcessMessage(pfrom, strCommand, vRecv, msg.nTime, chainparams, connman, interruptMsgProc);
+            fRet = ContextualProcessMessage(pfrom, strCommand, vRecv, msg.nTime, chainparams, connman, interruptMsgProc);
             if (interruptMsgProc)
                 return false;
             if (!pfrom->vRecvGetData.empty())
