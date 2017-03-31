@@ -1167,40 +1167,47 @@ inline void static SendBlockTransactions(const CBlock& block, const BlockTransac
 }
 
 namespace NetMsgTypeEnum {
-const int VERSION = 0;
-const int VERACK = 1;
-const int ADDR = 2;
-const int INV = 3;
-const int GETDATA = 4;
-const int MERKLEBLOCK = 5;
-const int GETBLOCKS = 6;
-const int GETHEADERS = 7;
-const int TX = 8;
-const int HEADERS = 9;
-const int BLOCK = 10;
-const int GETADDR = 11;
-const int MEMPOOL = 12;
-const int PING = 13;
-const int PONG = 14;
-const int NOTFOUND = 15;
-const int FILTERLOAD = 16;
-const int FILTERADD = 17;
-const int FILTERCLEAR = 18;
-const int REJECT = 19;
-const int SENDHEADERS = 20;
-const int FEEFILTER = 21;
-const int SENDCMPCT = 22;
-const int CMPCTBLOCK = 23;
-const int GETBLOCKTXN = 24;
-const int BLOCKTXN = 25;
-constexpr int AFTER_VERACK(int a) {
+const uint32_t VERSION = 0;
+const uint32_t VERACK = 1;
+const uint32_t ADDR = 2;
+const uint32_t INV = 3;
+const uint32_t GETDATA = 4;
+const uint32_t MERKLEBLOCK = 5;
+const uint32_t GETBLOCKS = 6;
+const uint32_t GETHEADERS = 7;
+const uint32_t TX = 8;
+const uint32_t HEADERS = 9;
+const uint32_t BLOCK = 10;
+const uint32_t GETADDR = 11;
+const uint32_t MEMPOOL = 12;
+const uint32_t PING = 13;
+const uint32_t PONG = 14;
+const uint32_t NOTFOUND = 15;
+const uint32_t FILTERLOAD = 16;
+const uint32_t FILTERADD = 17;
+const uint32_t FILTERCLEAR = 18;
+const uint32_t REJECT = 19;
+const uint32_t SENDHEADERS = 20;
+const uint32_t FEEFILTER = 21;
+const uint32_t SENDCMPCT = 22;
+const uint32_t CMPCTBLOCK = 23;
+const uint32_t GETBLOCKTXN = 24;
+const uint32_t BLOCKTXN = 25;
+const uint32_t NONE = 26;
+
+constexpr uint32_t BEFORE_VERACK(uint32_t a) {
+    // to enable before a verack, set bit 30
     return a | (1<<30);
 }
-constexpr int WITH_VERACK(int a, bool b) {
-    return a | (b<<30);
+constexpr uint32_t AFTER_VERACK(uint32_t a) {
+    return a &  ~(1<<30);
+}
+constexpr uint32_t WITH_CONNECTION_INFO(uint32_t a, bool after_verack) {
+    // if b is false, (e.g before verack) set bit 30
+    return a | ((!after_verack)<<30);
 }
 };
-const static int allNetMessageTypesEnum[] = {
+const static uint32_t allNetMessageTypesEnum[] = {
     NetMsgTypeEnum::VERSION,
     NetMsgTypeEnum::VERACK,
     NetMsgTypeEnum::ADDR,
@@ -1231,15 +1238,15 @@ const static int allNetMessageTypesEnum[] = {
 int32_t strCommandToEnum(const std::string& strCommand)
 {
     const std::vector<std::string>& msgs = getAllNetMessageTypes();
-    for (auto x = 0; x < msgs.size(); ++x)
+    for (size_t x = 0; x < msgs.size(); ++x)
         if (strCommand == msgs[x])
             return allNetMessageTypesEnum[x];
-    return -1;
+    return NetMsgTypeEnum::NONE;
 }
 bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
 {
     LogPrint("net", "received: %s (%u bytes) peer=%d\n", SanitizeString(strCommand), vRecv.size(), pfrom->id);
-    const int32_t msg_type = strCommandToEnum(strCommand);
+    const uint32_t msg_type = strCommandToEnum(strCommand);
     if (IsArgSet("-dropmessagestest") && GetRand(GetArg("-dropmessagestest", 0)) == 0)
     {
         LogPrintf("dropmessagestest DROPPING RECV MESSAGE\n");
@@ -1280,8 +1287,8 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     // At this point, the outgoing message serialization version can't change.
     // unless we're a REJECT or VERSION, but then we don't use msgMaker
     const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
-    switch (NetMsgTypeEnum::WITH_VERACK(msg_type, pfrom->fSuccessfullyConnected)) {
-        case NetMsgTypeEnum::REJECT:
+    switch (NetMsgTypeEnum::WITH_CONNECTION_INFO(msg_type, pfrom->fSuccessfullyConnected)) {
+        case NetMsgTypeEnum::BEFORE_VERACK(NetMsgTypeEnum::REJECT):
         case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::REJECT):
             {
                 if (fDebug) {
@@ -1291,7 +1298,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
                         std::ostringstream ss;
                         ss << strMsg << " code " << itostr(ccode) << ": " << strReason;
-                        const int32_t msg_type2 = strCommandToEnum(strMsg);
+                        const uint32_t msg_type2 = strCommandToEnum(strMsg);
 
                         if (msg_type2 == NetMsgTypeEnum::BLOCK || msg_type2 == NetMsgTypeEnum::TX)
                         {
@@ -1305,9 +1312,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                         LogPrint("net", "Unparseable reject message received\n");
                     }
                 }
+                return true;
             }
-            break;
-        case NetMsgTypeEnum::VERSION:
+        case NetMsgTypeEnum::BEFORE_VERACK(NetMsgTypeEnum::VERSION):
             {
                 int64_t nTime;
                 CAddress addrMe;
@@ -1463,8 +1470,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 }
                 return true;
             }
-            break;
-        case NetMsgTypeEnum::VERACK:
+        case NetMsgTypeEnum::BEFORE_VERACK(NetMsgTypeEnum::VERACK):
         case NetMsgTypeEnum::AFTER_VERACK(NetMsgTypeEnum::VERACK):
             {
                 pfrom->SetRecvVersion(std::min(pfrom->nVersion.load(), PROTOCOL_VERSION));
@@ -1948,7 +1954,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 else if (fMissingInputs)
                 {
                     bool fRejectedParents = false; // It may be the case that the orphans parents have all been rejected
-                    BOOST_FOREACH(const CTxIn& txin, tx.vin) {
+                    for (const CTxIn& txin : tx.vin) {
                         if (recentRejects->contains(txin.prevout.hash)) {
                             fRejectedParents = true;
                             break;
@@ -2424,7 +2430,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                             BOOST_REVERSE_FOREACH(const CBlockIndex *pindex, vToFetch) {
                                 if (nodestate->nBlocksInFlight >= MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
                                     // Can't download any more from this peer
-                                    break;
+                                    return true;
                                 }
                                 uint32_t nFetchFlags = GetFetchFlags(pfrom, pindex->pprev, chainparams.GetConsensus());
                                 vGetData.push_back(CInv(MSG_BLOCK | nFetchFlags, pindex->GetBlockHash()));
@@ -2708,7 +2714,6 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             }
     }
-
 
 
 }
