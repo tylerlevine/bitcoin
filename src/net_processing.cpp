@@ -1193,7 +1193,7 @@ const uint32_t SENDCMPCT = 22;
 const uint32_t CMPCTBLOCK = 23;
 const uint32_t GETBLOCKTXN = 24;
 const uint32_t BLOCKTXN = 25;
-const uint32_t NONE = 26;
+const uint32_t UNKNOWN = 26;
 
 
 const uint64_t ALL_MESSAGES =
@@ -1223,7 +1223,7 @@ const uint64_t ALL_MESSAGES =
 (1u << CMPCTBLOCK)|
 (1u << GETBLOCKTXN)|
 (1u << BLOCKTXN)|
-(1u << NONE);
+(1u << UNKNOWN);
 
 const uint64_t DURING_IMPORT =
 (1u << VERSION)|
@@ -1252,7 +1252,7 @@ const uint64_t DURING_IMPORT =
 (0u << CMPCTBLOCK)|
 (1u << GETBLOCKTXN)|
 (0u << BLOCKTXN)|
-(0u << NONE);
+(0u << UNKNOWN);
 
 const uint64_t BEFORE_VERACK =
 (1u << VERSION)|
@@ -1281,7 +1281,7 @@ const uint64_t BEFORE_VERACK =
 (0u << CMPCTBLOCK)|
 (0u << GETBLOCKTXN)|
 (0u << BLOCKTXN)|
-(0u << NONE);
+(0u << UNKNOWN);
 
 const uint64_t AFTER_VERACK =
 (0u << VERSION)|
@@ -1310,7 +1310,7 @@ const uint64_t AFTER_VERACK =
 (1u << CMPCTBLOCK)|
 (1u << GETBLOCKTXN)|
 (1u << BLOCKTXN)|
-(0u << NONE);
+(0u << UNKNOWN);
 
 };
 const static uint32_t allNetMessageTypesEnum[] = {
@@ -1347,8 +1347,9 @@ int32_t strCommandToEnum(const std::string& strCommand)
     for (size_t x = 0; x < msgs.size(); ++x)
         if (strCommand == msgs[x])
             return allNetMessageTypesEnum[x];
-    return NetMsgTypeEnum::NONE;
+    return NetMsgTypeEnum::UNKNOWN;
 }
+bool static ProcessAllowedMessage(CNode* pfrom, uint64_t msg_type, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc);
 bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
 {
     LogPrint("net", "received: %s (%u bytes) peer=%d\n", SanitizeString(strCommand), vRecv.size(), pfrom->id);
@@ -1356,17 +1357,21 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     // If not on our msg whitelist, reject
     uint64_t mask = 1u<<msg_type;
     bool importing = fImporting || fReindex;
-    bool veracked = pfrom->fSuccessfullyConnected;
-    if (    !(!importing || (NetMsgTypeEnum::DURING_IMPORT & mask)) &&
-            !(!veracked  && (NetMsgTypeEnum::BEFORE_VERACK & mask)) &&
-            !(veracked   && (NetMsgTypeEnum::AFTER_VERACK & mask))) {
-        if (!veracked) {
+    bool gotVerack = pfrom->fSuccessfullyConnected;
+    // import_filter: not importing, or allowed during import
+    bool import_filter = !importing  || (NetMsgTypeEnum::DURING_IMPORT & mask);
+    // before_verack: gotten verack, or allowed before verack
+    bool before_verack_filter = gotVerack || (NetMsgTypeEnum::BEFORE_VERACK & mask);
+    // after_verack: not veracked, or allowed after verack
+    bool after_verack_filter  = !gotVerack  || (NetMsgTypeEnum::AFTER_VERACK & mask);
+    if (!(import_filter && before_verack_filter && after_verack_filter)) {
+        if (!gotVerack) {
             // Must have a verack message before anything else
             LOCK(cs_main);
             Misbehaving(pfrom->GetId(), 1);
             return false;
         }
-        if (mask == (1<<NetMsgTypeEnum::NONE)) {
+        if (msg_type == NetMsgTypeEnum::UNKNOWN) {
             // Ignore unknown commands for extensibility
             LogPrint("net", "Unknown command \"%s\" from peer=%d\n", SanitizeString(strCommand), pfrom->id);
         }
@@ -1409,6 +1414,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         Misbehaving(pfrom->GetId(), 1);
         return false;
     }
+    return ProcessAllowedMessage(pfrom, msg_type, strCommand, vRecv, nTimeReceived, chainparams, connman, interruptMsgProc);
+}
+bool static ProcessAllowedMessage(CNode* pfrom, uint64_t msg_type, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
+{
     // At this point, the outgoing message serialization version can't change.
     // unless we're a REJECT or VERSION, but then we don't use msgMaker
     const CNetMsgMaker msgMaker(pfrom->GetSendVersion());
