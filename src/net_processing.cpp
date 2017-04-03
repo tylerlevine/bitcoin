@@ -1167,182 +1167,121 @@ inline void static SendBlockTransactions(const CBlock& block, const BlockTransac
 }
 
 namespace NetMsgTypeEnum {
-const uint32_t VERSION = 0;
-const uint32_t VERACK = 1;
-const uint32_t ADDR = 2;
-const uint32_t INV = 3;
-const uint32_t GETDATA = 4;
-const uint32_t MERKLEBLOCK = 5;
-const uint32_t GETBLOCKS = 6;
-const uint32_t GETHEADERS = 7;
-const uint32_t TX = 8;
-const uint32_t HEADERS = 9;
-const uint32_t BLOCK = 10;
-const uint32_t GETADDR = 11;
-const uint32_t MEMPOOL = 12;
-const uint32_t PING = 13;
-const uint32_t PONG = 14;
-const uint32_t NOTFOUND = 15;
-const uint32_t FILTERLOAD = 16;
-const uint32_t FILTERADD = 17;
-const uint32_t FILTERCLEAR = 18;
-const uint32_t REJECT = 19;
-const uint32_t SENDHEADERS = 20;
-const uint32_t FEEFILTER = 21;
-const uint32_t SENDCMPCT = 22;
-const uint32_t CMPCTBLOCK = 23;
-const uint32_t GETBLOCKTXN = 24;
-const uint32_t BLOCKTXN = 25;
-const uint32_t UNKNOWN = 26;
+const uint64_t VERSION = 0;
+const uint64_t VERACK = 1;
+const uint64_t ADDR = 2;
+const uint64_t INV = 3;
+const uint64_t GETDATA = 4;
+const uint64_t MERKLEBLOCK = 5;
+const uint64_t GETBLOCKS = 6;
+const uint64_t GETHEADERS = 7;
+const uint64_t TX = 8;
+const uint64_t HEADERS = 9;
+const uint64_t BLOCK = 10;
+const uint64_t GETADDR = 11;
+const uint64_t MEMPOOL = 12;
+const uint64_t PING = 13;
+const uint64_t PONG = 14;
+const uint64_t NOTFOUND = 15;
+const uint64_t FILTERLOAD = 16;
+const uint64_t FILTERADD = 17;
+const uint64_t FILTERCLEAR = 18;
+const uint64_t REJECT = 19;
+const uint64_t SENDHEADERS = 20;
+const uint64_t FEEFILTER = 21;
+const uint64_t SENDCMPCT = 22;
+const uint64_t CMPCTBLOCK = 23;
+const uint64_t GETBLOCKTXN = 24;
+const uint64_t BLOCKTXN = 25;
+const uint64_t UNKNOWN = 26;
 
 
-const uint64_t ALL_ALLOWED_MESSAGES =
-(1u << VERSION)|
-(1u << VERACK)|
-(1u << ADDR)|
-(1u << INV)|
-(1u << GETDATA)|
-(1u << MERKLEBLOCK)|
-(1u << GETBLOCKS)|
-(1u << GETHEADERS)|
-(1u << TX)|
-(1u << HEADERS)|
-(1u << BLOCK)|
-(1u << GETADDR)|
-(1u << MEMPOOL)|
-(1u << PING)|
-(1u << PONG)|
-(1u << NOTFOUND)|
-(1u << FILTERLOAD)|
-(1u << FILTERADD)|
-(1u << FILTERCLEAR)|
-(1u << REJECT)|
-(1u << SENDHEADERS)|
-(1u << FEEFILTER)|
-(1u << SENDCMPCT)|
-(1u << CMPCTBLOCK)|
-(1u << GETBLOCKTXN)|
-(1u << BLOCKTXN)|
-(0u << UNKNOWN);
+const uint64_t ALLOWED_MSGS = (1u << VERSION)
+                            | (1u << VERACK)
+                            | (1u << ADDR)
+                            | (1u << INV)
+                            | (1u << GETDATA)
+                            | (1u << MERKLEBLOCK)
+                            | (1u << GETBLOCKS)
+                            | (1u << GETHEADERS)
+                            | (1u << TX)
+                            | (1u << HEADERS)
+                            | (1u << BLOCK)
+                            | (1u << GETADDR)
+                            | (1u << MEMPOOL)
+                            | (1u << PING)
+                            | (1u << PONG)
+                            | (1u << NOTFOUND)
+                            | (1u << FILTERLOAD)
+                            | (1u << FILTERADD)
+                            | (1u << FILTERCLEAR)
+                            | (1u << REJECT)
+                            | (1u << SENDHEADERS)
+                            | (1u << FEEFILTER)
+                            | (1u << SENDCMPCT)
+                            | (1u << CMPCTBLOCK)
+                            | (1u << GETBLOCKTXN)
+                            | (1u << BLOCKTXN);
 
-const uint64_t DURING_IMPORT =
-(1u << VERSION)|
-(1u << VERACK)|
-(1u << ADDR)|
-(1u << INV)|
-(1u << GETDATA)|
-(1u << MERKLEBLOCK)|
-(1u << GETBLOCKS)|
-(1u << GETHEADERS)|
-(1u << TX)|
-(0u << HEADERS)|
-(0u << BLOCK)|
-(1u << GETADDR)|
-(1u << MEMPOOL)|
-(1u << PING)|
-(1u << PONG)|
-(1u << NOTFOUND)|
-(1u << FILTERLOAD)|
-(1u << FILTERADD)|
-(1u << FILTERCLEAR)|
-(1u << REJECT)|
-(1u << SENDHEADERS)|
-(1u << FEEFILTER)|
-(1u << SENDCMPCT)|
-(0u << CMPCTBLOCK)|
-(1u << GETBLOCKTXN)|
-(0u << BLOCKTXN)|
-(0u << UNKNOWN);
+const uint64_t WHILE_IMPORT = (1u << VERSION)
+                            | (1u << VERACK)
+                            | (1u << ADDR)
+                            | (1u << INV)
+                            | (1u << GETDATA)
+                            | (1u << MERKLEBLOCK)
+                            | (1u << GETBLOCKS)
+                            | (1u << GETHEADERS)
+                            | (1u << TX)
+                            | (1u << GETADDR)
+                            | (1u << MEMPOOL)
+                            | (1u << PING)
+                            | (1u << PONG)
+                            | (1u << NOTFOUND)
+                            | (1u << FILTERLOAD)
+                            | (1u << FILTERADD)
+                            | (1u << FILTERCLEAR)
+                            | (1u << REJECT)
+                            | (1u << SENDHEADERS)
+                            | (1u << FEEFILTER)
+                            | (1u << SENDCMPCT)
+                            | (1u << GETBLOCKTXN);
 
-const uint64_t BEFORE_VERACK =
-(1u << VERSION)|
-(1u << VERACK)|
-(0u << ADDR)|
-(0u << INV)|
-(0u << GETDATA)|
-(0u << MERKLEBLOCK)|
-(0u << GETBLOCKS)|
-(0u << GETHEADERS)|
-(0u << TX)|
-(0u << HEADERS)|
-(0u << BLOCK)|
-(0u << GETADDR)|
-(0u << MEMPOOL)|
-(0u << PING)|
-(0u << PONG)|
-(0u << NOTFOUND)|
-(0u << FILTERLOAD)|
-(0u << FILTERADD)|
-(0u << FILTERCLEAR)|
-(1u << REJECT)|
-(0u << SENDHEADERS)|
-(0u << FEEFILTER)|
-(0u << SENDCMPCT)|
-(0u << CMPCTBLOCK)|
-(0u << GETBLOCKTXN)|
-(0u << BLOCKTXN)|
-(0u << UNKNOWN);
 
-const uint64_t AFTER_VERACK =
-(0u << VERSION)|
-(1u << VERACK)|
-(1u << ADDR)|
-(1u << INV)|
-(1u << GETDATA)|
-(1u << MERKLEBLOCK)|
-(1u << GETBLOCKS)|
-(1u << GETHEADERS)|
-(1u << TX)|
-(1u << HEADERS)|
-(1u << BLOCK)|
-(1u << GETADDR)|
-(1u << MEMPOOL)|
-(1u << PING)|
-(1u << PONG)|
-(1u << NOTFOUND)|
-(1u << FILTERLOAD)|
-(1u << FILTERADD)|
-(1u << FILTERCLEAR)|
-(1u << REJECT)|
-(1u << SENDHEADERS)|
-(1u << FEEFILTER)|
-(1u << SENDCMPCT)|
-(1u << CMPCTBLOCK)|
-(1u << GETBLOCKTXN)|
-(1u << BLOCKTXN)|
-(0u << UNKNOWN);
+const uint64_t BEFORE_VERACK = (1u << VERSION)
+                             | (1u << VERACK)
+                             | (1u << REJECT);
 
-const uint64_t BLOOM_TYPES =
-(0u << VERSION)|
-(0u << VERACK)|
-(0u << ADDR)|
-(0u << INV)|
-(0u << GETDATA)|
-(0u << MERKLEBLOCK)|
-(0u << GETBLOCKS)|
-(0u << GETHEADERS)|
-(0u << TX)|
-(0u << HEADERS)|
-(0u << BLOCK)|
-(0u << GETADDR)|
-(0u << MEMPOOL)|
-(0u << PING)|
-(0u << PONG)|
-(0u << NOTFOUND)|
-(1u << FILTERLOAD)|
-(1u << FILTERADD)|
-(0u << FILTERCLEAR)|
-(0u << REJECT)|
-(0u << SENDHEADERS)|
-(0u << FEEFILTER)|
-(0u << SENDCMPCT)|
-(0u << CMPCTBLOCK)|
-(0u << GETBLOCKTXN)|
-(0u << BLOCKTXN)|
-(0u << UNKNOWN);
+const uint64_t AFTER_VERACK = (1u << VERACK)
+                            | (1u << ADDR)
+                            | (1u << INV)
+                            | (1u << GETDATA)
+                            | (1u << MERKLEBLOCK)
+                            | (1u << GETBLOCKS)
+                            | (1u << GETHEADERS)
+                            | (1u << TX)
+                            | (1u << HEADERS)
+                            | (1u << BLOCK)
+                            | (1u << GETADDR)
+                            | (1u << MEMPOOL)
+                            | (1u << PING)
+                            | (1u << PONG)
+                            | (1u << NOTFOUND)
+                            | (1u << FILTERLOAD)
+                            | (1u << FILTERADD)
+                            | (1u << FILTERCLEAR)
+                            | (1u << REJECT)
+                            | (1u << SENDHEADERS)
+                            | (1u << FEEFILTER)
+                            | (1u << SENDCMPCT)
+                            | (1u << CMPCTBLOCK)
+                            | (1u << GETBLOCKTXN)
+                            | (1u << BLOCKTXN);
 
+const uint64_t FILTER_TYPES = (1u << FILTERLOAD)
+                            | (1u << FILTERADD)
+                            | (0u << FILTERCLEAR);
 };
-const static uint32_t allNetMessageTypesEnum[] = {
+const static uint64_t allNetMessageTypesEnum[] = {
     NetMsgTypeEnum::VERSION,
     NetMsgTypeEnum::VERACK,
     NetMsgTypeEnum::ADDR,
@@ -1370,7 +1309,7 @@ const static uint32_t allNetMessageTypesEnum[] = {
     NetMsgTypeEnum::GETBLOCKTXN,
     NetMsgTypeEnum::BLOCKTXN,
 };
-int32_t strCommandToEnum(const std::string& strCommand)
+uint64_t strCommandToEnum(const std::string& strCommand)
 {
     const std::vector<std::string>& msgs = getAllNetMessageTypes();
     for (size_t x = 0; x < msgs.size(); ++x)
@@ -1393,19 +1332,19 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     bool importing = fImporting || fReindex;
     bool gotVerack = pfrom->fSuccessfullyConnected;
     // import_filter: not importing, or allowed during import
-    bool import_filter = !importing  || (NetMsgTypeEnum::DURING_IMPORT & mask);
+    bool import_filter = !importing  || (NetMsgTypeEnum::WHILE_IMPORT & mask);
     // before_verack: gotten verack, or allowed before verack
     bool before_verack_filter = gotVerack || (NetMsgTypeEnum::BEFORE_VERACK & mask);
     // after_verack: not veracked, or allowed after verack
     bool after_verack_filter  = !gotVerack  || (NetMsgTypeEnum::AFTER_VERACK & mask);
     // bloom_disabled_filter: bloom is enabled or message is not a bloom type
-    bool bloom_disabled_filter = (pfrom->GetLocalServices() & NODE_BLOOM) || !(NetMsgTypeEnum::BLOOM_TYPES & mask);
+    bool bloom_disabled_filter = (pfrom->GetLocalServices() & NODE_BLOOM) || !(NetMsgTypeEnum::FILTER_TYPES & mask);
     // We get only one version message
     bool one_version_filter = pfrom->nVersion == 0 || msg_type != NetMsgTypeEnum::VERSION;
     // Must get a version or reject before others
     bool version_first_filter = pfrom->nVersion != 0 || (((1 << NetMsgTypeEnum::VERSION) | (1<<NetMsgTypeEnum::REJECT)) & mask);
     // Must be a known message
-    bool known_message_filter = mask & NetMsgTypeEnum::ALL_ALLOWED_MESSAGES;
+    bool known_message_filter = mask & NetMsgTypeEnum::ALLOWED_MSGS;
     bool whitelisted = import_filter && before_verack_filter &&
         after_verack_filter && bloom_disabled_filter && one_version_filter &&
         version_first_filter && known_message_filter;
