@@ -1351,7 +1351,14 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     if (whitelisted) {
         return ProcessAllowedMessage(pfrom, msg_type, strCommand, vRecv, nTimeReceived, chainparams, connman, interruptMsgProc);
     }
-    if (!gotVerack) {
+
+    if (!one_version_filter)
+        connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_DUPLICATE, std::string("Duplicate version message")));
+    bool misbehaving = !before_verack_filter
+                    || !version_first_filter
+                    || !one_version_filter
+                    || (!bloom_disabled_filter && pfrom->nVersion >= NO_BLOOM_VERSION);
+    if (misbehaving) {
         // Must have a verack message before anything else
         LOCK(cs_main);
         Misbehaving(pfrom->GetId(), 1);
@@ -1360,27 +1367,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
 
     if (!bloom_disabled_filter)
     {
-        if (pfrom->nVersion >= NO_BLOOM_VERSION) {
-            LOCK(cs_main);
-            Misbehaving(pfrom->GetId(), 100);
-            return false;
-        } else {
-            pfrom->fDisconnect = true;
-            return false;
-        }
-    }
-    if (!one_version_filter)
-    {
-        connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_DUPLICATE, std::string("Duplicate version message")));
-        LOCK(cs_main);
-        Misbehaving(pfrom->GetId(), 1);
-        return false;
-    }
-    if (!version_first_filter)
-    {
-        // Must have a version message before anything else
-        LOCK(cs_main);
-        Misbehaving(pfrom->GetId(), 1);
+        pfrom->fDisconnect = true;
         return false;
     }
     if (!known_message_filter) {
