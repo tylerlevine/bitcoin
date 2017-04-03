@@ -1395,10 +1395,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     bool after_verack_filter  = !gotVerack  || (NetMsgTypeEnum::AFTER_VERACK & mask);
     // bloom_disabled_filter: bloom is enabled or message is not a bloom type
     bool bloom_disabled_filter = (pfrom->GetLocalServices() & NODE_BLOOM) || !(NetMsgTypeEnum::BLOOM_TYPES & mask);
-    // Each connection can only send one version message
-    bool one_version_filter = pfrom->nVersion != 0 && msg_type == NetMsgTypeEnum::VERSION;
+    // We get only one version message
+    bool one_version_filter = pfrom->nVersion == 0 || msg_type != NetMsgTypeEnum::VERSION;
     // Must get a version or reject before others
-    bool version_first_filter = pfrom->nVersion == 0 && !(((1 << NetMsgTypeEnum::VERSION) | (1<<NetMsgTypeEnum::REJECT)) & mask);
+    bool version_first_filter = pfrom->nVersion != 0 || (((1 << NetMsgTypeEnum::VERSION) | (1<<NetMsgTypeEnum::REJECT)) & mask);
     // Must be a known message
     bool known_message_filter = mask & NetMsgTypeEnum::ALL_ALLOWED_MESSAGES;
     if (!(import_filter && before_verack_filter && after_verack_filter &&
