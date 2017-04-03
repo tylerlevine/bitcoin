@@ -1196,7 +1196,7 @@ const uint32_t BLOCKTXN = 25;
 const uint32_t UNKNOWN = 26;
 
 
-const uint64_t ALL_MESSAGES =
+const uint64_t ALL_ALLOWED_MESSAGES =
 (1u << VERSION)|
 (1u << VERACK)|
 (1u << ADDR)|
@@ -1223,7 +1223,7 @@ const uint64_t ALL_MESSAGES =
 (1u << CMPCTBLOCK)|
 (1u << GETBLOCKTXN)|
 (1u << BLOCKTXN)|
-(1u << UNKNOWN);
+(0u << UNKNOWN);
 
 const uint64_t DURING_IMPORT =
 (1u << VERSION)|
@@ -1312,6 +1312,35 @@ const uint64_t AFTER_VERACK =
 (1u << BLOCKTXN)|
 (0u << UNKNOWN);
 
+const uint64_t BLOOM_TYPES =
+(0u << VERSION)|
+(0u << VERACK)|
+(0u << ADDR)|
+(0u << INV)|
+(0u << GETDATA)|
+(0u << MERKLEBLOCK)|
+(0u << GETBLOCKS)|
+(0u << GETHEADERS)|
+(0u << TX)|
+(0u << HEADERS)|
+(0u << BLOCK)|
+(0u << GETADDR)|
+(0u << MEMPOOL)|
+(0u << PING)|
+(0u << PONG)|
+(0u << NOTFOUND)|
+(1u << FILTERLOAD)|
+(1u << FILTERADD)|
+(0u << FILTERCLEAR)|
+(0u << REJECT)|
+(0u << SENDHEADERS)|
+(0u << FEEFILTER)|
+(0u << SENDCMPCT)|
+(0u << CMPCTBLOCK)|
+(0u << GETBLOCKTXN)|
+(0u << BLOCKTXN)|
+(0u << UNKNOWN);
+
 };
 const static uint32_t allNetMessageTypesEnum[] = {
     NetMsgTypeEnum::VERSION,
@@ -1364,14 +1393,50 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     bool before_verack_filter = gotVerack || (NetMsgTypeEnum::BEFORE_VERACK & mask);
     // after_verack: not veracked, or allowed after verack
     bool after_verack_filter  = !gotVerack  || (NetMsgTypeEnum::AFTER_VERACK & mask);
-    if (!(import_filter && before_verack_filter && after_verack_filter)) {
+    // bloom_disabled_filter: bloom is enabled or message is not a bloom type
+    bool bloom_disabled_filter = (pfrom->GetLocalServices() & NODE_BLOOM) || !(NetMsgTypeEnum::BLOOM_TYPES & mask);
+    // Each connection can only send one version message
+    bool one_version_filter = pfrom->nVersion != 0 && msg_type == NetMsgTypeEnum::VERSION;
+    // Must get a version or reject before others
+    bool version_first_filter = pfrom->nVersion == 0 && !(((1 << NetMsgTypeEnum::VERSION) | (1<<NetMsgTypeEnum::REJECT)) & mask);
+    // Must be a known message
+    bool known_message_filter = mask & NetMsgTypeEnum::ALL_ALLOWED_MESSAGES;
+    if (!(import_filter && before_verack_filter && after_verack_filter &&
+                bloom_disabled_filter && one_version_filter &&
+                version_first_filter && known_message_filter)) {
         if (!gotVerack) {
             // Must have a verack message before anything else
             LOCK(cs_main);
             Misbehaving(pfrom->GetId(), 1);
             return false;
         }
-        if (msg_type == NetMsgTypeEnum::UNKNOWN) {
+
+        if (!bloom_disabled_filter)
+        {
+            if (pfrom->nVersion >= NO_BLOOM_VERSION) {
+                LOCK(cs_main);
+                Misbehaving(pfrom->GetId(), 100);
+                return false;
+            } else {
+                pfrom->fDisconnect = true;
+                return false;
+            }
+        }
+        if (!one_version_filter)
+        {
+            connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_DUPLICATE, std::string("Duplicate version message")));
+            LOCK(cs_main);
+            Misbehaving(pfrom->GetId(), 1);
+            return false;
+        }
+        if (!version_first_filter)
+        {
+            // Must have a version message before anything else
+            LOCK(cs_main);
+            Misbehaving(pfrom->GetId(), 1);
+            return false;
+        }
+        if (!known_message_filter) {
             // Ignore unknown commands for extensibility
             LogPrint("net", "Unknown command \"%s\" from peer=%d\n", SanitizeString(strCommand), pfrom->id);
         }
@@ -1383,37 +1448,6 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         return true;
     }
 
-
-    if (!(pfrom->GetLocalServices() & NODE_BLOOM) &&
-              (msg_type == NetMsgTypeEnum::FILTERLOAD ||
-               msg_type == NetMsgTypeEnum::FILTERADD))
-    {
-        if (pfrom->nVersion >= NO_BLOOM_VERSION) {
-            LOCK(cs_main);
-            Misbehaving(pfrom->GetId(), 100);
-            return false;
-        } else {
-            pfrom->fDisconnect = true;
-            return false;
-        }
-    }
-
-    // Each connection can only send one version message
-    if (pfrom->nVersion != 0 && msg_type == NetMsgTypeEnum::VERSION)
-    {
-        connman.PushMessage(pfrom, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::REJECT, strCommand, REJECT_DUPLICATE, std::string("Duplicate version message")));
-        LOCK(cs_main);
-        Misbehaving(pfrom->GetId(), 1);
-        return false;
-    }
-
-    if (pfrom->nVersion == 0 && !(msg_type == NetMsgTypeEnum::VERSION || msg_type == NetMsgTypeEnum::REJECT))
-    {
-        // Must have a version message before anything else
-        LOCK(cs_main);
-        Misbehaving(pfrom->GetId(), 1);
-        return false;
-    }
     return ProcessAllowedMessage(pfrom, msg_type, strCommand, vRecv, nTimeReceived, chainparams, connman, interruptMsgProc);
 }
 bool static ProcessAllowedMessage(CNode* pfrom, uint64_t msg_type, const std::string& strCommand, CDataStream& vRecv, int64_t nTimeReceived, const CChainParams& chainparams, CConnman& connman, const std::atomic<bool>& interruptMsgProc)
