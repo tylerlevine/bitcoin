@@ -29,6 +29,7 @@
 #include "utilmoneystr.h"
 #include "utilstrencodings.h"
 #include "validationinterface.h"
+#include "perfect_hash.h"
 
 #include <boost/thread.hpp>
 
@@ -1201,13 +1202,52 @@ namespace NetMsgTypeEnum {
     };
     static_assert(MAX_TAG <= 64, "Too many message types are defined in net_processing.cpp");
 
+    // So that we can index at the max hash value, we need +1
+    uint64_t translation_table[PerfectHash::MAX_HASH_VALUE+1];
+    int init () {
+        // Can be taken from protocol.cpp as well...
+        const static std::string allNetMessageTypes[] = {
+            NetMsgType::VERSION,
+            NetMsgType::VERACK,
+            NetMsgType::ADDR,
+            NetMsgType::INV,
+            NetMsgType::GETDATA,
+            NetMsgType::MERKLEBLOCK,
+            NetMsgType::GETBLOCKS,
+            NetMsgType::GETHEADERS,
+            NetMsgType::TX,
+            NetMsgType::HEADERS,
+            NetMsgType::BLOCK,
+            NetMsgType::GETADDR,
+            NetMsgType::MEMPOOL,
+            NetMsgType::PING,
+            NetMsgType::PONG,
+            NetMsgType::NOTFOUND,
+            NetMsgType::FILTERLOAD,
+            NetMsgType::FILTERADD,
+            NetMsgType::FILTERCLEAR,
+            NetMsgType::REJECT,
+            NetMsgType::SENDHEADERS,
+            NetMsgType::FEEFILTER,
+            NetMsgType::SENDCMPCT,
+            NetMsgType::CMPCTBLOCK,
+            NetMsgType::GETBLOCKTXN,
+            NetMsgType::BLOCKTXN,
+        };
+        for (uint64_t x = 0; x < 26; ++x) {
+            translation_table[PerfectHash::hash(allNetMessageTypes[x].c_str(), allNetMessageTypes[x].length())] = x;
+        }
+        return 0;
+    }
+    int initialized = init();
     uint64_t CommandToEnum(const std::string& command)
     {
-        const std::vector<std::string>& msgs = getAllNetMessageTypes();
-        for (size_t x = 0; x < msgs.size(); ++x)
-            if (command == msgs[x])
-                return x;
-        return UNKNOWN;
+        unsigned int key = PerfectHash::in_word_set(command.c_str(), command.length());
+        // API modified to return MAX_HASH_VALUE + 1 if a miss
+        if (key == PerfectHash::MAX_HASH_VALUE+1)
+            return UNKNOWN;
+        // We know what it is, so it's safe to look up in our table
+        return translation_table[key];
     }
 
     const std::string EnumToCommand(uint64_t e)
