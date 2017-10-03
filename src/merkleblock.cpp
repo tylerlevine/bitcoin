@@ -41,20 +41,23 @@ uint256 CPartialMerkleTree::CalcHash(int height, unsigned int pos, const std::ve
     //we can never have zero txs in a merkle block, we always need the coinbase tx
     //if we do not have this assert, we can hit a memory access violation when indexing into vTxid
     assert(vTxid.size() != 0);
-    if (height == 0) {
-        // hash at height 0 is the txids themself
-        return vTxid[pos];
-    } else {
-        // calculate left hash
-        uint256 left = CalcHash(height-1, pos*2, vTxid), right;
-        // calculate right hash if not beyond the end of the array - copy left hash otherwise
-        if (pos*2+1 < CalcTreeWidth(height-1))
-            right = CalcHash(height-1, pos*2+1, vTxid);
-        else
-            right = left;
-        // combine subhashes
-        return Hash(BEGIN(left), END(left), BEGIN(right), END(right));
+    const uint256* read_from = vTxid.data();
+    std::vector<uint256> write_to;
+
+    write_to.reserve((vTxid.size()+1)/2);
+    for (int h = 1; h < height+1; ++h) {
+        int current_width = CalcTreeWidth(h);
+        int next_width = CalcTreeWidth(h - 1);
+        for (size_t i = 0; i < current_width; ++i) {
+            const uint256& left = read_from[i*2];
+            const uint256& right = i*2+1 < next_width ? read_from[i*2 +1] : left;
+            write_to[i] = Hash(BEGIN(left), END(left), BEGIN(right), END(right));
+        }
+        read_from = write_to.data();
     }
+
+    // hash at height 0 is the txids themself
+    return read_from[pos];
 }
 
 void CPartialMerkleTree::TraverseAndBuild(int height, unsigned int pos, const std::vector<uint256> &vTxid, const std::vector<bool> &vMatch) {
