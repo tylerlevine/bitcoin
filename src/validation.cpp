@@ -654,7 +654,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
             {
                 return state.BadTx("bad-txns-spends-conflicting-tx", strprintf("%s spends conflicting transaction %s",
                             hash.ToString(),
-                            hashAncestor.ToString()), 10);
+                            hashAncestor.ToString()), DoS_SEVERITY::MEDIUM);
             }
         }
 
@@ -2771,7 +2771,7 @@ static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state,
 {
     // Check proof of work matches claimed amount
     if (fCheckPOW && !CheckProofOfWork(block.GetHash(), block.nBits, consensusParams))
-        return state.BadBlockHeader("high-hash", "proof of work failed", 50);
+        return state.BadBlockHeader("high-hash", "proof of work failed", DoS_SEVERITY::HIGH);
 
     return true;
 }
@@ -2929,11 +2929,11 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 
     // Check timestamp against prev
     if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast())
-        return state.BadBlockHeader("time-too-old", "block's timestamp is too early", 0);
+        return state.BadBlockHeader("time-too-old", "block's timestamp is too early", DoS_SEVERITY::NONE);
 
     // Check timestamp
     if (block.GetBlockTime() > nAdjustedTime + MAX_FUTURE_BLOCK_TIME)
-        return state.BadBlockHeader("time-too-new", "block timestamp too far in the future", 0);
+        return state.BadBlockHeader("time-too-new", "block timestamp too far in the future", DoS_SEVERITY::NONE);
 
     // Reject outdated version blocks when 95% (75% on testnet) of the network has upgraded:
     // check for version 2, 3 and 4 upgrades
@@ -2942,7 +2942,7 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
        (block.nVersion < 4 && nHeight >= consensusParams.BIP65Height))
             return state.BadBlockHeader(strprintf("bad-version(0x%08x)", block.nVersion),
                                  strprintf("rejected nVersion=0x%08x block", block.nVersion),
-                                 0, REJECT_OBSOLETE);
+                                 DoS_SEVERITY::NONE, REJECT_OBSOLETE);
 
     return true;
 }
@@ -2964,7 +2964,7 @@ static bool ContextualCheckBlock(const CBlock& block, CValidationState& state, c
     // Check that all transactions are finalized
     for (const auto& tx : block.vtx) {
         if (!IsFinalTx(*tx, nHeight, nLockTimeCutoff)) {
-            return state.BadTx("bad-txns-nonfinal", "non-final transaction", 10);
+            return state.BadTx("bad-txns-nonfinal", "non-final transaction", DoS_SEVERITY::MEDIUM);
         }
     }
 
@@ -3044,7 +3044,7 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
                 *ppindex = pindex;
             if (pindex->nStatus & BLOCK_FAILED_MASK) {
                 error("%s: block %s is marked invalid", __func__, hash.ToString());
-                return state.BadBlockHeader("duplicate", "", 0, 0);
+                return state.BadBlockHeader("duplicate", "", DoS_SEVERITY::NONE, 0);
             }
             return true;
         }
@@ -3057,7 +3057,7 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
         BlockMap::iterator mi = mapBlockIndex.find(block.hashPrevBlock);
         if (mi == mapBlockIndex.end()) {
             error("%s: prev block not found", __func__);
-            return state.BadBlockHeader("prev-blk-not-found", "", 10);
+            return state.BadBlockHeader("prev-blk-not-found", "", DoS_SEVERITY::MEDIUM);
         }
         pindexPrev = (*mi).second;
         if (pindexPrev->nStatus & BLOCK_FAILED_MASK) {

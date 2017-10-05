@@ -160,9 +160,9 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
 {
     // Basic checks that don't depend on any context
     if (tx.vin.empty())
-        return state.BadTx("bad-txns-vin-empty", "", 10);
+        return state.BadTx("bad-txns-vin-empty", "", DoS_SEVERITY::MEDIUM);
     if (tx.vout.empty())
-        return state.BadTx("bad-txns-vout-empty", "", 10);
+        return state.BadTx("bad-txns-vout-empty", "", DoS_SEVERITY::MEDIUM);
     // Size limits (this doesn't take the witness into account, as that hasn't been checked for malleability)
     if (::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT)
         return state.BadTx("bad-txns-oversize");
@@ -199,7 +199,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
     {
         for (const auto& txin : tx.vin)
             if (txin.prevout.IsNull())
-                return state.BadTx("bad-txns-prevout-null", "", 10);
+                return state.BadTx("bad-txns-prevout-null", "", DoS_SEVERITY::MEDIUM);
     }
 
     return true;
@@ -210,7 +210,7 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
         // This doesn't trigger the DoS code on purpose; if it did, it would make it easier
         // for an attacker to attempt to split the network.
         if (!inputs.HaveInputs(tx))
-            return state.BadTx("", "Inputs unavailable", 0, 0);
+            return state.BadTx("", "Inputs unavailable", DoS_SEVERITY::NONE, 0);
 
         CAmount nValueIn = 0;
         CAmount nFees = 0;
@@ -224,7 +224,7 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
             if (coin.IsCoinBase()) {
                 if (nSpendHeight - coin.nHeight < COINBASE_MATURITY)
                     return state.BadTx("bad-txns-premature-spend-of-coinbase",
-                        strprintf("tried to spend coinbase at depth %d", nSpendHeight - coin.nHeight), 0);
+                        strprintf("tried to spend coinbase at depth %d", nSpendHeight - coin.nHeight), DoS_SEVERITY::NONE);
             }
 
             // Check for negative or overflow input values
