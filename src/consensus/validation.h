@@ -74,11 +74,6 @@ private:
         mode = MODE_INVALID;
         return ret;
     }
-    bool Invalid(bool ret = false,
-                 unsigned int _chRejectCode=0, const std::string &_strRejectReason="",
-                 const std::string &_strDebugMessage="") {
-        return DoS(DoS_SEVERITY::NONE, ret, _chRejectCode, _strRejectReason, false, _strDebugMessage);
-    }
 public:
     CValidationState() : mode(MODE_VALID), nDoS(DoS_SEVERITY::NONE), chRejectCode(0), corruptionPossible(false) {}
     bool BadBlockHeader(const std::string &_strRejectReason="",
