@@ -210,7 +210,7 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
         // This doesn't trigger the DoS code on purpose; if it did, it would make it easier
         // for an attacker to attempt to split the network.
         if (!inputs.HaveInputs(tx))
-            return state.Invalid(false, 0, "", "Inputs unavailable");
+            return state.BadTx("", "Inputs unavailable", 0, 0);
 
         CAmount nValueIn = 0;
         CAmount nFees = 0;
