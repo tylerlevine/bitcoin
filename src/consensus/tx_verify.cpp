@@ -160,24 +160,24 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
 {
     // Basic checks that don't depend on any context
     if (tx.vin.empty())
-        return state.DoS(10, false, REJECT_INVALID, "bad-txns-vin-empty");
+        return state.BadTx("bad-txns-vin-empty", "", 10);
     if (tx.vout.empty())
-        return state.DoS(10, false, REJECT_INVALID, "bad-txns-vout-empty");
+        return state.BadTx("bad-txns-vout-empty", "", 10);
     // Size limits (this doesn't take the witness into account, as that hasn't been checked for malleability)
     if (::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT)
-        return state.DoS(100, false, REJECT_INVALID, "bad-txns-oversize");
+        return state.BadTx("bad-txns-oversize");
 
     // Check for negative or overflow output values
     CAmount nValueOut = 0;
     for (const auto& txout : tx.vout)
     {
         if (txout.nValue < 0)
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-vout-negative");
+            return state.BadTx("bad-txns-vout-negative");
         if (txout.nValue > MAX_MONEY)
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-vout-toolarge");
+            return state.BadTx("bad-txns-vout-toolarge");
         nValueOut += txout.nValue;
         if (!MoneyRange(nValueOut))
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-txouttotal-toolarge");
+            return state.BadTx("bad-txns-txouttotal-toolarge");
     }
 
     // Check for duplicate inputs - note that this check is slow so we skip it in CheckBlock
@@ -186,20 +186,20 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
         for (const auto& txin : tx.vin)
         {
             if (!vInOutPoints.insert(txin.prevout).second)
-                return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-duplicate");
+                return state.BadTx("bad-txns-inputs-duplicate");
         }
     }
 
     if (tx.IsCoinBase())
     {
         if (tx.vin[0].scriptSig.size() < 2 || tx.vin[0].scriptSig.size() > 100)
-            return state.DoS(100, false, REJECT_INVALID, "bad-cb-length");
+            return state.BadTx("bad-cb-length");
     }
     else
     {
         for (const auto& txin : tx.vin)
             if (txin.prevout.IsNull())
-                return state.DoS(10, false, REJECT_INVALID, "bad-txns-prevout-null");
+                return state.BadTx("bad-txns-prevout-null", "", 10);
     }
 
     return true;
@@ -223,28 +223,27 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
             // If prev is coinbase, check that it's matured
             if (coin.IsCoinBase()) {
                 if (nSpendHeight - coin.nHeight < COINBASE_MATURITY)
-                    return state.Invalid(false,
-                        REJECT_INVALID, "bad-txns-premature-spend-of-coinbase",
-                        strprintf("tried to spend coinbase at depth %d", nSpendHeight - coin.nHeight));
+                    return state.BadTx("bad-txns-premature-spend-of-coinbase",
+                        strprintf("tried to spend coinbase at depth %d", nSpendHeight - coin.nHeight), 0);
             }
 
             // Check for negative or overflow input values
             nValueIn += coin.out.nValue;
             if (!MoneyRange(coin.out.nValue) || !MoneyRange(nValueIn))
-                return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputvalues-outofrange");
+                return state.BadTx("bad-txns-inputvalues-outofrange");
 
         }
 
         if (nValueIn < tx.GetValueOut())
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-in-belowout", false,
+            return state.BadTx("bad-txns-in-belowout",
                 strprintf("value in (%s) < value out (%s)", FormatMoney(nValueIn), FormatMoney(tx.GetValueOut())));
 
         // Tally transaction fees
         CAmount nTxFee = nValueIn - tx.GetValueOut();
         if (nTxFee < 0)
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-fee-negative");
+            return state.BadTx("bad-txns-fee-negative");
         nFees += nTxFee;
         if (!MoneyRange(nFees))
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-fee-outofrange");
+            return state.BadTx("bad-txns-fee-outofrange");
     return true;
 }

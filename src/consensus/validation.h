@@ -56,6 +56,30 @@ public:
                  const std::string &_strDebugMessage="") {
         return DoS(0, ret, _chRejectCode, _strRejectReason, false, _strDebugMessage);
     }
+    bool BadBlockHeader(const std::string &_strRejectReason="",
+                 const std::string &_strDebugMessage="", int level=100) {
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, false, _strDebugMessage);
+    }
+    bool CorruptBlockHeader(const std::string &_strRejectReason="",
+                 const std::string &_strDebugMessage="", int level=100) {
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, true, _strDebugMessage);
+    }
+    bool BadBlock(const std::string &_strRejectReason="",
+                 const std::string &_strDebugMessage="", int level=100) {
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, false, _strDebugMessage);
+    }
+    bool CorruptBlock(const std::string &_strRejectReason="",
+                 const std::string &_strDebugMessage="", int level=100) {
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, true, _strDebugMessage);
+    }
+    bool BadTx(const std::string &_strRejectReason="",
+                 const std::string &_strDebugMessage="", int level=100) {
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, false, _strDebugMessage);
+    }
+    bool CorruptTx(const std::string &_strRejectReason="",
+                 const std::string &_strDebugMessage="", int level=100) {
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, true, _strDebugMessage);
+    }
     bool Error(const std::string& strRejectReasonIn) {
         if (mode == MODE_VALID)
             strRejectReason = strRejectReasonIn;
