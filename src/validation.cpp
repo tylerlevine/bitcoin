@@ -465,7 +465,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     // Reject transactions with witness before segregated witness activates (override with -prematurewitness)
     bool witnessEnabled = IsWitnessEnabled(chainActive.Tip(), chainparams.GetConsensus());
     if (!gArgs.GetBoolArg("-prematurewitness", false) && tx.HasWitness() && !witnessEnabled) {
-        return state.NonStandardTx("no-witness-yet", "", true);
+        return state.NonStandardTx("no-witness-yet", "", CORRUPTION_POSSIBLE::True);
     }
 
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
@@ -585,7 +585,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
 
         // Check for non-standard witness in P2WSH
         if (tx.HasWitness() && fRequireStandard && !IsWitnessStandard(tx, view))
-            return state.NonStandardTx("bad-witness-nonstandard", "", true);
+            return state.NonStandardTx("bad-witness-nonstandard", "", CORRUPTION_POSSIBLE::True);
 
         int64_t nSigOpsCost = GetTransactionSigOpCost(tx, view, STANDARD_SCRIPT_VERIFY_FLAGS);
 

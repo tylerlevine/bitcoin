@@ -47,6 +47,10 @@ inline int ToBanScore(const DoS_SEVERITY x) {
 inline bool operator>(const DoS_SEVERITY lhs, const DoS_SEVERITY rhs) {
     return ((int) lhs) > ((int) rhs);
 }
+enum class CORRUPTION_POSSIBLE : bool {
+    False = 0,
+    True = 1
+};
 /** Capture information about block/transaction validation */
 class CValidationState {
 private:
@@ -58,11 +62,11 @@ private:
     DoS_SEVERITY nDoS;
     std::string strRejectReason;
     unsigned int chRejectCode;
-    bool corruptionPossible;
+    CORRUPTION_POSSIBLE corruptionPossible;
     std::string strDebugMessage;
     bool DoS(DoS_SEVERITY level, bool ret = false,
              unsigned int chRejectCodeIn=0, const std::string &strRejectReasonIn="",
-             bool corruptionIn=false,
+             CORRUPTION_POSSIBLE corruptionIn=CORRUPTION_POSSIBLE::False,
              const std::string &strDebugMessageIn="") {
         chRejectCode = chRejectCodeIn;
         strRejectReason = strRejectReasonIn;
@@ -75,47 +79,48 @@ private:
         return ret;
     }
 public:
-    CValidationState() : mode(MODE_VALID), nDoS(DoS_SEVERITY::NONE), chRejectCode(0), corruptionPossible(false) {}
+    CValidationState() : mode(MODE_VALID), nDoS(DoS_SEVERITY::NONE), chRejectCode(0), corruptionPossible(CORRUPTION_POSSIBLE::False) {}
     bool BadBlockHeader(const std::string &_strRejectReason="",
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL, unsigned int _chRejectCode=REJECT_INVALID) {
-        return DoS(level, false, _chRejectCode, _strRejectReason, false, _strDebugMessage);
+        return DoS(level, false, _chRejectCode, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
     }
     bool CorruptBlockHeader(const std::string &_strRejectReason="",
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL) {
-        return DoS(level, false, REJECT_INVALID, _strRejectReason, true, _strDebugMessage);
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, CORRUPTION_POSSIBLE::True, _strDebugMessage);
     }
     bool ForkingBlockHeaderDisallowed() {
         return DoS(DoS_SEVERITY::CRITICAL, false, REJECT_CHECKPOINT, "bad-fork-prior-to-checkpoint");
     }
     bool BadBlock(const std::string &_strRejectReason="",
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL) {
-        return DoS(level, false, REJECT_INVALID, _strRejectReason, false, _strDebugMessage);
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
     }
     bool CorruptBlock(const std::string &_strRejectReason="",
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL) {
-        return DoS(level, false, REJECT_INVALID, _strRejectReason, true, _strDebugMessage);
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, CORRUPTION_POSSIBLE::True, _strDebugMessage);
     }
     bool BadTx(const std::string &_strRejectReason="",
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL, unsigned int _chRejectCode=REJECT_INVALID) {
-        return DoS(level, false, _chRejectCode, _strRejectReason, false, _strDebugMessage);
+        return DoS(level, false, _chRejectCode, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
     }
     bool CorruptTx(const std::string &_strRejectReason="",
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL) {
-        return DoS(level, false, REJECT_INVALID, _strRejectReason, true, _strDebugMessage);
+        return DoS(level, false, REJECT_INVALID, _strRejectReason, CORRUPTION_POSSIBLE::True, _strDebugMessage);
     }
     bool NonStandardTx(const std::string &_strRejectReason="",
-                 const std::string &_strDebugMessage="", bool corrupted=false, DoS_SEVERITY level=DoS_SEVERITY::NONE) {
+                 const std::string &_strDebugMessage="", CORRUPTION_POSSIBLE corrupted=CORRUPTION_POSSIBLE::False,
+                 DoS_SEVERITY level=DoS_SEVERITY::NONE) {
         return DoS(level, false, REJECT_NONSTANDARD, _strRejectReason, corrupted, _strDebugMessage);
     }
 
     bool DuplicateData(const std::string &_strRejectReason="",
                  const std::string &_strDebugMessage="") {
-        return DoS(DoS_SEVERITY::NONE, false, REJECT_DUPLICATE, _strRejectReason, false, _strDebugMessage);
+        return DoS(DoS_SEVERITY::NONE, false, REJECT_DUPLICATE, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
     }
     bool RejectFee(unsigned int _chRejectCode, const std::string &_strRejectReason="",
                  const std::string &_strDebugMessage="") {
         assert(_chRejectCode == REJECT_INSUFFICIENTFEE || _chRejectCode == REJECT_HIGHFEE);
-        return DoS(DoS_SEVERITY::NONE, false, _chRejectCode, _strRejectReason, false, _strDebugMessage);
+        return DoS(DoS_SEVERITY::NONE, false, _chRejectCode, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
     }
     bool Error(const std::string& strRejectReasonIn) {
         if (mode == MODE_VALID)
@@ -140,10 +145,10 @@ public:
         return false;
     }
     bool CorruptionPossible() const {
-        return corruptionPossible;
+        return corruptionPossible != CORRUPTION_POSSIBLE::False;
     }
     void SetCorruptionPossible() {
-        corruptionPossible = true;
+        corruptionPossible = CORRUPTION_POSSIBLE::True;
     }
     unsigned int GetRejectCode() const { return chRejectCode; }
     std::string GetRejectReason() const { return strRejectReason; }
