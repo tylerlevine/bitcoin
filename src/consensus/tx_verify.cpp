@@ -159,25 +159,37 @@ int64_t GetTransactionSigOpCost(const CTransaction& tx, const CCoinsViewCache& i
 bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fCheckDuplicateInputs)
 {
     // Basic checks that don't depend on any context
-    if (tx.vin.empty())
-        return state.BadTx("bad-txns-vin-empty", "", DoS_SEVERITY::MEDIUM);
-    if (tx.vout.empty())
-        return state.BadTx("bad-txns-vout-empty", "", DoS_SEVERITY::MEDIUM);
+    if (tx.vin.empty()) {
+        state.BadTx("bad-txns-vin-empty", "", DoS_SEVERITY::MEDIUM);
+        return false;
+    }
+    if (tx.vout.empty()) {
+        state.BadTx("bad-txns-vout-empty", "", DoS_SEVERITY::MEDIUM);
+        return false;
+    }
     // Size limits (this doesn't take the witness into account, as that hasn't been checked for malleability)
-    if (::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT)
-        return state.BadTx("bad-txns-oversize");
+    if (::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS) * WITNESS_SCALE_FACTOR > MAX_BLOCK_WEIGHT) {
+        state.BadTx("bad-txns-oversize");
+        return false;
+    }
 
     // Check for negative or overflow output values
     CAmount nValueOut = 0;
     for (const auto& txout : tx.vout)
     {
-        if (txout.nValue < 0)
-            return state.BadTx("bad-txns-vout-negative");
-        if (txout.nValue > MAX_MONEY)
-            return state.BadTx("bad-txns-vout-toolarge");
+        if (txout.nValue < 0) {
+            state.BadTx("bad-txns-vout-negative");
+            return false;
+        }
+        if (txout.nValue > MAX_MONEY) {
+            state.BadTx("bad-txns-vout-toolarge");
+            return false;
+        }
         nValueOut += txout.nValue;
-        if (!MoneyRange(nValueOut))
-            return state.BadTx("bad-txns-txouttotal-toolarge");
+        if (!MoneyRange(nValueOut)) {
+            state.BadTx("bad-txns-txouttotal-toolarge");
+            return false;
+        }
     }
 
     // Check for duplicate inputs - note that this check is slow so we skip it in CheckBlock
@@ -185,21 +197,27 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
         std::set<COutPoint> vInOutPoints;
         for (const auto& txin : tx.vin)
         {
-            if (!vInOutPoints.insert(txin.prevout).second)
-                return state.BadTx("bad-txns-inputs-duplicate");
+            if (!vInOutPoints.insert(txin.prevout).second) {
+                state.BadTx("bad-txns-inputs-duplicate");
+                return false;
+            }
         }
     }
 
     if (tx.IsCoinBase())
     {
-        if (tx.vin[0].scriptSig.size() < 2 || tx.vin[0].scriptSig.size() > 100)
-            return state.BadTx("bad-cb-length");
+        if (tx.vin[0].scriptSig.size() < 2 || tx.vin[0].scriptSig.size() > 100) {
+            state.BadTx("bad-cb-length");
+            return false;
+        }
     }
     else
     {
         for (const auto& txin : tx.vin)
-            if (txin.prevout.IsNull())
-                return state.BadTx("bad-txns-prevout-null", "", DoS_SEVERITY::MEDIUM);
+            if (txin.prevout.IsNull()) {
+                state.BadTx("bad-txns-prevout-null", "", DoS_SEVERITY::MEDIUM);
+                return false;
+            }
     }
 
     return true;
@@ -209,8 +227,10 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
 {
         // This doesn't trigger the DoS code on purpose; if it did, it would make it easier
         // for an attacker to attempt to split the network.
-        if (!inputs.HaveInputs(tx))
-            return state.BadTx("", "Inputs unavailable", DoS_SEVERITY::NONE, 0);
+        if (!inputs.HaveInputs(tx)) {
+            state.BadTx("", "Inputs unavailable", DoS_SEVERITY::NONE, 0);
+            return false;
+        }
 
         CAmount nValueIn = 0;
         CAmount nFees = 0;
@@ -222,28 +242,38 @@ bool Consensus::CheckTxInputs(const CTransaction& tx, CValidationState& state, c
 
             // If prev is coinbase, check that it's matured
             if (coin.IsCoinBase()) {
-                if (nSpendHeight - coin.nHeight < COINBASE_MATURITY)
-                    return state.BadTx("bad-txns-premature-spend-of-coinbase",
+                if (nSpendHeight - coin.nHeight < COINBASE_MATURITY) {
+                    state.BadTx("bad-txns-premature-spend-of-coinbase",
                         strprintf("tried to spend coinbase at depth %d", nSpendHeight - coin.nHeight), DoS_SEVERITY::NONE);
+                    return false;
+                }
             }
 
             // Check for negative or overflow input values
             nValueIn += coin.out.nValue;
-            if (!MoneyRange(coin.out.nValue) || !MoneyRange(nValueIn))
-                return state.BadTx("bad-txns-inputvalues-outofrange");
+            if (!MoneyRange(coin.out.nValue) || !MoneyRange(nValueIn)) {
+                state.BadTx("bad-txns-inputvalues-outofrange");
+                return false;
+            }
 
         }
 
-        if (nValueIn < tx.GetValueOut())
-            return state.BadTx("bad-txns-in-belowout",
+        if (nValueIn < tx.GetValueOut()) {
+            state.BadTx("bad-txns-in-belowout",
                 strprintf("value in (%s) < value out (%s)", FormatMoney(nValueIn), FormatMoney(tx.GetValueOut())));
+            return false;
+        }
 
         // Tally transaction fees
         CAmount nTxFee = nValueIn - tx.GetValueOut();
-        if (nTxFee < 0)
-            return state.BadTx("bad-txns-fee-negative");
+        if (nTxFee < 0) {
+            state.BadTx("bad-txns-fee-negative");
+            return false;
+        }
         nFees += nTxFee;
-        if (!MoneyRange(nFees))
-            return state.BadTx("bad-txns-fee-outofrange");
+        if (!MoneyRange(nFees)) {
+            state.BadTx("bad-txns-fee-outofrange");
+            return false;
+        }
     return true;
 }

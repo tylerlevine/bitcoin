@@ -79,63 +79,51 @@ private:
     }
 public:
     CValidationState() : mode(MODE_VALID), nDoS(DoS_SEVERITY::NONE), chRejectCode(0), corruptionPossible(CORRUPTION_POSSIBLE::False) {}
-    bool BadBlockHeader(const std::string &_strRejectReason,
+    void BadBlockHeader(const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL, unsigned int _chRejectCode=REJECT_INVALID) {
         DoS(level, _chRejectCode, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
-        return false;
     }
-    bool CorruptBlockHeader(const std::string &_strRejectReason,
+    void CorruptBlockHeader(const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL) {
         DoS(level, REJECT_INVALID, _strRejectReason, CORRUPTION_POSSIBLE::True, _strDebugMessage);
-        return false;
     }
-    bool ForkingBlockHeaderDisallowed() {
+    void ForkingBlockHeaderDisallowed() {
         DoS(DoS_SEVERITY::CRITICAL, REJECT_CHECKPOINT, "bad-fork-prior-to-checkpoint");
-        return false;
     }
-    bool BadBlock(const std::string &_strRejectReason,
+    void BadBlock(const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL) {
         DoS(level, REJECT_INVALID, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
-        return false;
     }
-    bool CorruptBlock(const std::string &_strRejectReason,
+    void CorruptBlock(const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL) {
         DoS(level, REJECT_INVALID, _strRejectReason, CORRUPTION_POSSIBLE::True, _strDebugMessage);
-        return false;
     }
-    bool BadTx(const std::string &_strRejectReason,
+    void BadTx(const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL, unsigned int _chRejectCode=REJECT_INVALID) {
         DoS(level, _chRejectCode, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
-        return false;
     }
-    bool CorruptTx(const std::string &_strRejectReason,
+    void CorruptTx(const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="", DoS_SEVERITY level=DoS_SEVERITY::CRITICAL) {
         DoS(level, REJECT_INVALID, _strRejectReason, CORRUPTION_POSSIBLE::True, _strDebugMessage);
-        return false;
     }
-    bool NonStandardTx(const std::string &_strRejectReason,
+    void NonStandardTx(const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="", CORRUPTION_POSSIBLE corrupted=CORRUPTION_POSSIBLE::False,
                  DoS_SEVERITY level=DoS_SEVERITY::NONE) {
         DoS(level, REJECT_NONSTANDARD, _strRejectReason, corrupted, _strDebugMessage);
-        return false;
     }
-
-    bool DuplicateData(const std::string &_strRejectReason,
+    void DuplicateData(const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="") {
         DoS(DoS_SEVERITY::NONE, REJECT_DUPLICATE, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
-        return false;
     }
-    bool RejectFee(unsigned int _chRejectCode, const std::string &_strRejectReason,
+    void RejectFee(unsigned int _chRejectCode, const std::string &_strRejectReason,
                  const std::string &_strDebugMessage="") {
         assert(_chRejectCode == REJECT_INSUFFICIENTFEE || _chRejectCode == REJECT_HIGHFEE);
         DoS(DoS_SEVERITY::NONE, _chRejectCode, _strRejectReason, CORRUPTION_POSSIBLE::False, _strDebugMessage);
-        return false;
     }
-    bool Error(const std::string& strRejectReasonIn) {
+    void Error(const std::string& strRejectReasonIn) {
         if (mode == MODE_VALID)
             strRejectReason = strRejectReasonIn;
         mode = MODE_ERROR;
-        return false;
     }
     bool IsValid() const {
         return mode == MODE_VALID;
