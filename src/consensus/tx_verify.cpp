@@ -13,6 +13,10 @@
 #include <chain.h>
 #include <coins.h>
 #include <utilmoneystr.h>
+#include <utilmemory.h>
+#include <random.h>
+
+#include<bitset>
 
 bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64_t nBlockTime)
 {
@@ -181,25 +185,110 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
     }
 
     // Check for duplicate inputs - note that this check is slow so we skip it in CheckBlock
-    if (fCheckDuplicateInputs) {
-        std::set<COutPoint> vInOutPoints;
-        for (const auto& txin : tx.vin)
-        {
-            if (!vInOutPoints.insert(txin.prevout).second)
-                return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-duplicate");
-        }
-    }
-
-    if (tx.IsCoinBase())
-    {
+    if (tx.IsCoinBase() ) {
         if (tx.vin[0].scriptSig.size() < 2 || tx.vin[0].scriptSig.size() > 100)
             return state.DoS(100, false, REJECT_INVALID, "bad-cb-length");
-    }
-    else
-    {
-        for (const auto& txin : tx.vin)
-            if (txin.prevout.IsNull())
+    } else if (!fCheckDuplicateInputs){
+        for (const auto& txin : tx.vin) { 
+            if (txin.prevout.IsNull()) {
                 return state.DoS(10, false, REJECT_INVALID, "bad-txns-prevout-null");
+            }
+        }
+    } else{
+        // In this duplication checking algorithm, we use a probabilistic filter to check
+        // for collisions.
+        //
+        // This is faster than the naive construction, using a set, which requires more
+        // allocation and comparison of uint256s.
+        //
+        // In this algorithm, we create a bitset table with 1<<24 elements. This is around
+        // 2 MB, so we construct it on the heap.
+        //
+        // Then, we iterate through the elements one by one, generated 4 salted 24-bit
+        // hashes (which can be quickly generated using siphash) based on each prevout.
+        //
+        // We then check if all 4 hashes are set in the table yet. If they are, we do a
+        // linear scan through the inputs to see if it was a true collision, and reject
+        // the txn.
+        //
+        // Otherwise, we set the 4 bits corresponding to the hashes and continue.
+        //
+        // From the perspective of the N+1st prevout, assuming the transaction does not
+        // double spend
+        //
+        // Up to N*4 hashes have been set in the table already (potentially fewer if
+        // collisions)
+        //
+        // For each of the four hashes h_i P(bit set in table for h_i) = (N*4)/1<<24
+        //
+        // Each of these probabilities is independent
+        //
+        // Therefore the total probability of a false collision is: ((N*4)/2**24)**4
+        //
+        // The cost of a false collision is N comparisons.
+        //
+        // Therefore, we get an expression for the expected total work:
+        //
+        // Sum from i = 0 to M i*( i*4 / 2**24)**4
+        //
+        // Based on an input costing at least 41 bytes, and a block being 1M bytes max,
+        // there are a maximum of 24390 inputs, so M = 24390
+        //
+        // The total expected number of direct comparisons is therefore 0.11 with this
+        // algorithm.
+        //
+        // The worst case for this algorithm from a denial of service perspective with an
+        // invalid transaction would be to do a transaction where the last two elements
+        // are a collision. In this case, the scan would require to scan all N elements.
+        //
+        //
+        // As a bonus, we also get "free" null checking by manually inserting the null
+        // element into the table so it always generates a conflict check
+        uint64_t k1 = GetRand(std::numeric_limits<uint64_t>::max());
+        uint64_t k2 = GetRand(std::numeric_limits<uint64_t>::max());
+        auto hasher = [k1, k2](COutPoint out){return SipHashUint256Extra128(k1, k2, out.hash, out.n);};
+        auto nilHash = hasher(COutPoint{}); 
+        auto table = MakeUnique<std::bitset<1<<24>>();
+        {
+            auto pos1 = nilHash.first & ((1<<24) -1);
+            auto pos2 = (nilHash.first>>24) & ((1<<24) -1);
+            auto pos3 = nilHash.second & ((1<<24) -1);
+            auto pos4 = (nilHash.second>>24) & ((1<<24) -1);
+            table->set(pos1);
+            table->set(pos2);
+            table->set(pos3);
+            table->set(pos4);
+
+        }
+        for (auto txinit =  tx.vin.cbegin(); txinit != tx.vin.cend(); ++txinit) {
+            auto hash = hasher(txinit->prevout);
+            auto pos1 = hash.first & ((1<<24) -1);
+            auto pos2 = (hash.first>>24) & ((1<<24) -1);
+            auto pos3 = hash.second & ((1<<24) -1);
+            auto pos4 = (hash.second>>24) & ((1<<24) -1);
+            if (table->test(pos1) &&
+                    table->test(pos2) &&
+                    table->test(pos3) &&
+                    table->test(pos4)) {
+
+                if (txinit->prevout.IsNull()) {
+                    return state.DoS(10, false, REJECT_INVALID, "bad-txns-prevout-null");
+                }
+                // If we have a potential collision, then scan through the set up to here for the colliding element
+                auto elem = std::find_if(tx.vin.begin(), txinit, [txinit](CTxIn x){return x.prevout == txinit->prevout;});
+                // If the iterator outputs anything except for txinit, then we have found a conflict
+                if  (elem != txinit) {
+                    return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-duplicate");
+                }
+            } else {
+                table->set(pos1);
+                table->set(pos2);
+                table->set(pos3);
+                table->set(pos4);
+            }
+        }
+
+
     }
 
     return true;
