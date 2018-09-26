@@ -272,7 +272,7 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
         //
         uint64_t k1 = GetRand(std::numeric_limits<uint64_t>::max());
         uint64_t k2 = GetRand(std::numeric_limits<uint64_t>::max());
-        auto hasher = [k1, k2](const COutPoint& out){return SipHashUint256Extra128(k1, k2, out.hash, out.n);};
+        auto hasher = [k1, k2](const COutPoint& out){return SipHashUint256Extra192(k1, k2, out.hash, out.n);};
         // If we haven't been given a table, make one now.
         std::unique_ptr<uint64_t[]> upTable = table ? std::unique_ptr<uint64_t[]>(nullptr) :
                                                       std::unique_ptr<uint64_t[]>(new uint64_t[1<<15]());

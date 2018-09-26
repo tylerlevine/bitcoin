@@ -246,7 +246,7 @@ uint64_t SipHashUint256Extra(uint64_t k0, uint64_t k1, const uint256& val, uint3
     return v0 ^ v1 ^ v2 ^ v3;
 }
 
-std::tuple<uint64_t, uint64_t, uint64_t> SipHashUint256Extra128(uint64_t k0, uint64_t k1, const uint256& val, uint32_t extra)
+std::tuple<uint64_t, uint64_t, uint64_t> SipHashUint256Extra192(uint64_t k0, uint64_t k1, const uint256& val, uint32_t extra)
 {
     /* Specialized implementation for efficiency */
     uint64_t d = val.GetUint64(0);
@@ -284,7 +284,7 @@ std::tuple<uint64_t, uint64_t, uint64_t> SipHashUint256Extra128(uint64_t k0, uin
     SIPROUND;
     SIPROUND;
     SIPROUND;
-    
+
     uint64_t res1 = v0 ^ v1 ^ v2 ^ v3;
 
     v1 ^= 0xDD;
