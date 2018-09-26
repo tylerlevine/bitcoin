@@ -16,7 +16,7 @@
 #include <utilmemory.h>
 #include <random.h>
 
-#include<bitset>
+#include <functional>
 
 bool IsFinalTx(const CTransaction &tx, int nBlockHeight, int64_t nBlockTime)
 {
@@ -160,7 +160,7 @@ int64_t GetTransactionSigOpCost(const CTransaction& tx, const CCoinsViewCache& i
     return nSigOps;
 }
 
-bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fCheckDuplicateInputs)
+bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fCheckDuplicateInputs, uint64_t table[])
 {
     // Basic checks that don't depend on any context
     if (tx.vin.empty())
@@ -188,67 +188,96 @@ bool CheckTransaction(const CTransaction& tx, CValidationState &state, bool fChe
     if (tx.IsCoinBase() ) {
         if (tx.vin[0].scriptSig.size() < 2 || tx.vin[0].scriptSig.size() > 100)
             return state.DoS(100, false, REJECT_INVALID, "bad-cb-length");
-    } else if (!fCheckDuplicateInputs){
-        for (const auto& txin : tx.vin) { 
+    } else if (!fCheckDuplicateInputs || tx.vin.size() == 1){
+        for (const auto& txin : tx.vin) {
             if (txin.prevout.IsNull()) {
                 return state.DoS(10, false, REJECT_INVALID, "bad-txns-prevout-null");
             }
         }
     } else{
-        // In this duplication checking algorithm, we use a probabilistic filter to check
-        // for collisions.
+        // This duplication checking algorithm uses a probabilistic filter
+        // to check for collisions efficiently.
         //
-        // This is faster than the naive construction, using a set, which requires more
-        // allocation and comparison of uint256s.
+        // This is faster than the naive construction, using a set, which
+        // requires more allocation and comparison of uint256s.
         //
-        // In this algorithm, we create a bitset table with 1<<21 elements. This is around
-        // 300 KB, so we construct it on the heap.
+        // First we create a bitset table with 1<<21 elements. This
+        // is around 300 KB, so we construct it on the heap.
         //
-        // Then, we iterate through the elements one by one, generated 8 salted 21-bit
-        // hashes (which can be quickly generated using siphash) based on each prevout.
+        // We also allow reusing a 'dirty' table because zeroing 300 KB
+        // can be expensive, and the table will operate acceptably for all of the
+        // transactions in a given block.
         //
-        // We then check if all 8 hashes are set in the table yet. If they are, we do a
-        // linear scan through the inputs to see if it was a true collision, and reject
-        // the txn.
+        // Then, we iterate through the elements one by one, generated 8 salted
+        // 21-bit hashes (which can be quickly generated using siphash) based on
+        // each prevout.
         //
-        // Otherwise, we set the 8 bits corresponding to the hashes and continue.
+        // We then check if all 8 hashes are set in the table yet. If they are,
+        // we do a linear scan through the inputs to see if it was a true
+        // collision, and reject the txn.
         //
-        // From the perspective of the N+1st prevout, assuming the transaction does not
-        // double spend:
+        // Otherwise, we set the 8 bits corresponding to the hashes and
+        // continue.
         //
-        // Up to N*8 hashes have been set in the table already (potentially fewer if
-        // collisions)
+        // From the perspective of the N+1st prevout, assuming the transaction
+        // does not double spend:
         //
-        // For each of the 8 hashes h_1...h_8, P(bit set in table for h_i) = (N*8)/1<<21
+        // Up to N*8 hashes have been set in the table already (potentially
+        // fewer if collisions)
+        //
+        // For each of the 8 hashes h_1...h_8, P(bit set in table for h_i) =
+        // (N*8)/1<<21
         //
         // Each of these probabilities is independent
         //
-        // Therefore the total probability of a false collision on all bits is: ((N*8)/2**21)**8
+        // Therefore the total probability of a false collision on all bits is:
+        // ((N*8)/2**21)**8
         //
         // The cost of a false collision is to do N comparisons.
         //
         // Therefore, the expression for the expected number of comparisons is:
         //
-        // Sum from i = 0 to M i*( i*8 / 2**21)**8
+        // Sum from i = 0 to M [ i*( i*8 / 2**21)**8 ]
         //
-        // Based on an input being at least 41 bytes, and a block being 1M bytes max,
-        // there are a maximum of 24390 inputs, so M = 24390
+        // Based on an input being at least 41 bytes, and a block being 1M bytes
+        // max, there are a maximum of 24390 inputs, so M = 24390
         //
-        // The total expected number of direct comparisons is therefore 0.33 with this
-        // algorithm.
+        // The total expected number of direct comparisons for M=24930 is
+        // therefore 0.33 with this algorithm.
         //
-        // The worst case for this algorithm from a denial of service perspective with an
-        // invalid transaction would be to do a transaction where the last two elements
-        // are a collision. In this case, the scan would require to scan all N elements.
+        // As a bonus, we also get "free" null checking by manually inserting
+        // the null element into the table so it always generates a conflict
+        // check. We remove this null-check before terminating so that we avoid
+        // doubling the bloat on the table.
+        //
+        // If a dirty table is used, the algorithms worst-case
+        // runtime is still better because of three key reasons:
+        //
+        // 1) the linear searches complexity is limited to each transaction's
+        // subset of inputs
+        // 2) The total number of inputs in the block still does not exceed
+        // 24930
+        // 3) less initialization of the table
         //
         //
-        // As a bonus, we also get "free" null checking by manually inserting the null
-        // element into the table so it always generates a conflict check
+        // The worst case for this algorithm from a denial of service
+        // perspective with an invalid transaction would be to do a transaction
+        // where the last two elements are a collision. In this case, the scan
+        // would require to scan all N elements.
+        //
+        //
+        //
+        // N.B. When the table is dirty, the bits set in the table
+        // are meaningless because the hash was salted separately.
+        //
         uint64_t k1 = GetRand(std::numeric_limits<uint64_t>::max());
         uint64_t k2 = GetRand(std::numeric_limits<uint64_t>::max());
         auto hasher = [k1, k2](const COutPoint& out){return SipHashUint256Extra128(k1, k2, out.hash, out.n);};
-        std::unique_ptr<uint64_t[]> table = std::unique_ptr<uint64_t[]>(new uint64_t[1<<15]());
-#define HASH(h) \
+        // If we haven't been given a table, make one now.
+        std::unique_ptr<uint64_t[]> upTable = table ? std::unique_ptr<uint64_t[]>(nullptr) :
+                                                      std::unique_ptr<uint64_t[]>(new uint64_t[1<<15]());
+        table = table ? table : upTable.get();
+#define HASH(h, a) \
 uint64_t bit1 = 1<<(std::get<0>(h) & 63);\
 uint64_t bit2 = 1<<(std::get<0>(h)>>6 & 63);\
 uint64_t bit3 = 1<<(std::get<0>(h)>>12 & 63);\
@@ -264,7 +293,8 @@ uint64_t pos4 = (std::get<1>(h)>>45 & 0x07FFF);\
 uint64_t pos5 = (std::get<2>(h)     & 0x07FFF);\
 uint64_t pos6 = (std::get<2>(h)>>15 & 0x07FFF);\
 uint64_t pos7 = (std::get<2>(h)>>30 & 0x07FFF);\
-uint64_t pos8 = (std::get<2>(h)>>45 & 0x07FFF);
+uint64_t pos8 = (std::get<2>(h)>>45 & 0x07FFF);\
+        a;
 #define SET_BITS \
         table[pos1] |= bit1;\
         table[pos2] |= bit2;\
@@ -275,14 +305,25 @@ uint64_t pos8 = (std::get<2>(h)>>45 & 0x07FFF);
         table[pos7] |= bit7;\
         table[pos8] |= bit8;
 
-        {
-            auto hash = hasher(COutPoint{}); 
-            HASH(hash)
-            SET_BITS;
-        }
+#define TOGGLE_BITS \
+        table[pos1] ^= bit1;\
+        table[pos2] ^= bit2;\
+        table[pos3] ^= bit3;\
+        table[pos4] ^= bit4;\
+        table[pos5] ^= bit5;\
+        table[pos6] ^= bit6;\
+        table[pos7] ^= bit7;\
+        table[pos8] ^= bit8;
+#define DONT_SET_BITS
+
+
+        auto nil_hash = hasher(COutPoint{});
+        HASH(nil_hash, SET_BITS);
+        std::unique_ptr<int, std::function<void(int*)>>
+            cleanupNilEntryGuard(nullptr, [&](int*) { TOGGLE_BITS; });
         for (auto txinit =  tx.vin.cbegin(); txinit != tx.vin.cend(); ++txinit) {
             auto hash = hasher(txinit->prevout);
-            HASH(hash)
+            HASH(hash, DONT_SET_BITS)
             if (
             (table[pos1] & bit1) &&
             (table[pos2] & bit2) &&
@@ -300,7 +341,7 @@ uint64_t pos8 = (std::get<2>(h)>>45 & 0x07FFF);
                 // If the iterator outputs anything except for txinit, then we have found a conflict
                 if  (elem != txinit) {
                     return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-duplicate");
-                } 
+                }
             } else {
                 SET_BITS;
             }
