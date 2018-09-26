@@ -246,7 +246,7 @@ uint64_t SipHashUint256Extra(uint64_t k0, uint64_t k1, const uint256& val, uint3
     return v0 ^ v1 ^ v2 ^ v3;
 }
 
-std::pair<uint64_t, uint64_t> SipHashUint256Extra128(uint64_t k0, uint64_t k1, const uint256& val, uint32_t extra)
+std::tuple<uint64_t, uint64_t, uint64_t> SipHashUint256Extra128(uint64_t k0, uint64_t k1, const uint256& val, uint32_t extra)
 {
     /* Specialized implementation for efficiency */
     uint64_t d = val.GetUint64(0);
@@ -279,7 +279,7 @@ std::pair<uint64_t, uint64_t> SipHashUint256Extra128(uint64_t k0, uint64_t k1, c
     SIPROUND;
     SIPROUND;
     v0 ^= d;
-    v2 ^= 0xFF;
+    v2 ^= 0xEE;
     SIPROUND;
     SIPROUND;
     SIPROUND;
@@ -287,12 +287,21 @@ std::pair<uint64_t, uint64_t> SipHashUint256Extra128(uint64_t k0, uint64_t k1, c
     
     uint64_t res1 = v0 ^ v1 ^ v2 ^ v3;
 
-    v1 ^= 0xdd;
+    v1 ^= 0xDD;
 
     SIPROUND;
     SIPROUND;
     SIPROUND;
     SIPROUND;
 
-    return std::make_pair(res1, v1);
+    uint64_t res2 = v0 ^ v1 ^ v2 ^ v3;
+
+    v1 ^= 0xAA;
+
+    SIPROUND;
+    SIPROUND;
+    SIPROUND;
+    SIPROUND;
+
+    return std::make_tuple(res1, res2, v0 ^ v1 ^ v2 ^ v3);
 }
