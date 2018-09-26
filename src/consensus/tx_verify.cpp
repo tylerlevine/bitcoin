@@ -319,8 +319,8 @@ uint64_t pos8 = (std::get<2>(h)>>45 & 0x07FFF);\
 
         auto nil_hash = hasher(COutPoint{});
         HASH(nil_hash, SET_BITS);
-        std::unique_ptr<int, std::function<void(int*)>>
-            cleanupNilEntryGuard(nullptr, [&](int*) { TOGGLE_BITS; });
+        std::unique_ptr<void, std::function<void(void*)>>
+            cleanupNilEntryGuard((void*)1, [&](void*) { TOGGLE_BITS; });
         for (auto txinit =  tx.vin.cbegin(); txinit != tx.vin.cend(); ++txinit) {
             auto hash = hasher(txinit->prevout);
             HASH(hash, DONT_SET_BITS)
