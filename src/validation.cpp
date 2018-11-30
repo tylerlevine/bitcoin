@@ -1973,29 +1973,58 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
     std::vector<int> prevheights;
     CAmount nFees = 0;
-    int nInputs = 0;
-    int64_t nSigOpsCost = 0;
+    int nInputs = block.vtx[0]->vin.size();
+    // GetTransactionSigOpCost counts 3 types of sigops:
+    // * legacy (always)
+    // * p2sh (when P2SH enabled in flags and excludes coinbase)
+    // * witness (when witness enabled in flags and excludes coinbase)
+    int64_t nSigOpsCost = GetTransactionSigOpCost(*block.vtx[0], view, flags);
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     std::vector<PrecomputedTransactionData> txdata;
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
-    for (unsigned int i = 0; i < block.vtx.size(); i++)
+    {
+        if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
+            return state.DoS(100, error("ConnectBlock(): too many sigops"),
+                             REJECT_INVALID, "bad-blk-sigops");
+        txdata.emplace_back(*block.vtx[0]);
+        CTxUndo dummy;
+        UpdateCoins(*block.vtx[0], view, dummy, pindex->nHeight);
+    }
+
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = *(block.vtx[i]);
 
         nInputs += tx.vin.size();
+    }
 
-        if (!tx.IsCoinBase())
-        {
-            CAmount txfee = 0;
-            if (!Consensus::CheckTxInputs(tx, state, view, pindex->nHeight, txfee)) {
-                return error("%s: Consensus::CheckTxInputs: %s, %s", __func__, tx.GetHash().ToString(), FormatStateMessage(state));
-            }
-            nFees += txfee;
-            if (!MoneyRange(nFees)) {
-                return state.DoS(100, error("%s: accumulated fee in the block out of range.", __func__),
-                                 REJECT_INVALID, "bad-txns-accumulated-fee-outofrange");
-            }
+    // Create all outputs now
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
+        for (size_t j = 0; j < tx.vout.size(); ++j) {
+            view.AddCoin(COutPoint(tx.GetHash(), j), Coin(tx.vout[j], pindex->nHeight, false), false);
+        }
+    }
 
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
+
+        CAmount txfee = 0;
+        if (!Consensus::CheckTxInputs(tx, state, view, pindex->nHeight, txfee)) {
+            return error("%s: Consensus::CheckTxInputs: %s, %s", __func__, tx.GetHash().ToString(), FormatStateMessage(state));
+        }
+        nFees += txfee;
+    }
+    if (!MoneyRange(nFees)) {
+        return state.DoS(100, error("%s: accumulated fee in the block out of range.", __func__),
+                REJECT_INVALID, "bad-txns-accumulated-fee-outofrange");
+    }
+
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
             // Check that transaction is BIP68 final
             // BIP68 lock checks (as opposed to nLockTime checks) must
             // be in ConnectBlock because they require the UTXO set
@@ -2008,8 +2037,11 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                 return state.DoS(100, error("%s: contains a non-BIP68-final transaction", __func__),
                                  REJECT_INVALID, "bad-txns-nonfinal");
             }
-        }
+    }
 
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
         // GetTransactionSigOpCost counts 3 types of sigops:
         // * legacy (always)
         // * p2sh (when P2SH enabled in flags and excludes coinbase)
@@ -2020,21 +2052,21 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                              REJECT_INVALID, "bad-blk-sigops");
 
         txdata.emplace_back(tx);
-        if (!tx.IsCoinBase())
-        {
             std::vector<CScriptCheck> vChecks;
             bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
             if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults, fCacheResults, txdata[i], nScriptCheckThreads ? &vChecks : nullptr))
                 return error("ConnectBlock(): CheckInputs on %s failed with %s",
                     tx.GetHash().ToString(), FormatStateMessage(state));
             control.Add(vChecks);
-        }
 
-        CTxUndo undoDummy;
-        if (i > 0) {
-            blockundo.vtxundo.push_back(CTxUndo());
+        blockundo.vtxundo.push_back(CTxUndo());
+        // mark inputs spent
+        blockundo.vtxundo.back().vprevout.reserve(tx.vin.size());
+        for (const CTxIn &txin : tx.vin) {
+            blockundo.vtxundo.back().vprevout.emplace_back();
+            bool is_spent = view.SpendCoin(txin.prevout, &blockundo.vtxundo.back().vprevout.back());
+            assert(is_spent);
         }
-        UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
     }
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
     LogPrint(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(), MILLI * (nTime3 - nTime2), MILLI * (nTime3 - nTime2) / block.vtx.size(), nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs-1), nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
