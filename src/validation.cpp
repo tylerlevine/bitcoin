@@ -1972,16 +1972,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
 
 
-    // Create all outputs now
-    CTxUndo dummy;
-    UpdateCoins(*block.vtx[0], view, dummy, pindex->nHeight);
-    for (unsigned int i = 1; i < block.vtx.size(); i++)
-    {
-        const CTransaction &tx = *(block.vtx[i]);
-        for (size_t j = 0; j < tx.vout.size(); ++j) {
-            view.AddCoin(COutPoint(tx.GetHash(), j), Coin(tx.vout[j], pindex->nHeight, false), false);
-        }
-    }
+    // start with nTxOutputsAdded = 1 to skip CoinBase transaction as it is unspendable immediately
+    unsigned int nTxOutputsAdded = 1;
     // Script Checks / Check Inputs
     int64_t nSigOpsCost = GetTransactionSigOpCost(*block.vtx[0], view, flags);
     if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
@@ -1995,8 +1987,19 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         const CTransaction &tx = *(block.vtx[i]);
         // are the actual inputs available?
         if (!view.HaveInputs(tx)) {
-            return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-missingorspent", false,
-                    strprintf("%s: inputs missing/spent", __func__));
+            // If we didn't find the input, try adding the prior outputs
+            for (; nTxOutputsAdded < i; ++nTxOutputsAdded)
+            {
+                const CTransaction &tx2 = *(block.vtx[nTxOutputsAdded]);
+                for (size_t j = 0; j < tx2.vout.size(); ++j) {
+                    view.AddCoin(COutPoint(tx2.GetHash(), j), Coin(tx2.vout[j], pindex->nHeight, false), false);
+                }
+            }
+            // Check again -- if it's not there now, it doesn't exist at all
+            if (!view.HaveInputs(tx)) {
+                return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-missingorspent", false,
+                        strprintf("%s: inputs missing/spent", __func__));
+            }
         }
         // GetTransactionSigOpCost counts 3 types of sigops:
         // * legacy (always)
@@ -2076,6 +2079,16 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     LogPrint(BCLog::BENCH, "    - Verify %u txins: %.2fms (%.3fms/txin) [%.2fs (%.2fms/blk)]\n", nInputs - 1, MILLI * (nTime4 - nTime2), nInputs <= 1 ? 0 : MILLI * (nTime4 - nTime2) / (nInputs-1), nTimeVerify * MICRO, nTimeVerify * MILLI / nBlocksTotal);
 
 
+    // Finish Creating Outputs
+    CTxUndo dummy;
+    UpdateCoins(*block.vtx[0], view, dummy, pindex->nHeight);
+    for (; nTxOutputsAdded < block.vtx.size(); ++nTxOutputsAdded)
+    {
+        const CTransaction &tx = *(block.vtx[nTxOutputsAdded]);
+        for (size_t j = 0; j < tx.vout.size(); ++j) {
+            view.AddCoin(COutPoint(tx.GetHash(), j), Coin(tx.vout[j], pindex->nHeight, false), false);
+        }
+    }
     // Delete Inputs & Generate Undo
     CBlockUndo blockundo;
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
