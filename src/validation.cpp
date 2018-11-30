@@ -2075,8 +2075,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     int64_t nTime4 = GetTimeMicros(); nTimeVerify += nTime4 - nTime2;
     LogPrint(BCLog::BENCH, "    - Verify %u txins: %.2fms (%.3fms/txin) [%.2fs (%.2fms/blk)]\n", nInputs - 1, MILLI * (nTime4 - nTime2), nInputs <= 1 ? 0 : MILLI * (nTime4 - nTime2) / (nInputs-1), nTimeVerify * MICRO, nTimeVerify * MILLI / nBlocksTotal);
 
-    if (fJustCheck)
-        return true;
 
     // Delete Inputs & Generate Undo
     CBlockUndo blockundo;
@@ -2093,6 +2091,9 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             assert(is_spent);
         }
     }
+
+    if (fJustCheck)
+        return true;
     if (!WriteUndoDataForBlock(blockundo, state, pindex, chainparams))
         return false;
 
