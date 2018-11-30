@@ -2049,21 +2049,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     }
 
 
-    // Delete Inputs & Generate Undo
-    CBlockUndo blockundo;
-    blockundo.vtxundo.reserve(block.vtx.size() - 1);
-    for (unsigned int i = 1; i < block.vtx.size(); i++)
-    {
-        const CTransaction &tx = *(block.vtx[i]);
-        blockundo.vtxundo.push_back(CTxUndo());
-        // mark inputs spent
-        blockundo.vtxundo.back().vprevout.reserve(tx.vin.size());
-        for (const CTxIn &txin : tx.vin) {
-            blockundo.vtxundo.back().vprevout.emplace_back();
-            bool is_spent = view.SpendCoin(txin.prevout, &blockundo.vtxundo.back().vprevout.back());
-            assert(is_spent);
-        }
-    }
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
     int nInputs = 0;
     for (unsigned int i = 0; i < block.vtx.size(); i++)
@@ -2088,6 +2073,21 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     if (fJustCheck)
         return true;
 
+    // Delete Inputs & Generate Undo
+    CBlockUndo blockundo;
+    blockundo.vtxundo.reserve(block.vtx.size() - 1);
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
+        blockundo.vtxundo.push_back(CTxUndo());
+        // mark inputs spent
+        blockundo.vtxundo.back().vprevout.reserve(tx.vin.size());
+        for (const CTxIn &txin : tx.vin) {
+            blockundo.vtxundo.back().vprevout.emplace_back();
+            bool is_spent = view.SpendCoin(txin.prevout, &blockundo.vtxundo.back().vprevout.back());
+            assert(is_spent);
+        }
+    }
     if (!WriteUndoDataForBlock(blockundo, state, pindex, chainparams))
         return false;
 
