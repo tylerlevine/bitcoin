@@ -1967,38 +1967,14 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     int64_t nTime2 = GetTimeMicros(); nTimeForks += nTime2 - nTime1;
     LogPrint(BCLog::BENCH, "    - Fork checks: %.2fms [%.2fs (%.2fms/blk)]\n", MILLI * (nTime2 - nTime1), nTimeForks * MICRO, nTimeForks * MILLI / nBlocksTotal);
 
-    CBlockUndo blockundo;
 
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && nScriptCheckThreads ? &scriptcheckqueue : nullptr);
 
-    std::vector<int> prevheights;
-    CAmount nFees = 0;
-    int nInputs = block.vtx[0]->vin.size();
-    // GetTransactionSigOpCost counts 3 types of sigops:
-    // * legacy (always)
-    // * p2sh (when P2SH enabled in flags and excludes coinbase)
-    // * witness (when witness enabled in flags and excludes coinbase)
-    int64_t nSigOpsCost = GetTransactionSigOpCost(*block.vtx[0], view, flags);
-    blockundo.vtxundo.reserve(block.vtx.size() - 1);
-    std::vector<PrecomputedTransactionData> txdata;
-    txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
-    {
-        if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
-            return state.DoS(100, error("ConnectBlock(): too many sigops"),
-                             REJECT_INVALID, "bad-blk-sigops");
-        txdata.emplace_back(*block.vtx[0]);
-        CTxUndo dummy;
-        UpdateCoins(*block.vtx[0], view, dummy, pindex->nHeight);
-    }
 
-    for (unsigned int i = 1; i < block.vtx.size(); i++)
-    {
-        const CTransaction &tx = *(block.vtx[i]);
-
-        nInputs += tx.vin.size();
-    }
 
     // Create all outputs now
+    CTxUndo dummy;
+    UpdateCoins(*block.vtx[0], view, dummy, pindex->nHeight);
     for (unsigned int i = 1; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = *(block.vtx[i]);
@@ -2007,6 +1983,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         }
     }
 
+    // Calculate Fees
+    CAmount nFees = 0;
     for (unsigned int i = 1; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = *(block.vtx[i]);
@@ -2022,6 +2000,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                 REJECT_INVALID, "bad-txns-accumulated-fee-outofrange");
     }
 
+    // Check Sequence Locks
+    std::vector<int> prevheights;
     for (unsigned int i = 1; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = *(block.vtx[i]);
@@ -2039,6 +2019,14 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             }
     }
 
+    // Script Checks / Check Inputs
+    int64_t nSigOpsCost = GetTransactionSigOpCost(*block.vtx[0], view, flags);
+    if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
+        return state.DoS(100, error("ConnectBlock(): too many sigops"),
+                REJECT_INVALID, "bad-blk-sigops");
+    std::vector<PrecomputedTransactionData> txdata;
+    txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
+    txdata.emplace_back(*block.vtx[0]);
     for (unsigned int i = 1; i < block.vtx.size(); i++)
     {
         const CTransaction &tx = *(block.vtx[i]);
@@ -2049,16 +2037,23 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         nSigOpsCost += GetTransactionSigOpCost(tx, view, flags);
         if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
             return state.DoS(100, error("ConnectBlock(): too many sigops"),
-                             REJECT_INVALID, "bad-blk-sigops");
+                    REJECT_INVALID, "bad-blk-sigops");
 
         txdata.emplace_back(tx);
-            std::vector<CScriptCheck> vChecks;
-            bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
-            if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults, fCacheResults, txdata[i], nScriptCheckThreads ? &vChecks : nullptr))
-                return error("ConnectBlock(): CheckInputs on %s failed with %s",
+        std::vector<CScriptCheck> vChecks;
+        bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
+        if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults, fCacheResults, txdata[i], nScriptCheckThreads ? &vChecks : nullptr))
+            return error("ConnectBlock(): CheckInputs on %s failed with %s",
                     tx.GetHash().ToString(), FormatStateMessage(state));
-            control.Add(vChecks);
+        control.Add(vChecks);
+    }
 
+    // Delete Inputs & Generate Undo
+    CBlockUndo blockundo;
+    blockundo.vtxundo.reserve(block.vtx.size() - 1);
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
         blockundo.vtxundo.push_back(CTxUndo());
         // mark inputs spent
         blockundo.vtxundo.back().vprevout.reserve(tx.vin.size());
@@ -2069,6 +2064,12 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         }
     }
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
+    int nInputs = 0;
+    for (unsigned int i = 0; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
+        nInputs += tx.vin.size();
+    }
     LogPrint(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(), MILLI * (nTime3 - nTime2), MILLI * (nTime3 - nTime2) / block.vtx.size(), nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs-1), nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
 
     CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus());
