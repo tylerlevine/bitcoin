@@ -1983,7 +1983,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         }
     }
 
-    // Calculate Fees
+    // Calculate Fees & Confirm inputs exist
     CAmount nFees = 0;
     for (unsigned int i = 1; i < block.vtx.size(); i++)
     {
@@ -1998,25 +1998,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     if (!MoneyRange(nFees)) {
         return state.DoS(100, error("%s: accumulated fee in the block out of range.", __func__),
                 REJECT_INVALID, "bad-txns-accumulated-fee-outofrange");
-    }
-
-    // Check Sequence Locks
-    std::vector<int> prevheights;
-    for (unsigned int i = 1; i < block.vtx.size(); i++)
-    {
-        const CTransaction &tx = *(block.vtx[i]);
-            // Check that transaction is BIP68 final
-            // BIP68 lock checks (as opposed to nLockTime checks) must
-            // be in ConnectBlock because they require the UTXO set
-            prevheights.resize(tx.vin.size());
-            for (size_t j = 0; j < tx.vin.size(); j++) {
-                prevheights[j] = view.AccessCoin(tx.vin[j].prevout).nHeight;
-            }
-
-            if (!SequenceLocks(tx, nLockTimeFlags, &prevheights, *pindex)) {
-                return state.DoS(100, error("%s: contains a non-BIP68-final transaction", __func__),
-                                 REJECT_INVALID, "bad-txns-nonfinal");
-            }
     }
 
     // Script Checks / Check Inputs
@@ -2047,6 +2028,26 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                     tx.GetHash().ToString(), FormatStateMessage(state));
         control.Add(vChecks);
     }
+
+    // Check Sequence Locks
+    std::vector<int> prevheights;
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
+            // Check that transaction is BIP68 final
+            // BIP68 lock checks (as opposed to nLockTime checks) must
+            // be in ConnectBlock because they require the UTXO set
+            prevheights.resize(tx.vin.size());
+            for (size_t j = 0; j < tx.vin.size(); j++) {
+                prevheights[j] = view.AccessCoin(tx.vin[j].prevout).nHeight;
+            }
+
+            if (!SequenceLocks(tx, nLockTimeFlags, &prevheights, *pindex)) {
+                return state.DoS(100, error("%s: contains a non-BIP68-final transaction", __func__),
+                                 REJECT_INVALID, "bad-txns-nonfinal");
+            }
+    }
+
 
     // Delete Inputs & Generate Undo
     CBlockUndo blockundo;
