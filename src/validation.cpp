@@ -1982,6 +1982,39 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             view.AddCoin(COutPoint(tx.GetHash(), j), Coin(tx.vout[j], pindex->nHeight, false), false);
         }
     }
+    // Script Checks / Check Inputs
+    int64_t nSigOpsCost = GetTransactionSigOpCost(*block.vtx[0], view, flags);
+    if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
+        return state.DoS(100, error("ConnectBlock(): too many sigops"),
+                REJECT_INVALID, "bad-blk-sigops");
+    std::vector<PrecomputedTransactionData> txdata;
+    txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
+    txdata.emplace_back(*block.vtx[0]);
+    for (unsigned int i = 1; i < block.vtx.size(); i++)
+    {
+        const CTransaction &tx = *(block.vtx[i]);
+        // are the actual inputs available?
+        if (!view.HaveInputs(tx)) {
+            return state.DoS(100, false, REJECT_INVALID, "bad-txns-inputs-missingorspent", false,
+                    strprintf("%s: inputs missing/spent", __func__));
+        }
+        // GetTransactionSigOpCost counts 3 types of sigops:
+        // * legacy (always)
+        // * p2sh (when P2SH enabled in flags and excludes coinbase)
+        // * witness (when witness enabled in flags and excludes coinbase)
+        nSigOpsCost += GetTransactionSigOpCost(tx, view, flags);
+        if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
+            return state.DoS(100, error("ConnectBlock(): too many sigops"),
+                    REJECT_INVALID, "bad-blk-sigops");
+
+        txdata.emplace_back(tx);
+        std::vector<CScriptCheck> vChecks;
+        bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
+        if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults, fCacheResults, txdata[i], nScriptCheckThreads ? &vChecks : nullptr))
+            return error("ConnectBlock(): CheckInputs on %s failed with %s",
+                    tx.GetHash().ToString(), FormatStateMessage(state));
+        control.Add(vChecks);
+    }
 
     // Calculate Fees & Confirm inputs exist
     CAmount nFees = 0;
@@ -2000,34 +2033,6 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                 REJECT_INVALID, "bad-txns-accumulated-fee-outofrange");
     }
 
-    // Script Checks / Check Inputs
-    int64_t nSigOpsCost = GetTransactionSigOpCost(*block.vtx[0], view, flags);
-    if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
-        return state.DoS(100, error("ConnectBlock(): too many sigops"),
-                REJECT_INVALID, "bad-blk-sigops");
-    std::vector<PrecomputedTransactionData> txdata;
-    txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
-    txdata.emplace_back(*block.vtx[0]);
-    for (unsigned int i = 1; i < block.vtx.size(); i++)
-    {
-        const CTransaction &tx = *(block.vtx[i]);
-        // GetTransactionSigOpCost counts 3 types of sigops:
-        // * legacy (always)
-        // * p2sh (when P2SH enabled in flags and excludes coinbase)
-        // * witness (when witness enabled in flags and excludes coinbase)
-        nSigOpsCost += GetTransactionSigOpCost(tx, view, flags);
-        if (nSigOpsCost > MAX_BLOCK_SIGOPS_COST)
-            return state.DoS(100, error("ConnectBlock(): too many sigops"),
-                    REJECT_INVALID, "bad-blk-sigops");
-
-        txdata.emplace_back(tx);
-        std::vector<CScriptCheck> vChecks;
-        bool fCacheResults = fJustCheck; /* Don't cache results if we're actually connecting blocks (still consult the cache, though) */
-        if (!CheckInputs(tx, state, view, fScriptChecks, flags, fCacheResults, fCacheResults, txdata[i], nScriptCheckThreads ? &vChecks : nullptr))
-            return error("ConnectBlock(): CheckInputs on %s failed with %s",
-                    tx.GetHash().ToString(), FormatStateMessage(state));
-        control.Add(vChecks);
-    }
 
     // Check Sequence Locks
     std::vector<int> prevheights;
