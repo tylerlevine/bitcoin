@@ -1516,23 +1516,21 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
             // scriptSig must be literals-only or validation fails, skip if checked earlier
             if (!(flags & SCRIPT_VERIFY_SIGPUSHONLY) && !scriptSig.IsPushOnly())
                 return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
-            std::vector<std::vector<unsigned char> > stack, stackCopy;
+            std::vector<std::vector<unsigned char> > stack;
             if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
                 // serror is set
                 return false;
-            if (flags & SCRIPT_VERIFY_P2SH)
-                stackCopy = stack;
-            if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::BASE, serror))
-                // serror is set
-                return false;
-            if (stack.empty())
-                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-            if (CastToBool(stack.back()) == false)
-                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
 
-
-            // Restore stack.
-            swap(stack, stackCopy);
+            {
+                std::vector<std::vector<unsigned char> > stackCopy = stack;
+                if (!EvalScript(stackCopy, scriptPubKey, flags, checker, SigVersion::BASE, serror))
+                    // serror is set
+                    return false;
+                if (stackCopy.empty())
+                    return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+                if (CastToBool(stackCopy.back()) == false)
+                    return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+            }
 
             // stack cannot be empty here, because if it was the
             // P2SH  HASH <> EQUAL  scriptPubKey would be evaluated with
@@ -1541,15 +1539,6 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
             const valtype& pubKeySerialized = stack.back();
             CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
-            popstack(stack);
-
-            if (!EvalScript(stack, pubKey2, flags, checker, SigVersion::BASE, serror))
-                // serror is set
-                return false;
-            if (stack.empty())
-                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-            if (!CastToBool(stack.back()))
-                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
 
             // P2SH witness program
             if (pubKey2.IsWitnessProgram(witnessversion, witnessprogram)) {
@@ -1564,20 +1553,26 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
                     return false;
                 }
                 return set_success(serror);
-            }
-
-            // The CLEANSTACK check is only performed after potential P2SH evaluation,
-            // as the non-P2SH evaluation of a P2SH script will obviously not result in
-            // a clean stack (the P2SH inputs remain). The same holds for witness evaluation.
-            if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
-                if (stack.size() != 1) {
+            } else {
+                popstack(stack);
+                if (!EvalScript(stack, pubKey2, flags, checker, SigVersion::BASE, serror))
+                    // serror is set
+                    return false;
+                if (stack.empty())
+                    return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+                if (!CastToBool(stack.back()))
+                    return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+                // This CLEANSTACK check is only performed after P2SH evaluation,
+                // as the non-P2SH evaluation of a P2SH script will obviously not result in
+                // a clean stack (the P2SH inputs remain).
+                if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0 && stack.size() != 1) {
                     return set_error(serror, SCRIPT_ERR_CLEANSTACK);
+                }
+                if (!witness->IsNull()) {
+                    return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
                 }
             }
 
-            if (!witness->IsNull()) {
-                return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
-            }
             return set_success(serror);
         }
     }
