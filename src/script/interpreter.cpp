@@ -1575,6 +1575,13 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
             return set_success(serror);
         }
+        // SCRIPT_VERIFY_WITNESS is set, but the script wasn't a bare or p2sh witness program
+        // and still had a witness, so fail
+        if (!witness->IsNull()) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
+        }
+
+        // Perform Pre-Segwit Script Verification
     }
 
     std::vector<std::vector<unsigned char> > stack, stackCopy;
