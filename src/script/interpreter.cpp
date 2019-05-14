@@ -1584,6 +1584,52 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         // Perform Pre-Segwit Script Verification
     }
 
+    if ((flags & SCRIPT_VERIFY_P2SH) && !(flags & SCRIPT_VERIFY_WITNESS)) {
+        if (scriptPubKey.IsPayToScriptHash()) {
+
+            std::vector<std::vector<unsigned char> > stack, stackCopy;
+            if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
+                // serror is set
+                return false;
+            if (flags & SCRIPT_VERIFY_P2SH)
+                stackCopy = stack;
+            if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::BASE, serror))
+                // serror is set
+                return false;
+            if (stack.empty())
+                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+            if (CastToBool(stack.back()) == false)
+                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+
+
+            // scriptSig must be literals-only or validation fails
+            if (!(flags & SCRIPT_VERIFY_SIGPUSHONLY) && !scriptSig.IsPushOnly())
+                return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
+
+            // Restore stack.
+            swap(stack, stackCopy);
+
+            // stack cannot be empty here, because if it was the
+            // P2SH  HASH <> EQUAL  scriptPubKey would be evaluated with
+            // an empty stack and the EvalScript above would return false.
+            assert(!stack.empty());
+
+            const valtype& pubKeySerialized = stack.back();
+            CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
+            popstack(stack);
+
+            if (!EvalScript(stack, pubKey2, flags, checker, SigVersion::BASE, serror))
+                // serror is set
+                return false;
+            if (stack.empty())
+                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+            if (!CastToBool(stack.back()))
+                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+
+            return set_success(serror);
+        }
+    }
+
     std::vector<std::vector<unsigned char> > stack, stackCopy;
     if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
         // serror is set
@@ -1598,34 +1644,6 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
     if (CastToBool(stack.back()) == false)
         return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
 
-
-    // Additional validation for spend-to-script-hash transactions:
-    if ((flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash())
-    {
-        // scriptSig must be literals-only or validation fails
-        if (!(flags & SCRIPT_VERIFY_SIGPUSHONLY) && !scriptSig.IsPushOnly())
-            return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
-
-        // Restore stack.
-        swap(stack, stackCopy);
-
-        // stack cannot be empty here, because if it was the
-        // P2SH  HASH <> EQUAL  scriptPubKey would be evaluated with
-        // an empty stack and the EvalScript above would return false.
-        assert(!stack.empty());
-
-        const valtype& pubKeySerialized = stack.back();
-        CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
-        popstack(stack);
-
-        if (!EvalScript(stack, pubKey2, flags, checker, SigVersion::BASE, serror))
-            // serror is set
-            return false;
-        if (stack.empty())
-            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-        if (!CastToBool(stack.back()))
-            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-    }
 
     // The CLEANSTACK check is only performed after potential P2SH evaluation,
     // as the non-P2SH evaluation of a P2SH script will obviously not result in
