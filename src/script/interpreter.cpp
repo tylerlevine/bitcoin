@@ -1586,28 +1586,23 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
     if ((flags & SCRIPT_VERIFY_P2SH) && !(flags & SCRIPT_VERIFY_WITNESS)) {
         if (scriptPubKey.IsPayToScriptHash()) {
-
-            std::vector<std::vector<unsigned char> > stack, stackCopy;
-            if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
-                // serror is set
-                return false;
-            if (flags & SCRIPT_VERIFY_P2SH)
-                stackCopy = stack;
-            if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::BASE, serror))
-                // serror is set
-                return false;
-            if (stack.empty())
-                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-            if (CastToBool(stack.back()) == false)
-                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-
-
-            // scriptSig must be literals-only or validation fails
+            // scriptSig must be literals-only or validation fails, skip if checked earlier
             if (!(flags & SCRIPT_VERIFY_SIGPUSHONLY) && !scriptSig.IsPushOnly())
                 return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
 
-            // Restore stack.
-            swap(stack, stackCopy);
+            std::vector<std::vector<unsigned char> > stack;
+            if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
+                // serror is set
+                return false;
+            {
+                std::vector<std::vector<unsigned char> > stackCopy = stack;
+                if (!EvalScript(stackCopy, scriptPubKey, flags, checker, SigVersion::BASE, serror))
+                    // serror is set
+                    return false;
+                assert(!stackCopy.empty());
+                if (CastToBool(stackCopy.back()) == false)
+                    return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+            }
 
             // stack cannot be empty here, because if it was the
             // P2SH  HASH <> EQUAL  scriptPubKey would be evaluated with
