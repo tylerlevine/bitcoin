@@ -1501,18 +1501,16 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
     int witnessversion;
     std::vector<unsigned char> witnessprogram;
     if ((flags & SCRIPT_VERIFY_WITNESS) && scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
-
-        // Bypass the cleanstack check at the end. The actual stack is obviously not clean
-        // for witness programs.
-        bypass_cleanstack = true;
-        hadWitness = true;
         if (scriptSig.size() != 0) {
             // The scriptSig must be _exactly_ CScript(), otherwise we reintroduce malleability.
             return set_error(serror, SCRIPT_ERR_WITNESS_MALLEATED);
         }
+        if (CastToBool(witnessprogram) == false)
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
         if (!VerifyWitnessProgram(*witness, witnessversion, witnessprogram, flags, checker, serror)) {
             return false;
         }
+        return set_success(serror);
     }
 
     std::vector<std::vector<unsigned char> > stack, stackCopy;
