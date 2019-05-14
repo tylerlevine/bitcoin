@@ -1491,7 +1491,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
     // Disallow CLEANSTACK without P2SH, as otherwise a switch CLEANSTACK->P2SH+CLEANSTACK
     // would be possible, which is not a softfork (and P2SH should be one).
-    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
+    if (flags & SCRIPT_VERIFY_CLEANSTACK) {
         assert((flags & SCRIPT_VERIFY_P2SH) != 0);
         assert((flags & SCRIPT_VERIFY_WITNESS) != 0);
     }
@@ -1526,7 +1526,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
                 if (!EvalScript(stackCopy, scriptPubKey, flags, checker, SigVersion::BASE, serror))
                     // serror is set
                     return false;
-                // stackCopy cannot be empty because it is a p2sh template
+                // stackCopy cannot be empty because we know it is a PayToScriptHash template
                 assert(!stackCopy.empty());
                 if (CastToBool(stackCopy.back()) == false)
                     return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
@@ -1542,7 +1542,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
             // P2SH witness program
             if (pubKey2.IsWitnessProgram(witnessversion, witnessprogram)) {
-                if (CastToBool(witnessprogram) == false)
+                if (!CastToBool(witnessprogram))
                     return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
                 if (scriptSig != CScript() << std::vector<unsigned char>(pubKey2.begin(), pubKey2.end())) {
                     // The scriptSig must be _exactly_ a single push of the redeemScript. Otherwise we
@@ -1552,7 +1552,6 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
                 if (!VerifyWitnessProgram(*witness, witnessversion, witnessprogram, flags, checker, serror)) {
                     return false;
                 }
-                return set_success(serror);
             } else {
                 popstack(stack);
                 if (!EvalScript(stack, pubKey2, flags, checker, SigVersion::BASE, serror))
@@ -1565,7 +1564,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
                 // This CLEANSTACK check is only performed after P2SH evaluation,
                 // as the non-P2SH evaluation of a P2SH script will obviously not result in
                 // a clean stack (the P2SH inputs remain).
-                if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0 && stack.size() != 1) {
+                if ((flags & SCRIPT_VERIFY_CLEANSTACK) && stack.size() != 1) {
                     return set_error(serror, SCRIPT_ERR_CLEANSTACK);
                 }
                 if (!witness->IsNull()) {
@@ -1599,6 +1598,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
                 if (!EvalScript(stackCopy, scriptPubKey, flags, checker, SigVersion::BASE, serror))
                     // serror is set
                     return false;
+                // stackCopy cannot be empty because we know it is a PayToScriptHash template
                 assert(!stackCopy.empty());
                 if (CastToBool(stackCopy.back()) == false)
                     return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
@@ -1641,13 +1641,15 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
             return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
     }
 
-
-    // The CLEANSTACK check is only performed after potential P2SH evaluation,
-    // as the non-P2SH evaluation of a P2SH script will obviously not result in
-    // a clean stack (the P2SH inputs remain). The same holds for witness evaluation.
-    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
-        if (stack.size() != 1) {
-            return set_error(serror, SCRIPT_ERR_CLEANSTACK);
+    // Postcondition Checks for Classic Script if other validation modes
+    // are enabled
+    {
+        // this CLEANSTACK check is only performed after non-P2SH evaluation
+        // while SCRIPT_VERIFY_P2SH is enabled. The same holds for witness evaluation.
+        if (flags & SCRIPT_VERIFY_CLEANSTACK) {
+            if (stack.size() != 1) {
+                return set_error(serror, SCRIPT_ERR_CLEANSTACK);
+            }
         }
     }
 
