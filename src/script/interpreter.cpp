@@ -1526,8 +1526,8 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
                 if (!EvalScript(stackCopy, scriptPubKey, flags, checker, SigVersion::BASE, serror))
                     // serror is set
                     return false;
-                if (stackCopy.empty())
-                    return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+                // stackCopy cannot be empty because it is a p2sh template
+                assert(!stackCopy.empty());
                 if (CastToBool(stackCopy.back()) == false)
                     return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
             }
