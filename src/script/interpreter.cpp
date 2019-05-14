@@ -1521,7 +1521,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
     if ((flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash())
     {
         // scriptSig must be literals-only or validation fails
-        if (!scriptSig.IsPushOnly())
+        if (!(flags & SCRIPT_VERIFY_SIGPUSHONLY) && !scriptSig.IsPushOnly())
             return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
 
         // Restore stack.
