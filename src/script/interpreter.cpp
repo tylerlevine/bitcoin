@@ -1475,8 +1475,6 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
     if (witness == nullptr) {
         witness = &emptyWitness;
     }
-    bool hadWitness = false;
-    bool bypass_cleanstack = false;
 
     set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
 
@@ -1557,10 +1555,6 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
         // P2SH witness program
         if (pubKey2.IsWitnessProgram(witnessversion, witnessprogram)) {
-            // Bypass the cleanstack check at the end. The actual stack is obviously not clean
-            // for witness programs.
-            bypass_cleanstack = true;
-            hadWitness = true;
             if (scriptSig != CScript() << std::vector<unsigned char>(pubKey2.begin(), pubKey2.end())) {
                 // The scriptSig must be _exactly_ a single push of the redeemScript. Otherwise we
                 // reintroduce malleability.
@@ -1575,13 +1569,13 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         // The CLEANSTACK check is only performed after potential P2SH evaluation,
         // as the non-P2SH evaluation of a P2SH script will obviously not result in
         // a clean stack (the P2SH inputs remain). The same holds for witness evaluation.
-        if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0 && !bypass_cleanstack) {
+        if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
             if (stack.size() != 1) {
                 return set_error(serror, SCRIPT_ERR_CLEANSTACK);
             }
         }
 
-        if (!hadWitness && !witness->IsNull()) {
+        if (!witness->IsNull()) {
             return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
         }
         return set_success(serror);
@@ -1633,14 +1627,14 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
     // The CLEANSTACK check is only performed after potential P2SH evaluation,
     // as the non-P2SH evaluation of a P2SH script will obviously not result in
     // a clean stack (the P2SH inputs remain). The same holds for witness evaluation.
-    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0 && !bypass_cleanstack) {
+    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
         if (stack.size() != 1) {
             return set_error(serror, SCRIPT_ERR_CLEANSTACK);
         }
     }
 
     if (flags & SCRIPT_VERIFY_WITNESS) {
-        if (!hadWitness && !witness->IsNull()) {
+        if (!witness->IsNull()) {
             return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
         }
     }
