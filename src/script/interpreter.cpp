@@ -1636,12 +1636,6 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         }
     }
 
-    if (flags & SCRIPT_VERIFY_WITNESS) {
-        if (!witness->IsNull()) {
-            return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
-        }
-    }
-
     return set_success(serror);
 }
 
