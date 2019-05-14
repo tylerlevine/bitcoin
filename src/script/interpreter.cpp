@@ -1581,7 +1581,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
             return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
         }
 
-        // Perform Pre-Segwit Script Verification
+        // Perform Classic Script Verification
     }
 
     if ((flags & SCRIPT_VERIFY_P2SH) && !(flags & SCRIPT_VERIFY_WITNESS)) {
@@ -1628,6 +1628,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
             return set_success(serror);
         }
+        // Perform Classic Script Verification
     }
 
     std::vector<std::vector<unsigned char> > stack, stackCopy;
