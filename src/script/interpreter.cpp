@@ -1513,6 +1513,9 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         }
 
         if (scriptPubKey.IsPayToScriptHash()) {
+            // scriptSig must be literals-only or validation fails, skip if checked earlier
+            if (!(flags & SCRIPT_VERIFY_SIGPUSHONLY) && !scriptSig.IsPushOnly())
+                return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
             std::vector<std::vector<unsigned char> > stack, stackCopy;
             if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
                 // serror is set
@@ -1527,9 +1530,6 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
             if (CastToBool(stack.back()) == false)
                 return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
 
-            // scriptSig must be literals-only or validation fails
-            if (!(flags & SCRIPT_VERIFY_SIGPUSHONLY) && !scriptSig.IsPushOnly())
-                return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
 
             // Restore stack.
             swap(stack, stackCopy);
