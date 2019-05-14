@@ -1484,6 +1484,19 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
     }
 
+    // We can't check for correct unexpected witness data if P2SH was off, so require
+    // that WITNESS implies P2SH. Otherwise, going from WITNESS->P2SH+WITNESS would be
+    // possible, which is not a softfork.
+    if (flags & SCRIPT_VERIFY_WITNESS) {
+        assert((flags & SCRIPT_VERIFY_P2SH) != 0);
+    }
+
+    // Disallow CLEANSTACK without P2SH, as otherwise a switch CLEANSTACK->P2SH+CLEANSTACK
+    // would be possible, which is not a softfork (and P2SH should be one).
+    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
+        assert((flags & SCRIPT_VERIFY_P2SH) != 0);
+        assert((flags & SCRIPT_VERIFY_WITNESS) != 0);
+    }
     std::vector<std::vector<unsigned char> > stack, stackCopy;
     if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
         // serror is set
@@ -1567,20 +1580,12 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
     // as the non-P2SH evaluation of a P2SH script will obviously not result in
     // a clean stack (the P2SH inputs remain). The same holds for witness evaluation.
     if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0 && !bypass_cleanstack) {
-        // Disallow CLEANSTACK without P2SH, as otherwise a switch CLEANSTACK->P2SH+CLEANSTACK
-        // would be possible, which is not a softfork (and P2SH should be one).
-        assert((flags & SCRIPT_VERIFY_P2SH) != 0);
-        assert((flags & SCRIPT_VERIFY_WITNESS) != 0);
         if (stack.size() != 1) {
             return set_error(serror, SCRIPT_ERR_CLEANSTACK);
         }
     }
 
     if (flags & SCRIPT_VERIFY_WITNESS) {
-        // We can't check for correct unexpected witness data if P2SH was off, so require
-        // that WITNESS implies P2SH. Otherwise, going from WITNESS->P2SH+WITNESS would be
-        // possible, which is not a softfork.
-        assert((flags & SCRIPT_VERIFY_P2SH) != 0);
         if (!hadWitness && !witness->IsNull()) {
             return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
         }
