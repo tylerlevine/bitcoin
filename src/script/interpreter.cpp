@@ -1513,6 +1513,84 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         return set_success(serror);
     }
 
+    // Additional validation for spend-to-script-hash transactions:
+    if ((flags & SCRIPT_VERIFY_WITNESS) && (flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash())
+    {
+
+        std::vector<std::vector<unsigned char> > stack, stackCopy;
+        if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
+            // serror is set
+            return false;
+        if (flags & SCRIPT_VERIFY_P2SH)
+            stackCopy = stack;
+        if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::BASE, serror))
+            // serror is set
+            return false;
+        if (stack.empty())
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+        if (CastToBool(stack.back()) == false)
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+
+        // scriptSig must be literals-only or validation fails
+        if (!(flags & SCRIPT_VERIFY_SIGPUSHONLY) && !scriptSig.IsPushOnly())
+            return set_error(serror, SCRIPT_ERR_SIG_PUSHONLY);
+
+        // Restore stack.
+        swap(stack, stackCopy);
+
+        // stack cannot be empty here, because if it was the
+        // P2SH  HASH <> EQUAL  scriptPubKey would be evaluated with
+        // an empty stack and the EvalScript above would return false.
+        assert(!stack.empty());
+
+        const valtype& pubKeySerialized = stack.back();
+        CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
+        popstack(stack);
+
+        if (!EvalScript(stack, pubKey2, flags, checker, SigVersion::BASE, serror))
+            // serror is set
+            return false;
+        if (stack.empty())
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+        if (!CastToBool(stack.back()))
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+
+        // P2SH witness program
+        if (flags & SCRIPT_VERIFY_WITNESS) {
+            if (pubKey2.IsWitnessProgram(witnessversion, witnessprogram)) {
+                // Bypass the cleanstack check at the end. The actual stack is obviously not clean
+                // for witness programs.
+                bypass_cleanstack = true;
+                hadWitness = true;
+                if (scriptSig != CScript() << std::vector<unsigned char>(pubKey2.begin(), pubKey2.end())) {
+                    // The scriptSig must be _exactly_ a single push of the redeemScript. Otherwise we
+                    // reintroduce malleability.
+                    return set_error(serror, SCRIPT_ERR_WITNESS_MALLEATED_P2SH);
+                }
+                if (!VerifyWitnessProgram(*witness, witnessversion, witnessprogram, flags, checker, serror)) {
+                    return false;
+                }
+            }
+        }
+
+        // The CLEANSTACK check is only performed after potential P2SH evaluation,
+        // as the non-P2SH evaluation of a P2SH script will obviously not result in
+        // a clean stack (the P2SH inputs remain). The same holds for witness evaluation.
+        if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0 && !bypass_cleanstack) {
+            if (stack.size() != 1) {
+                return set_error(serror, SCRIPT_ERR_CLEANSTACK);
+            }
+        }
+
+        if (flags & SCRIPT_VERIFY_WITNESS) {
+            if (!hadWitness && !witness->IsNull()) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_UNEXPECTED);
+            }
+        }
+
+        return set_success(serror);
+    }
+
     std::vector<std::vector<unsigned char> > stack, stackCopy;
     if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
         // serror is set
