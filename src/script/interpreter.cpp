@@ -1569,6 +1569,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
             if (!VerifyWitnessProgram(*witness, witnessversion, witnessprogram, flags, checker, serror)) {
                 return false;
             }
+            return set_success(serror);
         }
 
         // The CLEANSTACK check is only performed after potential P2SH evaluation,
