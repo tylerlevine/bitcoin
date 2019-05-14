@@ -1497,6 +1497,24 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         assert((flags & SCRIPT_VERIFY_P2SH) != 0);
         assert((flags & SCRIPT_VERIFY_WITNESS) != 0);
     }
+
+    int witnessversion;
+    std::vector<unsigned char> witnessprogram;
+    if ((flags & SCRIPT_VERIFY_WITNESS) && scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
+
+        // Bypass the cleanstack check at the end. The actual stack is obviously not clean
+        // for witness programs.
+        bypass_cleanstack = true;
+        hadWitness = true;
+        if (scriptSig.size() != 0) {
+            // The scriptSig must be _exactly_ CScript(), otherwise we reintroduce malleability.
+            return set_error(serror, SCRIPT_ERR_WITNESS_MALLEATED);
+        }
+        if (!VerifyWitnessProgram(*witness, witnessversion, witnessprogram, flags, checker, serror)) {
+            return false;
+        }
+    }
+
     std::vector<std::vector<unsigned char> > stack, stackCopy;
     if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
         // serror is set
@@ -1511,24 +1529,6 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
     if (CastToBool(stack.back()) == false)
         return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
 
-    // Bare witness programs
-    int witnessversion;
-    std::vector<unsigned char> witnessprogram;
-    if (flags & SCRIPT_VERIFY_WITNESS) {
-        if (scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
-            // Bypass the cleanstack check at the end. The actual stack is obviously not clean
-            // for witness programs.
-            bypass_cleanstack = true;
-            hadWitness = true;
-            if (scriptSig.size() != 0) {
-                // The scriptSig must be _exactly_ CScript(), otherwise we reintroduce malleability.
-                return set_error(serror, SCRIPT_ERR_WITNESS_MALLEATED);
-            }
-            if (!VerifyWitnessProgram(*witness, witnessversion, witnessprogram, flags, checker, serror)) {
-                return false;
-            }
-        }
-    }
 
     // Additional validation for spend-to-script-hash transactions:
     if ((flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash())
