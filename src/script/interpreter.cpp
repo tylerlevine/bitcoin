@@ -1496,7 +1496,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
         assert((flags & SCRIPT_VERIFY_WITNESS) != 0);
     }
 
-    if ((flags & SCRIPT_VERIFY_WITNESS)) {
+    if (flags & SCRIPT_VERIFY_WITNESS) {
         int witnessversion;
         std::vector<unsigned char> witnessprogram;
         if (scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
@@ -1512,10 +1512,7 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
             return set_success(serror);
         }
 
-        // Additional validation for spend-to-script-hash transactions:
-        if (scriptPubKey.IsPayToScriptHash())
-        {
-
+        if (scriptPubKey.IsPayToScriptHash()) {
             std::vector<std::vector<unsigned char> > stack, stackCopy;
             if (!EvalScript(stack, scriptSig, flags, checker, SigVersion::BASE, serror))
                 // serror is set
@@ -1556,6 +1553,8 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const C
 
             // P2SH witness program
             if (pubKey2.IsWitnessProgram(witnessversion, witnessprogram)) {
+                if (CastToBool(witnessprogram) == false)
+                    return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
                 if (scriptSig != CScript() << std::vector<unsigned char>(pubKey2.begin(), pubKey2.end())) {
                     // The scriptSig must be _exactly_ a single push of the redeemScript. Otherwise we
                     // reintroduce malleability.
