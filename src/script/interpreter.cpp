@@ -1620,15 +1620,19 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(const CScriptNum& nSeq
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
 
+const uint8_t TAPROOT_LEAF_VERSION = 0xfe;
+const uint8_t TAPROOT_LEAF_NODE_TYPE = 0xc0;
+const size_t TAPROOT_PROGRAM_SIZE = 33;
+const size_t TAPROOT_CONTROL_LEAF_SIZE = 33;
+const size_t TAPROOT_CONTROL_NODE_SIZE = 32;
+const size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 32;
+const size_t TAPROOT_CONTROL_MAX_SIZE = TAPROOT_CONTROL_LEAF_SIZE + TAPROOT_CONTROL_NODE_SIZE + TAPROOT_CONTROL_MAX_NODE_COUNT;
 static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, const std::vector<unsigned char>& program, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror)
 {
-    std::vector<std::vector<unsigned char> > stack;
-    CScript scriptPubKey;
-    SigVersion sigversion;
-    ScriptExecutionData execdata;
 
     if (witversion == 0) {
-        sigversion = SigVersion::WITNESS_V0;
+        std::vector<std::vector<unsigned char> > stack;
+        CScript scriptPubKey;
         if (program.size() == WITNESS_V0_SCRIPTHASH_SIZE) {
             // Version 0 segregated witness program: SHA256(CScript) inside the program, CScript + inputs in witness
             if (witness.stack.size() == 0) {
@@ -1651,102 +1655,160 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         } else {
             return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH);
         }
-    } else if ((flags & SCRIPT_VERIFY_TAPROOT) && witversion == 1 && program.size() == 33 && (program[0] & 0xfe) == 0) {
-        std::vector<unsigned char> pubkey = program;
-        pubkey[0] = 2 + (pubkey[0] & 1);
-        stack = witness.stack;
-        if (stack.size() == 0) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
-        if (stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG) {
-            // Drop annex
-            if (flags & SCRIPT_VERIFY_DISCOURAGE_UNKNOWN_ANNEX) return set_error(serror, SCRIPT_ERR_DISCOURAGE_UNKNOWN_ANNEX);
-            execdata.m_annex_hash = (CHashWriter(SER_GETHASH, 0) << stack.back()).GetSHA256();
-            execdata.m_annex_present = true;
-            stack.pop_back();
-        } else {
+
+        // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack
+        if (std::any_of(stack.cbegin(), stack.cend(), [](const std::vector<unsigned char>& i){return i.size() > MAX_SCRIPT_ELEMENT_SIZE;})) {
+            return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+        }
+
+        ScriptExecutionData execdata;
+        if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::WITNESS_V0, serror, execdata)) {
+            return false;
+        }
+
+        // Scripts inside witness implicitly require cleanstack behaviour
+        if (stack.size() != 1)
+            return set_error(serror, SCRIPT_ERR_CLEANSTACK);
+        if (!CastToBool(stack.back()))
+            return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+        return true;
+    }
+
+    if ((flags & SCRIPT_VERIFY_TAPROOT) && witversion == 1 && program.size() == TAPROOT_PROGRAM_SIZE && (program[0] & TAPROOT_LEAF_VERSION) == 0) {
+        std::vector<std::vector<unsigned char> > stack = witness.stack;
+        if (stack.size() == 0) {
+            return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
+        }
+        ScriptExecutionData execdata;
+        // Process Annex
+        {
+            const bool has_annex = stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG;
             execdata.m_annex_present = false;
-        }
-        execdata.m_annex_init = true;
-        if (stack.size() == 1) {
-            // Key path spending
-            if (!checker.CheckSig(stack[0], pubkey, execdata, SigVersion::TAPROOT)) {
-                return set_error(serror, SCRIPT_ERR_TAPROOT_INVALID_SIG);
+            execdata.m_annex_init = true;
+            if (has_annex && (flags & SCRIPT_VERIFY_DISCOURAGE_UNKNOWN_ANNEX)) {
+                return set_error(serror, SCRIPT_ERR_DISCOURAGE_UNKNOWN_ANNEX);
             }
-            return set_success(serror);
+            // Drop annex
+            if (has_annex) {
+                execdata.m_annex_hash = (CHashWriter(SER_GETHASH, 0) << stack.back()).GetSHA256();
+                execdata.m_annex_present = true;
+                stack.pop_back();
+            }
         }
+
+        // Key path spending
+        if (stack.size() == 1) {
+            std::vector<unsigned char> pubkey = program;
+            pubkey[0] &= 1;
+            pubkey[0] += 2;
+            if (checker.CheckSig(stack[0], pubkey, execdata, SigVersion::TAPROOT)) {
+                return set_success(serror);
+            }
+            return set_error(serror, SCRIPT_ERR_TAPROOT_INVALID_SIG);
+        }
+
         // Script path spending
-        auto control = std::move(stack.back());
+        assert(stack.size() >= 2);
+
+        // Pop the Control data & Sanity check
+        const auto control = std::move(stack.back());
         stack.pop_back();
-        scriptPubKey = CScript(stack.back().begin(), stack.back().end());
-        stack.pop_back();
-        if (control.size() < 33 || control.size() > 33 + 32*32 || (control.size() % 32) != 1) {
+        if (!(control.size() >= TAPROOT_CONTROL_LEAF_SIZE)) {
             return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
         }
-        int path_len = (control.size() - 33) / 32;
-        std::vector<unsigned char> basekey(control.begin(), control.begin() + 33);
-        basekey[0] = 2 + (basekey[0] & 1);
-        uint256 k = (CHashWriter(HasherTapLeaf) << uint8_t(control[0] & 0xfe) << scriptPubKey).GetSHA256();
-        execdata.m_tapleaf_hash = k;
-        execdata.m_tapleaf_hash_init = true;
-        for (int i = 0; i < path_len; ++i) {
-            CHashWriter ss_branch = HasherTapBranch;
-            if (std::lexicographical_compare(k.begin(), k.end(), control.begin() + 33 + 32*i, control.begin() + 65 + 32*i)) {
-               ss_branch << k << Span<const unsigned char>(control.data() + 33 + 32*i, 32);
-            } else {
-               ss_branch << Span<const unsigned char>(control.data() + 33 + 32*i, 32) << k;
-            }
-            k = ss_branch.GetSHA256();
+        if (!(control.size() <= TAPROOT_CONTROL_MAX_SIZE)) {
+            return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
         }
-        k = (CHashWriter(HasherTapTweak) << MakeSpan(basekey) << k).GetSHA256();
-        CPubKey p(basekey.begin(), basekey.end());
-        CPubKey q(pubkey.begin(), pubkey.end());
-        if (!q.CheckPayToContract(p, k)) return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
-        if ((control[0] & 0xfe) == 0xc0) {
-            sigversion = SigVersion::TAPSCRIPT;
+        // control.size() = 1 Leaf + N Nodes
+        if (!((control.size() - TAPROOT_CONTROL_LEAF_SIZE) % TAPROOT_CONTROL_NODE_SIZE == 0)) {
+            return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
+        }
+
+        // Pop the scriptPubKey
+        const CScript scriptPubKey = CScript(stack.back().begin(), stack.back().end());
+        stack.pop_back();
+
+        // Verify the scriptPubKey was a valid branch
+        {
+            uint256 k = (CHashWriter(HasherTapLeaf) << uint8_t(control[0] & TAPROOT_LEAF_VERSION) << scriptPubKey).GetSHA256();
+            execdata.m_tapleaf_hash = k;
+            execdata.m_tapleaf_hash_init = true;
+            // Build the Merkle Branch
+            for (size_t offset = TAPROOT_CONTROL_LEAF_SIZE; offset < control.size(); offset += TAPROOT_CONTROL_NODE_SIZE) {
+                auto branch = Span<const unsigned char>(control.data() + offset, TAPROOT_CONTROL_NODE_SIZE);
+                k = (std::lexicographical_compare(k.begin(), k.end(), branch.begin(), branch.end()) ?
+                        CHashWriter(HasherTapBranch) << k << branch :
+                        CHashWriter(HasherTapBranch) << branch << k).GetSHA256();
+            }
+            // Verify the TapRoot
+            std::vector<unsigned char> pubkey = program;
+            pubkey[0] &= 1;
+            pubkey[0] += 2;
+            std::vector<unsigned char> basekey(control.begin(), control.begin() + TAPROOT_CONTROL_LEAF_SIZE);
+            basekey[0] &= 1;
+            basekey[0] += 2;
+            k = (CHashWriter(HasherTapTweak) << MakeSpan(basekey) << k).GetSHA256();
+            const CPubKey q(pubkey.cbegin(), pubkey.cend());
+            const CPubKey p(basekey.cbegin(), basekey.cend());
+            if (!q.CheckPayToContract(p, k)) {
+                return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
+            }
+        }
+        if ((control[0] & TAPROOT_LEAF_VERSION) == TAPROOT_LEAF_NODE_TYPE) {
+            // Walk the scriptPubKey to check for valid opcodes
             CScript::const_iterator pc = scriptPubKey.begin();
             while (pc < scriptPubKey.end()) {
                 opcodetype opcode;
-                if (!scriptPubKey.GetOp(pc, opcode)) {
+                if (scriptPubKey.GetOp(pc, opcode)) {
+                    // New opcodes will be listed here. May use a different sigversion to modify existing opcodes.
+                    if (IsOpSuccess(opcode)) {
+                        return (flags & SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS) ?
+                            set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS):
+                            set_success(serror);
+                    }
+                    // or continue scanning
+                } else {
                     // Note how this condition would not be reached if an unknown OP_SUCCESSx was found
                     return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
                 }
-                // New opcodes will be listed here. May use a different sigversion to modify existing opcodes.
-                if (IsOpSuccess(opcode)) {
-                    if (flags & SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS) {
-                        return set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS);
-                    }
-                    return set_success(serror);
-                }
+            }
+
+            // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack
+            if (std::any_of(stack.cbegin(), stack.cend(),
+                        [](const std::vector<unsigned char>& i){return i.size() > MAX_SCRIPT_ELEMENT_SIZE;})) {
+                return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
             }
             execdata.m_witness_weight = ::GetSerializeSize(witness.stack, PROTOCOL_VERSION);
             execdata.m_witness_weight_init = true;
-        } else if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) {
-            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION);
-        } else {
-            return set_success(serror);
+
+            if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::TAPSCRIPT, serror, execdata)) {
+                return false;
+            }
+
+            // Scripts inside witness implicitly require cleanstack behaviour
+            if (stack.size() != 1)
+                return set_error(serror, SCRIPT_ERR_CLEANSTACK);
+            if (!CastToBool(stack.back()))
+                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+            return true;
+
         }
-    } else if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM) {
+        if ((control[0] & TAPROOT_LEAF_VERSION) != TAPROOT_LEAF_NODE_TYPE) {
+            return (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) ?
+                set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) :
+                set_success(serror);
+        }
+        // unreachable, above branches are exhaustive
+        assert(false);
+    }
+
+    if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM) {
         return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM);
-    } else {
-        // Higher version witness scripts return true for future softfork compatibility
-        return set_success(serror);
     }
 
-    // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack
-    for (unsigned int i = 0; i < stack.size(); i++) {
-        if (stack.at(i).size() > MAX_SCRIPT_ELEMENT_SIZE)
-            return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
-    }
+    // Higher version witness scripts return true for future softfork compatibility
+    return set_success(serror);
 
-    if (!EvalScript(stack, scriptPubKey, flags, checker, sigversion, serror, execdata)) {
-        return false;
-    }
-
-    // Scripts inside witness implicitly require cleanstack behaviour
-    if (stack.size() != 1)
-        return set_error(serror, SCRIPT_ERR_CLEANSTACK);
-    if (!CastToBool(stack.back()))
-        return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-    return true;
 }
 
 bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness* witness, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror)
