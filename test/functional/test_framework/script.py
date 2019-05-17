@@ -170,7 +170,7 @@ OP_OR = CScriptOp(0x85)
 OP_XOR = CScriptOp(0x86)
 OP_EQUAL = CScriptOp(0x87)
 OP_EQUALVERIFY = CScriptOp(0x88)
-OP_RESERVED1 = CScriptOp(0x89)
+OP_CHECKOUTPUTSHASHVERIFY = CScriptOp(0x89)
 OP_RESERVED2 = CScriptOp(0x8a)
 
 # numeric
@@ -297,7 +297,7 @@ OPCODE_NAMES.update({
     OP_XOR : 'OP_XOR',
     OP_EQUAL : 'OP_EQUAL',
     OP_EQUALVERIFY : 'OP_EQUALVERIFY',
-    OP_RESERVED1 : 'OP_RESERVED1',
+    OP_CHECKOUTPUTSHASHVERIFY : 'OP_CHECKOUTPUTSHASHVERIFY',
     OP_RESERVED2 : 'OP_RESERVED2',
     OP_1ADD : 'OP_1ADD',
     OP_1SUB : 'OP_1SUB',
@@ -814,4 +814,4 @@ def taproot_construct(pubkey, scripts=[]):
     return (CScript([OP_1, GetVersionTaggedPubKey(tweaked, TAPROOT_VER)]), tweak, control_map)
 
 def is_op_success(o):
-    return o == 0x50 or o == 0x62 or o == 0x89 or o == 0x8a or o == 0x8d or o == 0x8e or (o >= 0x7e and o <= 0x81) or (o >= 0x83 and o <= 0x86) or (o >= 0x95 and o <= 0x99) or (o >= 0xbb and o <= 0xfe)
+    return o == 0x50 or o == 0x62  or o == 0x8a or o == 0x8d or o == 0x8e or (o >= 0x7e and o <= 0x81) or (o >= 0x83 and o <= 0x86) or (o >= 0x95 and o <= 0x99) or (o >= 0xbb and o <= 0xfe)
