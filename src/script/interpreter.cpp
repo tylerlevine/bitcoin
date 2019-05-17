@@ -770,6 +770,36 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     }
                 }
                 break;
+                case OP_CHECKOUTPUTSHASHVERIFY:
+                {
+                    // Don't verify before enabled...
+                    if (flags & SCRIPT_VERIFY_OUTPUTS_HASH) {
+                        CScript::const_iterator lookahead = pc;
+                        opcodetype argument;
+                        // Read ahead one opcode as a lookahead argument
+                        if (!script.GetOp(lookahead, argument, vchPushValue))
+                            return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+                        // If lookahead argument was exactly 32 bytes, check OutputHash
+                        // This is so that we can later add different semantics for this opcode
+                        if (vchPushValue.size() == 32) {
+                            // Argument should be == 0x20 -- will fail later anyways
+                            if (!CheckMinimalPush(vchPushValue, argument)) {
+                                return set_error(serror, SCRIPT_ERR_MINIMALDATA);
+                            }
+                            // If multiple inputs allowed, two inputs with the same OutputsHashVerify
+                            // would pay only half intended amount!
+                            if (!checker.CheckOnlyOneInput()) {
+                                return set_error(serror, SCRIPT_ERR_OUTPUTSHASHVERIFY);
+                            }
+                            // Lastly, check that the outputs hash matches the passed value
+                            if (!checker.CheckOutputsHash(vchPushValue)) {
+                                return set_error(serror, SCRIPT_ERR_OUTPUTSHASHVERIFY);
+                            }
+                        }
+
+                    }
+                }
+                break;
 
 
                 //
@@ -1616,6 +1646,26 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(const CScriptNum& nSeq
     return true;
 }
 
+template <class T>
+bool GenericTransactionSignatureChecker<T>::CheckOutputsHash(const std::vector<unsigned char>& hash) const
+{
+    uint256 tmp;
+    const uint256* hashOutputs = &tmp;
+    if (txdata && txdata->ready) {
+        hashOutputs = &txdata->hashOutputs;
+    } else {
+        assert(txTo != nullptr);
+        tmp = HashAgain(GetOutputsHash(*txTo));
+    }
+    return std::equal(hashOutputs->begin(), hashOutputs->end(), hash.begin());
+}
+
+template <class T>
+bool GenericTransactionSignatureChecker<T>::CheckOnlyOneInput() const
+{
+    return txTo->vin.size() == 1;
+}
+
 // explicit instantiation
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
@@ -1652,6 +1702,7 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH);
         }
     } else if ((flags & SCRIPT_VERIFY_TAPROOT) && witversion == 1 && program.size() == 33 && (program[0] & 0xfe) == 0) {
+        flags |= SCRIPT_VERIFY_OUTPUTS_HASH;
         std::vector<unsigned char> pubkey = program;
         pubkey[0] = 2 + (pubkey[0] & 1);
         stack = witness.stack;

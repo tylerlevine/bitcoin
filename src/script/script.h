@@ -135,7 +135,7 @@ enum opcodetype
     OP_XOR = 0x86,
     OP_EQUAL = 0x87,
     OP_EQUALVERIFY = 0x88,
-    OP_RESERVED1 = 0x89,
+    OP_CHECKOUTPUTSHASHVERIFY = 0x89,
     OP_RESERVED2 = 0x8a,
 
     // numeric

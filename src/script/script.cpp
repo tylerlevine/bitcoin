@@ -83,7 +83,7 @@ const char* GetOpName(opcodetype opcode)
     case OP_XOR                    : return "OP_XOR";
     case OP_EQUAL                  : return "OP_EQUAL";
     case OP_EQUALVERIFY            : return "OP_EQUALVERIFY";
-    case OP_RESERVED1              : return "OP_RESERVED1";
+    case OP_CHECKOUTPUTSHASHVERIFY : return "OP_CHECKOUTPUTSHASHVERIFY";
     case OP_RESERVED2              : return "OP_RESERVED2";
 
     // numeric
@@ -333,7 +333,7 @@ bool GetScriptOp(CScriptBase::const_iterator& pc, CScriptBase::const_iterator en
 
 bool IsOpSuccess(const opcodetype& opcode)
 {
-    return (opcode == 0x50 || opcode == 0x62 || opcode == 0x89 ||
+    return (opcode == 0x50 || opcode == 0x62 ||
             opcode == 0x8a || opcode == 0x8d || opcode == 0x8e ||
             (opcode >= 0x7e && opcode <= 0x81) || (opcode >= 0x83 && opcode <= 0x86) ||
             (opcode >= 0x95 && opcode <= 0x99) || (opcode >= 0xbb && opcode <= 0xfe));

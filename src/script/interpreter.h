@@ -136,6 +136,9 @@ enum
 
     // Making unknown public key versions in tapscript non-standard
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE = (1U << 21),
+
+    // Outputs Hash Validation
+    SCRIPT_VERIFY_OUTPUTS_HASH = (1U << 22),
 };
 
 bool CheckSignatureEncoding(const std::vector<unsigned char> &vchSig, unsigned int flags, ScriptError* serror);
@@ -213,6 +216,15 @@ public:
          return false;
     }
 
+    virtual bool CheckOutputsHash(const std::vector<unsigned char>& hash) const
+    {
+        return false;
+    }
+
+    virtual bool CheckOnlyOneInput() const
+    {
+        return false;
+    }
     virtual ~BaseSignatureChecker() {}
 };
 
@@ -239,6 +251,8 @@ public:
     bool CheckSig(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const ScriptExecutionData& execdata, SigVersion sigversion) const override;
     bool CheckLockTime(const CScriptNum& nLockTime) const override;
     bool CheckSequence(const CScriptNum& nSequence) const override;
+    bool CheckOutputsHash(const std::vector<unsigned char>& hash) const override;
+    bool CheckOnlyOneInput() const override;
 };
 
 using TransactionSignatureChecker = GenericTransactionSignatureChecker<CTransaction>;
