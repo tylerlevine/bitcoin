@@ -28,6 +28,25 @@ def random_real_outputs_and_script(n):
     outputs = [CTxOut((x+1)*100, CScript(bytes([OP_RETURN, 0x20]) + random_bytes(32))) for x in range(n)]
     return outputs, CScript(bytes([OP_CHECKOUTPUTSHASHVERIFY, 0x20]) + hash256(b"".join(o.serialize() for o in outputs)))
 
+def random_tapscript_tree(depth):
+
+    sec1 = ECKey()
+    sec1.generate()
+    pubkey1 = sec1.get_pubkey()
+    outputs_tree = [[CTxOut()]*(2**i) for i in range(depth)]
+    control_tree = [[0]*(2**i) for i in range(depth+1)]
+    outputs_tree += [[CTxOut(100, CScript(bytes([OP_RETURN, 0x20]) + random_bytes(32))) for x in range(2**depth)]]
+    for d in range(1, depth+2):
+        idxs =zip(range(0, len(outputs_tree[-d]),2), range(1, len(outputs_tree[-d]), 2))
+        for (idx, (a,b)) in enumerate([(outputs_tree[-d][i], outputs_tree[-d][j]) for (i,j) in idxs]):
+            s = CScript(bytes([OP_CHECKOUTPUTSHASHVERIFY, 0x20]) + hash256(b"".join(o.serialize() for o in [a,b])))
+            a = sum(o.nValue for o in [a,b])
+            taproot, tweak, controls = taproot_construct(pubkey1, [s])
+            t = CTxOut(a+1000, taproot)
+            outputs_tree[-d-1][idx] = t
+            control_tree[-d-1][idx] = [s, controls[s]]
+    return outputs_tree, control_tree
+
 def get_taproot_bech32(spk):
     return program_to_witness(1, spk[2:])
 class COSHVTest(BitcoinTestFramework):
@@ -51,6 +70,9 @@ class COSHVTest(BitcoinTestFramework):
         sec1.generate()
         pubkey1 = sec1.get_pubkey()
         taproot, tweak, controls = taproot_construct(pubkey1, [script])
+        # Small Tree for test speed, can be set to a large value like 16 (i.e., 65K txns)
+        TREE_SIZE = 4
+        congestion_tree_txo, congestion_tree_ctl = random_tapscript_tree(TREE_SIZE)
         # Add some fee satoshis
         amount = (sum(out.nValue for out in outputs)+200*500) /100e6
 
@@ -59,15 +81,19 @@ class COSHVTest(BitcoinTestFramework):
                 get_taproot_bech32(taproot), amount=amount)
         spendtx2 = create_transaction(self.nodes[0], self.coinbase_txids[1],
                 script_to_p2sh(CScript([OP_TRUE])), amount=amount)
-        print(spendtx2.serialize().hex())
+        spendtx3 = create_transaction(self.nodes[0], self.coinbase_txids[2],
+                get_taproot_bech32(congestion_tree_txo[0][0].scriptPubKey), amount=congestion_tree_txo[0][0].nValue/100e6)
         outpoint = COutPoint(int(spendtx.rehash(),16), 0)
         outpoint2 = COutPoint(int(spendtx2.rehash(),16), 0)
+        outpoint3 = COutPoint(int(spendtx3.rehash(),16), 0)
+
 
         tip = self.nodes[0].getbestblockhash()
         height = self.nodes[0].getblockcount()
         block = create_block(int(tip, 16), create_coinbase(height))
         block.vtx.append(spendtx)
         block.vtx.append(spendtx2)
+        block.vtx.append(spendtx3)
         block.hashMerkleRoot = block.calc_merkle_root()
         block.solve()
         self.nodes[0].submitblock(block.serialize(False).hex())
@@ -76,7 +102,6 @@ class COSHVTest(BitcoinTestFramework):
 
         # Test sendrawtransaction
         coshvTx = CTransaction()
-        coshvTx.nVersion = 2
         coshvTx.vin += [CTxIn(outpoint)]
         coshvTx.vout += outputs
         coshvTx.wit.vtxinwit +=  [CTxInWitness()]
@@ -142,6 +167,25 @@ class COSHVTest(BitcoinTestFramework):
         block.hashMerkleRoot = block.calc_merkle_root()
         block.solve()
         self.nodes[0].sendrawtransaction(spendtx.serialize().hex())
+        self.nodes[0].submitblock(block.serialize(True).hex())
+        assert_equal(self.nodes[0].getbestblockhash(), block.hash)
+
+        # Expand Congestion Control Tree to one specific input
+        tip = self.nodes[0].getbestblockhash()
+        height = self.nodes[0].getblockcount()
+        block = create_block(int(tip, 16), create_coinbase(height))
+        out = outpoint3
+        for x in range(TREE_SIZE):
+            spendtx = CTransaction()
+            spendtx.vin += [CTxIn(out)]
+            spendtx.wit.vtxinwit +=  [CTxInWitness()]
+            spendtx.wit.vtxinwit[0].scriptWitness.stack =  congestion_tree_ctl[x][0]
+            spendtx.vout += congestion_tree_txo[x+1][:2]
+            out = COutPoint(int(spendtx.rehash(),16), 0)
+            block.vtx.append(spendtx)
+        add_witness_commitment(block)
+        block.hashMerkleRoot = block.calc_merkle_root()
+        block.solve()
         self.nodes[0].submitblock(block.serialize(True).hex())
         assert_equal(self.nodes[0].getbestblockhash(), block.hash)
 
