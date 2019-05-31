@@ -1332,6 +1332,8 @@ CHashWriter TaggedHash(const std::string& tag)
 
 static const CHashWriter HasherTapSighash = TaggedHash("TapSighash");
 static const CHashWriter HasherTapLeaf = TaggedHash("TapLeaf");
+static const CHashWriter HasherTapLeafConcrete = TaggedHash("TapLeafConcrete");
+static const CHashWriter HasherTapLeafTemplateData = TaggedHash("TapLeafTemplateData");
 static const CHashWriter HasherTapBranch = TaggedHash("TapBranch");
 static const CHashWriter HasherTapTweak = TaggedHash("TapTweak");
 
@@ -1621,12 +1623,71 @@ template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
 
 const uint8_t TAPROOT_LEAF_VERSION = 0xfe;
-const uint8_t TAPROOT_LEAF_NODE_TYPE = 0xc0;
+const uint8_t TAPROOT_LEAF_NODE_VERSION_V0 = 0xc0;
+const uint8_t TAPROOT_LEAF_NODE_VERSION_V1 = 0xc0 + 2;
 const size_t TAPROOT_PROGRAM_SIZE = 33;
 const size_t TAPROOT_CONTROL_LEAF_SIZE = 33;
 const size_t TAPROOT_CONTROL_NODE_SIZE = 32;
 const size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 32;
 const size_t TAPROOT_CONTROL_MAX_SIZE = TAPROOT_CONTROL_LEAF_SIZE + TAPROOT_CONTROL_NODE_SIZE + TAPROOT_CONTROL_MAX_NODE_COUNT;
+
+static bool VerifyTapScriptV0(std::vector<std::vector<unsigned char>>& stack, const CScript& scriptPubKey, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror, ScriptExecutionData& execdata) {
+    // Walk the scriptPubKey to check for valid opcodes
+    CScript::const_iterator pc = scriptPubKey.begin();
+    while (pc < scriptPubKey.end()) {
+        opcodetype opcode;
+        if (scriptPubKey.GetOp(pc, opcode)) {
+            // New opcodes will be listed here. May use a different sigversion to modify existing opcodes.
+            if (IsOpSuccess(opcode)) {
+                return (flags & SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS) ?
+                    set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS):
+                    set_success(serror);
+            }
+            // or continue scanning
+        } else {
+            // Note how this condition would not be reached if an unknown OP_SUCCESSx was found
+            return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+        }
+    }
+
+    // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack
+    if (std::any_of(stack.cbegin(), stack.cend(),
+                [](const std::vector<unsigned char>& i){return i.size() > MAX_SCRIPT_ELEMENT_SIZE;})) {
+        return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+    }
+
+    if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::TAPSCRIPT, serror, execdata)) {
+        return false;
+    }
+
+    // Scripts inside witness implicitly require cleanstack behaviour
+    if (stack.size() != 1)
+        return set_error(serror, SCRIPT_ERR_CLEANSTACK);
+    if (!CastToBool(stack.back()))
+        return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
+    return true;
+}
+
+static bool GetControl(std::vector<std::vector<unsigned char>>& stack, std::vector<unsigned char>& control, ScriptError* serror) {
+    assert(stack.size() >= 1);
+    control = std::move(stack.back());
+    stack.pop_back();
+    if (!(control.size() >= TAPROOT_CONTROL_LEAF_SIZE)) {
+        return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
+    }
+    if (!(control.size() <= TAPROOT_CONTROL_MAX_SIZE)) {
+        return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
+    }
+    // control.size() = 1 Leaf + N Nodes
+    if (!((control.size() - TAPROOT_CONTROL_LEAF_SIZE) % TAPROOT_CONTROL_NODE_SIZE == 0)) {
+        return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
+    }
+    return true;
+}
+
+static bool CompileV1Template(CScript& tmpl, CHashWriter& templatedata) {
+    return true;
+}
 static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, const std::vector<unsigned char>& program, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror)
 {
 
@@ -1680,6 +1741,8 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
             return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY);
         }
         ScriptExecutionData execdata;
+        execdata.m_witness_weight = ::GetSerializeSize(witness.stack, PROTOCOL_VERSION);
+        execdata.m_witness_weight_init = true;
         // Process Annex
         {
             const bool has_annex = stack.size() >= 2 && !stack.back().empty() && stack.back()[0] == ANNEX_TAG;
@@ -1711,21 +1774,14 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         assert(stack.size() >= 2);
 
         // Pop the Control data & Sanity check
-        const auto control = std::move(stack.back());
-        stack.pop_back();
-        if (!(control.size() >= TAPROOT_CONTROL_LEAF_SIZE)) {
-            return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
-        }
-        if (!(control.size() <= TAPROOT_CONTROL_MAX_SIZE)) {
-            return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
-        }
-        // control.size() = 1 Leaf + N Nodes
-        if (!((control.size() - TAPROOT_CONTROL_LEAF_SIZE) % TAPROOT_CONTROL_NODE_SIZE == 0)) {
-            return set_error(serror, SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE);
+
+        std::vector<unsigned char> control;
+        if (!GetControl(stack, control, serror)) {
+            return false;
         }
 
         // Pop the scriptPubKey
-        const CScript scriptPubKey = CScript(stack.back().begin(), stack.back().end());
+        CScript scriptPubKey = CScript(stack.back().begin(), stack.back().end());
         stack.pop_back();
 
         // Verify the scriptPubKey was a valid branch
@@ -1754,46 +1810,71 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
                 return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
             }
         }
-        if ((control[0] & TAPROOT_LEAF_VERSION) == TAPROOT_LEAF_NODE_TYPE) {
-            // Walk the scriptPubKey to check for valid opcodes
-            CScript::const_iterator pc = scriptPubKey.begin();
-            while (pc < scriptPubKey.end()) {
-                opcodetype opcode;
-                if (scriptPubKey.GetOp(pc, opcode)) {
-                    // New opcodes will be listed here. May use a different sigversion to modify existing opcodes.
-                    if (IsOpSuccess(opcode)) {
-                        return (flags & SCRIPT_VERIFY_DISCOURAGE_OP_SUCCESS) ?
-                            set_error(serror, SCRIPT_ERR_DISCOURAGE_OP_SUCCESS):
-                            set_success(serror);
-                    }
-                    // or continue scanning
-                } else {
-                    // Note how this condition would not be reached if an unknown OP_SUCCESSx was found
-                    return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+        if ((control[0] & TAPROOT_LEAF_VERSION) == TAPROOT_LEAF_NODE_VERSION_V0) {
+            return VerifyTapScriptV0(stack, scriptPubKey, flags, checker, serror, execdata);
+        }
+        if ((control[0] & TAPROOT_LEAF_VERSION) == TAPROOT_LEAF_NODE_VERSION_V1) {
+            // Derive the Version -- if the stack is empty/null, assume template script executes as version 0.
+            // Otherwise the version should be read from the stack.
+            unsigned char version = stack.empty() || stack.back().size() ==0 ? TAPROOT_LEAF_NODE_VERSION_V0 : stack.back()[0];
+            // disallow recursion
+            if (version == TAPROOT_LEAF_NODE_VERSION_V1) {
+                return set_error(serror, SCRIPT_ERR_TAPSCRIPT_TEMPLATE_NO_RECURSION);
+            }
+            // Compile the template
+            CHashWriter templatedata = HasherTapLeafTemplateData;
+            if (!CompileV1Template(scriptPubKey, templatedata)) {
+                return set_error(serror, SCRIPT_ERR_TAPSCRIPT_TEMPLATE_INVALID);
+            }
+            // Compute the hash of the new script with the template data prefix
+            // By using the Tagged hash writer we prevent using a concrete template
+            // directly
+            uint256 k = (CHashWriter(HasherTapLeafConcrete) <<
+                    templatedata.GetSHA256()
+                    << uint8_t(version &  TAPROOT_LEAF_VERSION) << scriptPubKey).GetSHA256();
+
+            if (stack.back().size() <= 1) {
+                // This implies the script itself was already in the prior control program
+                stack.pop_back();
+            } else {
+                // The script was in a subtree, we must look it up
+                std::vector<unsigned char> control2;
+                if (!GetControl(stack, control2, serror)) {
+                    return false;
+                }
+                // Build the Merkle Branch
+                for (size_t offset = TAPROOT_CONTROL_LEAF_SIZE; offset < control2.size(); offset += TAPROOT_CONTROL_NODE_SIZE) {
+                    auto branch = Span<const unsigned char>(control2.data() + offset, TAPROOT_CONTROL_NODE_SIZE);
+                    k = (std::lexicographical_compare(k.begin(), k.end(), branch.begin(), branch.end()) ?
+                            CHashWriter(HasherTapBranch) << k << branch :
+                            CHashWriter(HasherTapBranch) << branch << k).GetSHA256();
                 }
             }
-
-            // Disallow stack item size > MAX_SCRIPT_ELEMENT_SIZE in witness stack
-            if (std::any_of(stack.cbegin(), stack.cend(),
-                        [](const std::vector<unsigned char>& i){return i.size() > MAX_SCRIPT_ELEMENT_SIZE;})) {
-                return set_error(serror, SCRIPT_ERR_PUSH_SIZE);
+            // Lookup Merkle branch against original control program
+            bool found = false;
+            for (size_t offset = TAPROOT_CONTROL_LEAF_SIZE; offset < control.size(); offset += TAPROOT_CONTROL_NODE_SIZE) {
+                if (std::equal(k.begin(), k.end(), control.begin() + offset)) {
+                    found = true;
+                    break;
+                }
             }
-            execdata.m_witness_weight = ::GetSerializeSize(witness.stack, PROTOCOL_VERSION);
-            execdata.m_witness_weight_init = true;
-
-            if (!EvalScript(stack, scriptPubKey, flags, checker, SigVersion::TAPSCRIPT, serror, execdata)) {
-                return false;
+            if (!found) {
+                // script not found!
+                return set_error(serror, SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH);
             }
-
-            // Scripts inside witness implicitly require cleanstack behaviour
-            if (stack.size() != 1)
-                return set_error(serror, SCRIPT_ERR_CLEANSTACK);
-            if (!CastToBool(stack.back()))
-                return set_error(serror, SCRIPT_ERR_EVAL_FALSE);
-            return true;
+            switch (version & TAPROOT_LEAF_VERSION) {
+                case TAPROOT_LEAF_NODE_VERSION_V0:
+                    {
+                        return VerifyTapScriptV0(stack, scriptPubKey, flags, checker, serror, execdata);
+                    }
+                default:
+                    return (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) ?
+                        set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) :
+                        set_success(serror);
+            }
 
         }
-        if ((control[0] & TAPROOT_LEAF_VERSION) != TAPROOT_LEAF_NODE_TYPE) {
+        if ((control[0] & TAPROOT_LEAF_VERSION) != TAPROOT_LEAF_NODE_VERSION_V0) {
             return (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) ?
                 set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION) :
                 set_success(serror);

@@ -103,6 +103,10 @@ const char* ScriptErrorString(const ScriptError serror)
             return "Invalid taproot control block size";
         case SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT:
             return "Too much signature validation relative to witness weight";
+        case SCRIPT_ERR_TAPSCRIPT_TEMPLATE_NO_RECURSION:
+            return "Cannot compile template Tapscript into a template Tapscript";
+        case SCRIPT_ERR_TAPSCRIPT_TEMPLATE_INVALID:
+            return "Invalid tapscript template program";
         case SCRIPT_ERR_OP_CODESEPARATOR:
             return "Using OP_CODESEPARATOR in non-witness script";
         case SCRIPT_ERR_SIG_FINDANDDELETE:
