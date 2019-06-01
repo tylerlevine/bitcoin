@@ -213,6 +213,11 @@ public:
          return false;
     }
 
+    virtual uint256 GetBagHash() const
+    {
+        return uint256{};
+    }
+
     virtual ~BaseSignatureChecker() {}
 };
 
@@ -239,6 +244,7 @@ public:
     bool CheckSig(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const ScriptExecutionData& execdata, SigVersion sigversion) const override;
     bool CheckLockTime(const CScriptNum& nLockTime) const override;
     bool CheckSequence(const CScriptNum& nSequence) const override;
+    uint256 GetBagHash() const override;
 };
 
 using TransactionSignatureChecker = GenericTransactionSignatureChecker<CTransaction>;

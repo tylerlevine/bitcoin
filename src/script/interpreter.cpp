@@ -1616,6 +1616,17 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(const CScriptNum& nSeq
     return true;
 }
 
+static const CHashWriter BagHash = TaggedHash("BagHash");
+template <class T>
+uint256 GenericTransactionSignatureChecker<T>::GetBagHash() const
+{
+   return (CHashWriter(BagHash)
+           << txTo->nVersion
+           << txTo->nLockTime
+           << uint64_t(txTo->vin.size())
+           << txTo->vout).GetSHA256();
+}
+
 // explicit instantiation
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
@@ -1627,6 +1638,16 @@ const size_t TAPROOT_CONTROL_LEAF_SIZE = 33;
 const size_t TAPROOT_CONTROL_NODE_SIZE = 32;
 const size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 32;
 const size_t TAPROOT_CONTROL_MAX_SIZE = TAPROOT_CONTROL_LEAF_SIZE + TAPROOT_CONTROL_NODE_SIZE + TAPROOT_CONTROL_MAX_NODE_COUNT;
+static CScript ExpandTemplate(std::vector<unsigned char>& tmpl, const BaseSignatureChecker& checker) {
+    if (tmpl.size() == 0) {
+        // For an empty script, assume we want OP_SECURETHEBAG semantics
+        auto h = checker.GetBagHash();
+        return CScript().push_data(h.begin(), h.end());
+    } else {
+        // Add other templates here
+        return CScript(tmpl.begin(), tmpl.end());
+    }
+}
 static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, const std::vector<unsigned char>& program, unsigned int flags, const BaseSignatureChecker& checker, ScriptError* serror)
 {
 
@@ -1725,7 +1746,7 @@ static bool VerifyWitnessProgram(const CScriptWitness& witness, int witversion, 
         }
 
         // Pop the scriptPubKey
-        const CScript scriptPubKey = CScript(stack.back().begin(), stack.back().end());
+        const CScript scriptPubKey = ExpandTemplate(stack.back(), checker);
         stack.pop_back();
 
         // Verify the scriptPubKey was a valid branch

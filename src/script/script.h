@@ -468,32 +468,35 @@ public:
         return *this;
     }
 
-    CScript& operator<<(const std::vector<unsigned char>& b)
+    CScript& operator<<(const std::vector<unsigned char>& b) { return push_data(b.data(), b.data() + b.size()); }
+
+    CScript& push_data(const unsigned char* b, const unsigned char* e)
     {
-        if (b.size() < OP_PUSHDATA1)
+        auto s = e-b;
+        if (s < OP_PUSHDATA1)
         {
-            insert(end(), (unsigned char)b.size());
+            insert(end(), (unsigned char)s);
         }
-        else if (b.size() <= 0xff)
+        else if (s <= 0xff)
         {
             insert(end(), OP_PUSHDATA1);
-            insert(end(), (unsigned char)b.size());
+            insert(end(), (unsigned char)s);
         }
-        else if (b.size() <= 0xffff)
+        else if (s <= 0xffff)
         {
             insert(end(), OP_PUSHDATA2);
             uint8_t _data[2];
-            WriteLE16(_data, b.size());
+            WriteLE16(_data, s);
             insert(end(), _data, _data + sizeof(_data));
         }
         else
         {
             insert(end(), OP_PUSHDATA4);
             uint8_t _data[4];
-            WriteLE32(_data, b.size());
+            WriteLE32(_data, s);
             insert(end(), _data, _data + sizeof(_data));
         }
-        insert(end(), b.begin(), b.end());
+        insert(end(), b, e);
         return *this;
     }
 
