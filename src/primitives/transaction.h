@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <amount.h>
+#include <hash.h>
 #include <script/script.h>
 #include <serialize.h>
 #include <uint256.h>
@@ -257,6 +258,18 @@ inline void SerializeTransaction(const TxType& tx, Stream& s) {
         }
     }
     s << tx.nLockTime;
+}
+
+
+static const CHashWriter BagHash = TaggedHash("BagHash");
+template<typename TxType>
+uint256 GetSecuredBagHash(const TxType& tx) {
+    return (CHashWriter(BagHash)
+    << tx.nVersion
+    << tx.nLockTime
+    << uint64_t(tx.vin.size())
+    << tx.vout
+    ).GetSHA256();
 }
 
 

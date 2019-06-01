@@ -2,13 +2,13 @@
 # Copyright (c) 2015-2019 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test (CHECKOUTPUTSHASHVERIFY)
+"""Test (SECURETHEBAG)
 """
 
 from test_framework.blocktools import create_coinbase, create_block, create_transaction, add_witness_commitment
 from test_framework.messages import CTransaction, msg_block, ToHex, CTxOut, CTxIn, CTxInWitness, COutPoint
 from test_framework.mininode import P2PInterface
-from test_framework.script import CScript, OP_TRUE, OP_RETURN, OP_CHECKLOCKTIMEVERIFY, OP_DROP, CScriptNum, OP_CHECKOUTPUTSHASHVERIFY, taproot_construct, hash256, hash160, OP_HASH160, OP_EQUAL
+from test_framework.script import CScript, OP_TRUE, OP_RETURN, OP_CHECKLOCKTIMEVERIFY, OP_DROP, CScriptNum, OP_SECURETHEBAG, taproot_construct, hash256, hash160, OP_HASH160, OP_EQUAL
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
@@ -19,14 +19,21 @@ from io import BytesIO
 from test_framework.key import ECKey
 from test_framework.address import program_to_witness, script_to_p2sh
 
-OUTPUTSHASHVERIFY_ERROR = "non-mandatory-script-verify-flag (Script failed an OP_OUTPUTSHASHVERIFY operation)"
+SECURETHEBAG_ERROR = "non-mandatory-script-verify-flag (Script failed an OP_SECURETHEBAG operation)"
 def random_bytes(n):
     return bytes(random.getrandbits(8) for i in range(n))
 def random_fake_script():
-    return CScript([OP_CHECKOUTPUTSHASHVERIFY, random_bytes(32)])
+    return CScript([OP_SECURETHEBAG, random_bytes(32)])
+def bag_for_outputs(outputs):
+    c = CTransaction()
+    c.nLockTime = 0
+    c.nVersion = 2
+    c.vin = [0]
+    c.vout = outputs
+    return c.get_bag_hash()
 def random_real_outputs_and_script(n):
     outputs = [CTxOut((x+1)*100, CScript(bytes([OP_RETURN, 0x20]) + random_bytes(32))) for x in range(n)]
-    return outputs, CScript(bytes([OP_CHECKOUTPUTSHASHVERIFY, 0x20]) + hash256(b"".join(o.serialize() for o in outputs)))
+    return outputs, CScript(bytes([OP_SECURETHEBAG, 0x20]) + bag_for_outputs(outputs))
 
 def random_tapscript_tree(depth):
 
@@ -39,7 +46,7 @@ def random_tapscript_tree(depth):
     for d in range(1, depth+2):
         idxs =zip(range(0, len(outputs_tree[-d]),2), range(1, len(outputs_tree[-d]), 2))
         for (idx, (a,b)) in enumerate([(outputs_tree[-d][i], outputs_tree[-d][j]) for (i,j) in idxs]):
-            s = CScript(bytes([OP_CHECKOUTPUTSHASHVERIFY, 0x20]) + hash256(b"".join(o.serialize() for o in [a,b])))
+            s = CScript(bytes([OP_SECURETHEBAG, 0x20]) + bag_for_outputs([a,b]))
             a = sum(o.nValue for o in [a,b])
             taproot, tweak, controls = taproot_construct(pubkey1, [s])
             t = CTxOut(a+1000, taproot)
@@ -49,7 +56,7 @@ def random_tapscript_tree(depth):
 
 def get_taproot_bech32(spk):
     return program_to_witness(1, spk[2:])
-class COSHVTest(BitcoinTestFramework):
+class SecureTheBagTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         self.extra_args = [['-whitelist=127.0.0.1', '-par=1']]  # Use only one script thread to get the exact reject reason for testing
@@ -101,12 +108,16 @@ class COSHVTest(BitcoinTestFramework):
 
 
         # Test sendrawtransaction
-        coshvTx = CTransaction()
-        coshvTx.vin += [CTxIn(outpoint)]
-        coshvTx.vout += outputs
-        coshvTx.wit.vtxinwit +=  [CTxInWitness()]
-        coshvTx.wit.vtxinwit[0].scriptWitness.stack = [script, controls[script]]
-        assert_equal(self.nodes[0].sendrawtransaction(coshvTx.serialize().hex(), 0), coshvTx.rehash())
+        secure_the_bag_Tx = CTransaction()
+        secure_the_bag_Tx.nVersion = 2
+        secure_the_bag_Tx.nLockTime = 0
+        secure_the_bag_Tx.vin += [CTxIn(outpoint)]
+        secure_the_bag_Tx.vout += outputs
+        secure_the_bag_Tx.wit.vtxinwit +=  [CTxInWitness()]
+        secure_the_bag_Tx.wit.vtxinwit[0].scriptWitness.stack = [script, controls[script]]
+        assert_equal(self.nodes[0].sendrawtransaction(secure_the_bag_Tx.serialize().hex(), 0), secure_the_bag_Tx.rehash())
+
+        print("PAS")
 
 
 
@@ -116,7 +127,7 @@ class COSHVTest(BitcoinTestFramework):
 
 
         block = create_block(int(tip, 16), create_coinbase(height))
-        block.vtx.append(coshvTx)
+        block.vtx.append(secure_the_bag_Tx)
         block.hashMerkleRoot = block.calc_merkle_root()
         add_witness_commitment(block)
         block.solve()
@@ -128,14 +139,14 @@ class COSHVTest(BitcoinTestFramework):
 
         # Show any modification will break the validity
         block = create_block(int(tip, 16), create_coinbase(height))
-        coshvTx_mutated_amount = coshvTx
-        coshvTx_mutated_amount.vout[0].nValue += 1
-        coshvTx_mutated_amount.rehash()
-        block.vtx.append(coshvTx_mutated_amount)
+        secure_the_bag_Tx_mutated_amount = secure_the_bag_Tx
+        secure_the_bag_Tx_mutated_amount.vout[0].nValue += 1
+        secure_the_bag_Tx_mutated_amount.rehash()
+        block.vtx.append(secure_the_bag_Tx_mutated_amount)
         block.hashMerkleRoot = block.calc_merkle_root()
         add_witness_commitment(block)
         block.solve()
-        assert_equal(self.nodes[0].submitblock(block.serialize(True).hex()), OUTPUTSHASHVERIFY_ERROR)
+        assert_equal(self.nodes[0].submitblock(block.serialize(True).hex()), SECURETHEBAG_ERROR)
         assert_equal(self.nodes[0].getbestblockhash(), tip)
 
 
@@ -144,24 +155,25 @@ class COSHVTest(BitcoinTestFramework):
         height = self.nodes[0].getblockcount()
 
         block = create_block(int(tip, 16), create_coinbase(height))
-        coshvTx_two_inputs = coshvTx
-        coshvTx_two_inputs.vin += [CTxIn(outpoint2, b"\x01\x51")]
-        coshvTx_two_inputs.rehash()
-        block.vtx.append(coshvTx_two_inputs)
+        secure_the_bag_Tx_two_inputs = secure_the_bag_Tx
+        secure_the_bag_Tx_two_inputs.vin += [CTxIn(outpoint2, b"\x01\x51")]
+        secure_the_bag_Tx_two_inputs.rehash()
+        block.vtx.append(secure_the_bag_Tx_two_inputs)
         block.hashMerkleRoot = block.calc_merkle_root()
         add_witness_commitment(block)
         block.solve()
-        assert_equal(self.nodes[0].submitblock(block.serialize(True).hex()), OUTPUTSHASHVERIFY_ERROR)
+        assert_equal(self.nodes[0].submitblock(block.serialize(True).hex()), SECURETHEBAG_ERROR)
         assert_equal(self.nodes[0].getbestblockhash(), tip)
 
-        coshvTx_two_inputs.vin.pop(0)
-        coshvTx_two_inputs.wit.vtxinwit.pop(0)
+        secure_the_bag_Tx_two_inputs.vin.pop(0)
+        secure_the_bag_Tx_two_inputs.wit.vtxinwit.pop(0)
 
         # Second UTXO was actually spendable
         block = create_block(int(tip, 16), create_coinbase(height))
         spendtx = CTransaction()
+        spendtx.nVersion = 2
         spendtx.vin = [CTxIn(outpoint2, b"\x01\x51")]
-        spendtx.vout = coshvTx.vout
+        spendtx.vout = secure_the_bag_Tx.vout
         spendtx.rehash()
         block.vtx.append(spendtx)
         block.hashMerkleRoot = block.calc_merkle_root()
@@ -177,6 +189,7 @@ class COSHVTest(BitcoinTestFramework):
         out = outpoint3
         for x in range(TREE_SIZE):
             spendtx = CTransaction()
+            spendtx.nVersion = 2
             spendtx.vin += [CTxIn(out)]
             spendtx.wit.vtxinwit +=  [CTxInWitness()]
             spendtx.wit.vtxinwit[0].scriptWitness.stack =  congestion_tree_ctl[x][0]
@@ -191,4 +204,4 @@ class COSHVTest(BitcoinTestFramework):
 
 
 if __name__ == '__main__':
-    COSHVTest().main()
+    SecureTheBagTest().main()

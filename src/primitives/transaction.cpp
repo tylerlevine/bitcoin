@@ -5,7 +5,6 @@
 
 #include <primitives/transaction.h>
 
-#include <hash.h>
 #include <tinyformat.h>
 #include <util/strencodings.h>
 

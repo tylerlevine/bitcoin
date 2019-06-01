@@ -7,7 +7,7 @@
 This file is modified from python-bitcoinlib.
 """
 
-from .messages import CTransaction, CTxOut, sha256, hash256, uint256_from_str, ser_uint256, ser_string, CTxInWitness
+from .messages import CTransaction, CTxOut, sha256, hash256, uint256_from_str, ser_uint256, ser_string, CTxInWitness, TaggedHash
 from .key import ECKey, ECPubKey
 
 import hashlib
@@ -170,7 +170,7 @@ OP_OR = CScriptOp(0x85)
 OP_XOR = CScriptOp(0x86)
 OP_EQUAL = CScriptOp(0x87)
 OP_EQUALVERIFY = CScriptOp(0x88)
-OP_CHECKOUTPUTSHASHVERIFY = CScriptOp(0x89)
+OP_SECURETHEBAG = CScriptOp(0x89)
 OP_RESERVED2 = CScriptOp(0x8a)
 
 # numeric
@@ -297,7 +297,7 @@ OPCODE_NAMES.update({
     OP_XOR : 'OP_XOR',
     OP_EQUAL : 'OP_EQUAL',
     OP_EQUALVERIFY : 'OP_EQUALVERIFY',
-    OP_CHECKOUTPUTSHASHVERIFY : 'OP_CHECKOUTPUTSHASHVERIFY',
+    OP_SECURETHEBAG : 'OP_SECURETHEBAG',
     OP_RESERVED2 : 'OP_RESERVED2',
     OP_1ADD : 'OP_1ADD',
     OP_1SUB : 'OP_1SUB',
@@ -613,11 +613,6 @@ def IsPayToScriptHash(script):
 def IsPayToTaproot(script):
     return len(script) == 35 and script[0] == OP_1 and script[1] == 33 and script[2] >= 0 and script[2] <= 1
 
-def TaggedHash(tag, data):
-    ss = sha256(tag.encode('utf-8'))
-    ss += ss
-    ss += data
-    return sha256(ss)
 
 def GetP2SH(script):
     return CScript([OP_HASH160, hash160(script), OP_EQUAL])

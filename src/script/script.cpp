@@ -83,7 +83,7 @@ const char* GetOpName(opcodetype opcode)
     case OP_XOR                    : return "OP_XOR";
     case OP_EQUAL                  : return "OP_EQUAL";
     case OP_EQUALVERIFY            : return "OP_EQUALVERIFY";
-    case OP_CHECKOUTPUTSHASHVERIFY : return "OP_CHECKOUTPUTSHASHVERIFY";
+    case OP_SECURETHEBAG           : return "OP_SECURETHEBAG";
     case OP_RESERVED2              : return "OP_RESERVED2";
 
     // numeric

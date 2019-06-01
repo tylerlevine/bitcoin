@@ -30,6 +30,7 @@ import time
 from test_framework.siphash import siphash256
 from test_framework.util import hex_str_to_bytes, assert_equal
 
+
 MIN_VERSION_SUPPORTED = 60001
 MY_VERSION = 70014  # past bip-31 for ping/pong
 MY_SUBVERSION = b"/python-mininode-tester:0.0.3/"
@@ -60,6 +61,11 @@ def sha256(s):
 def hash256(s):
     return sha256(sha256(s))
 
+def TaggedHash(tag, data):
+    ss = sha256(tag.encode('utf-8'))
+    ss += ss
+    ss += data
+    return sha256(ss)
 def ser_compact_size(l):
     r = b""
     if l < 253:
@@ -463,6 +469,14 @@ class CTransaction:
         r += ser_vector(self.vout)
         r += struct.pack("<I", self.nLockTime)
         return r
+
+    def get_bag_hash(self):
+        r = b""
+        r += struct.pack("<i", self.nVersion)
+        r += struct.pack("<I", self.nLockTime)
+        r += struct.pack("<Q", len(self.vin))
+        r += ser_vector(self.vout)
+        return TaggedHash("BagHash", r)
 
     # Only serialize with witness when explicitly called for
     def serialize_with_witness(self):
