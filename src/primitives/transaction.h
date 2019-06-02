@@ -264,12 +264,30 @@ inline void SerializeTransaction(const TxType& tx, Stream& s) {
 static const CHashWriter BagHash = TaggedHash("BagHash");
 template<typename TxType>
 uint256 GetSecuredBagHash(const TxType& tx) {
-    return (CHashWriter(BagHash)
-    << tx.nVersion
-    << tx.nLockTime
-    << uint64_t(tx.vin.size())
-    << tx.vout
-    ).GetSHA256();
+
+    CHashWriter hash_outputs(SER_GETHASH, 0);
+    CHashWriter hash_sequences(SER_GETHASH, 0);
+    for (const auto& txout : tx.vout) {
+        hash_outputs << txout;
+    }
+    for (const auto& txin : tx.vin) {
+        hash_sequences << txin.nSequence;
+    }
+    uint256 outputs_hash = hash_outputs.GetSHA256();
+    uint256 sequences_hash = hash_sequences.GetSHA256();
+    return GetSecuredBagHash(tx, outputs_hash, sequences_hash);
+}
+
+template<typename TxType>
+uint256 GetSecuredBagHash(const TxType& tx, uint256& outputs_hash, uint256& sequences_hash) {
+    auto h =  CHashWriter(BagHash)
+        << tx.nVersion << tx.nLockTime
+        << outputs_hash << sequences_hash
+        << uint64_t(tx.vin.size());
+    for (const auto& in : tx.vin) {
+        h << in.scriptSig;
+    }
+    return h.GetSHA256();
 }
 
 

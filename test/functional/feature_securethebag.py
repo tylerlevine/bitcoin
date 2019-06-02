@@ -28,7 +28,7 @@ def bag_for_outputs(outputs):
     c = CTransaction()
     c.nLockTime = 0
     c.nVersion = 2
-    c.vin = [0]
+    c.vin = [CTxIn()]
     c.vout = outputs
     return c.get_bag_hash()
 def random_real_outputs_and_script(n):
@@ -116,10 +116,6 @@ class SecureTheBagTest(BitcoinTestFramework):
         secure_the_bag_Tx.wit.vtxinwit +=  [CTxInWitness()]
         secure_the_bag_Tx.wit.vtxinwit[0].scriptWitness.stack = [script, controls[script]]
         assert_equal(self.nodes[0].sendrawtransaction(secure_the_bag_Tx.serialize().hex(), 0), secure_the_bag_Tx.rehash())
-
-        print("PAS")
-
-
 
         # Now we verify that a block with this transaction is also valid
         tip = self.nodes[0].getbestblockhash()

@@ -1325,7 +1325,7 @@ void PrecomputedTransactionData::Init(const T& txTo, std::vector<CTxOut> spent_o
         hashSequence = HashAgain(m_sequences_hash);
         m_outputs_hash = GetOutputsHash(txTo);
         hashOutputs = HashAgain(m_outputs_hash);
-        m_bag_hash = GetSecuredBagHash(txTo);
+        m_bag_hash = GetSecuredBagHash(txTo, m_outputs_hash, m_sequences_hash);
         ready = true;
 
         if (!m_spent_outputs.empty()) {
