@@ -135,7 +135,7 @@ BASE_SCRIPTS = [
     'wallet_keypool.py',
     'p2p_mempool.py',
     'feature_taproot.py',
-    'feature_outputshashverify.py',
+    'feature_securethebag.py',
     'mining_prioritisetransaction.py',
     'p2p_invalid_locator.py',
     'p2p_invalid_block.py',
