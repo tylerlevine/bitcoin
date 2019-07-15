@@ -397,6 +397,7 @@ private:
 typedef prevector<28, unsigned char> CScriptBase;
 
 bool GetScriptOp(CScriptBase::const_iterator& pc, CScriptBase::const_iterator end, opcodetype& opcodeRet, std::vector<unsigned char>* pvchRet);
+bool GetTapScriptOp(CScriptBase::const_iterator& pc, CScriptBase::const_iterator end, opcodetype& opcodeRet, std::vector<unsigned char>* pvchRet);
 
 /** Serialized script, used inside transaction inputs and outputs */
 class CScript : public CScriptBase
@@ -514,6 +515,16 @@ public:
     bool GetOp(const_iterator& pc, opcodetype& opcodeRet) const
     {
         return GetScriptOp(pc, end(), opcodeRet, nullptr);
+    }
+
+    bool GetTapOp(const_iterator& pc, opcodetype& opcodeRet, std::vector<unsigned char>& vchRet) const
+    {
+        return GetTapScriptOp(pc, end(), opcodeRet, &vchRet);
+    }
+
+    bool GetTapOp(const_iterator& pc, opcodetype& opcodeRet) const
+    {
+        return GetTapScriptOp(pc, end(), opcodeRet, nullptr);
     }
 
 

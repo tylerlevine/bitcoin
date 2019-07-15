@@ -33,7 +33,7 @@ def bag_for_outputs(outputs):
     return c.get_bag_hash()
 def random_real_outputs_and_script(n):
     outputs = [CTxOut((x+1)*100, CScript(bytes([OP_RETURN, 0x20]) + random_bytes(32))) for x in range(n)]
-    return outputs, CScript(bytes([OP_SECURETHEBAG, 0x20]) + bag_for_outputs(outputs))
+    return outputs, CScript(bytes([OP_SECURETHEBAG]) + bag_for_outputs(outputs))
 
 def random_tapscript_tree(depth):
 
@@ -46,7 +46,7 @@ def random_tapscript_tree(depth):
     for d in range(1, depth+2):
         idxs =zip(range(0, len(outputs_tree[-d]),2), range(1, len(outputs_tree[-d]), 2))
         for (idx, (a,b)) in enumerate([(outputs_tree[-d][i], outputs_tree[-d][j]) for (i,j) in idxs]):
-            s = CScript(bytes([OP_SECURETHEBAG, 0x20]) + bag_for_outputs([a,b]))
+            s = CScript(bytes([OP_SECURETHEBAG]) + bag_for_outputs([a,b]))
             a = sum(o.nValue for o in [a,b])
             taproot, tweak, controls = taproot_construct(pubkey1, [s])
             t = CTxOut(a+1000, taproot)

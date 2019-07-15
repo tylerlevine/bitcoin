@@ -331,6 +331,79 @@ bool GetScriptOp(CScriptBase::const_iterator& pc, CScriptBase::const_iterator en
     return true;
 }
 
+bool IsMultiByteTapOp(const opcodetype& opcode) {
+    return (opcode <= OP_PUSHDATA4 || opcode == OP_SECURETHEBAG);
+}
+bool GetTapScriptOp(CScriptBase::const_iterator& pc, CScriptBase::const_iterator end, opcodetype& opcodeRet, std::vector<unsigned char>* pvchRet)
+{
+    opcodeRet = OP_INVALIDOPCODE;
+    if (pvchRet)
+        pvchRet->clear();
+    if (pc >= end)
+        return false;
+
+    // Read instruction
+    if (end - pc < 1)
+        return false;
+    unsigned int opcode = *pc++;
+
+    opcodeRet = static_cast<opcodetype>(opcode);
+    if (!IsMultiByteTapOp(opcodeRet)) {
+        if (pvchRet)
+            pvchRet->clear();
+        return true;
+    }
+    // Immediate operand
+    unsigned int nSize = 0;
+    switch (opcode) {
+        case OP_PUSHDATA1:
+            {
+                if (end - pc < 1)
+                    return false;
+                nSize = *pc++;
+            }
+            break;
+        case OP_PUSHDATA2:
+            {
+                if (end - pc < 2)
+                    return false;
+                nSize = ReadLE16(&pc[0]);
+                pc += 2;
+            }
+            break;
+        case OP_PUSHDATA4:
+            {
+                if (end - pc < 4)
+                    return false;
+                nSize = ReadLE32(&pc[0]);
+                pc += 4;
+            }
+            break;
+        case OP_SECURETHEBAG:
+            {
+                if (end - pc < 32)
+                    return false;
+                nSize = 32;
+            }
+            break;
+        default:
+            // implied that opcode < OP_PUSHDATA1
+            {
+                assert(opcode < OP_PUSHDATA1);
+                nSize = opcode;
+            }
+            break;
+
+    }
+    if (end - pc < 0 || (unsigned int)(end - pc) < nSize)
+        return false;
+    if (pvchRet)
+        pvchRet->assign(pc, pc + nSize);
+    pc += nSize;
+    return true;
+}
+
+
 bool IsOpSuccess(const opcodetype& opcode)
 {
     return (opcode == 0x50 || opcode == 0x62 ||
