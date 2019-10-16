@@ -265,33 +265,33 @@ inline void SerializeTransaction(const TxType& tx, Stream& s) {
 }
 
 template <class T>
-uint256 GetPrevoutHash(const T& txTo)
+uint256 GetPrevoutSHA256(const T& txTo)
 {
     CHashWriter ss(SER_GETHASH, 0);
     for (const auto& txin : txTo.vin) {
         ss << txin.prevout;
     }
-    return ss.GetHash();
+    return ss.GetSHA256();
 }
 
 template <class T>
-uint256 GetSequenceHash(const T& txTo)
+uint256 GetSequenceSHA256(const T& txTo)
 {
     CHashWriter ss(SER_GETHASH, 0);
     for (const auto& txin : txTo.vin) {
         ss << txin.nSequence;
     }
-    return ss.GetHash();
+    return ss.GetSHA256();
 }
 
 template <class T>
-uint256 GetOutputsHash(const T& txTo)
+uint256 GetOutputsSHA256(const T& txTo)
 {
     CHashWriter ss(SER_GETHASH, 0);
     for (const auto& txout : txTo.vout) {
         ss << txout;
     }
-    return ss.GetHash();
+    return ss.GetSHA256();
 }
 
 /** The basic transaction that is broadcasted on the network and contained in
