@@ -1183,6 +1183,14 @@ public:
     }
 };
 
+void RehashSHA256(uint256& hash) {
+    CSHA256().Write(hash.begin(), 32).Finalize(hash.begin());
+}
+uint256 RehashSHA256(uint256&& hash) {
+    CSHA256().Write(hash.begin(), 32).Finalize(hash.begin());
+    return hash;
+}
+
 } // namespace
 
 template <class T>
@@ -1190,9 +1198,12 @@ PrecomputedTransactionData::PrecomputedTransactionData(const T& txTo)
 {
     // Cache is calculated only for transactions with witness
     if (txTo.HasWitness()) {
-        hashPrevouts = GetPrevoutHash(txTo);
-        hashSequence = GetSequenceHash(txTo);
-        hashOutputs = GetOutputsHash(txTo);
+        hashOutputs = GetOutputsSHA256(txTo);
+        hashSequence = GetSequenceSHA256(txTo);
+        hashPrevouts = GetPrevoutSHA256(txTo);
+        RehashSHA256(hashOutputs);
+        RehashSHA256(hashSequence);
+        RehashSHA256(hashPrevouts);
         ready = true;
     }
 }
@@ -1213,16 +1224,16 @@ uint256 SignatureHash(const CScript& scriptCode, const T& txTo, unsigned int nIn
         const bool cacheready = cache && cache->ready;
 
         if (!(nHashType & SIGHASH_ANYONECANPAY)) {
-            hashPrevouts = cacheready ? cache->hashPrevouts : GetPrevoutHash(txTo);
+            hashPrevouts = cacheready ? cache->hashPrevouts : RehashSHA256(GetPrevoutSHA256(txTo));
         }
 
         if (!(nHashType & SIGHASH_ANYONECANPAY) && (nHashType & 0x1f) != SIGHASH_SINGLE && (nHashType & 0x1f) != SIGHASH_NONE) {
-            hashSequence = cacheready ? cache->hashSequence : GetSequenceHash(txTo);
+            hashSequence = cacheready ? cache->hashSequence : RehashSHA256(GetSequenceSHA256(txTo));
         }
 
 
         if ((nHashType & 0x1f) != SIGHASH_SINGLE && (nHashType & 0x1f) != SIGHASH_NONE) {
-            hashOutputs = cacheready ? cache->hashOutputs : GetOutputsHash(txTo);
+            hashOutputs = cacheready ? cache->hashOutputs : RehashSHA256(GetOutputsSHA256(txTo));
         } else if ((nHashType & 0x1f) == SIGHASH_SINGLE && nIn < txTo.vout.size()) {
             CHashWriter ss(SER_GETHASH, 0);
             ss << txTo.vout[nIn];
