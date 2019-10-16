@@ -1219,6 +1219,7 @@ PrecomputedTransactionData::PrecomputedTransactionData(const T& txTo)
     if (txTo.HasWitness()) {
         hashOutputs = GetOutputsSHA256(txTo);
         hashSequence = GetSequenceSHA256(txTo);
+        hashBag = GetSecuredBagHash(txTo, hashOutputs, hashSequence);
         hashPrevouts = GetPrevoutSHA256(txTo);
         RehashSHA256(hashOutputs);
         RehashSHA256(hashSequence);
@@ -1418,6 +1419,9 @@ bool GenericTransactionSignatureChecker<T>::CheckBagSecured(const std::vector<un
 {
     // Should already be checked before calling...
     assert(hash.size() == 32);
+    if (txdata && txdata->ready) {
+        return std::equal(txdata->hashBag.begin(), txdata->hashBag.end(), hash.data());
+    }
     assert(txTo != nullptr);
     uint256 hashBag = GetSecuredBagHash(*txTo);
     return std::equal(hashBag.begin(), hashBag.end(), hash.data());
