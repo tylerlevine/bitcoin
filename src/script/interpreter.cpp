@@ -1212,6 +1212,7 @@ uint256 RehashSHA256(uint256&& hash) {
 
 } // namespace
 
+
 template <class T>
 PrecomputedTransactionData::PrecomputedTransactionData(const T& txTo)
 {
@@ -1220,10 +1221,18 @@ PrecomputedTransactionData::PrecomputedTransactionData(const T& txTo)
         hashOutputs = GetOutputsSHA256(txTo);
         hashSequence = GetSequenceSHA256(txTo);
         hashBag = GetSecuredBagHash(txTo, hashOutputs, hashSequence);
+<<<<<<< Updated upstream
         hashPrevouts = GetPrevoutSHA256(txTo);
         RehashSHA256(hashOutputs);
         RehashSHA256(hashSequence);
         RehashSHA256(hashPrevouts);
+=======
+        RehashSHA256(hashOutputs);
+        RehashSHA256(hashSequence);
+        hashPrevouts = GetPrevoutSHA256(txTo);
+        RehashSHA256(hashPrevouts);
+
+>>>>>>> Stashed changes
         ready = true;
     }
 }
