@@ -60,6 +60,11 @@ def sha256(s):
 def hash256(s):
     return sha256(sha256(s))
 
+def TaggedHash(tag, data):
+    ss = sha256(tag.encode('utf-8'))
+    ss += ss
+    ss += data
+    return sha256(ss)
 def ser_compact_size(l):
     r = b""
     if l < 253:
@@ -463,6 +468,17 @@ class CTransaction:
         r += ser_vector(self.vout)
         r += struct.pack("<I", self.nLockTime)
         return r
+
+    def get_standard_template_hash(self):
+        r = b""
+        r += struct.pack("<i", self.nVersion)
+        r += struct.pack("<I", self.nLockTime)
+        r += sha256(b"".join(out.serialize() for out in self.vout))
+        r += sha256(b"".join(struct.pack("<I", inp.nSequence) for inp in self.vin))
+        r += struct.pack("<Q", len(self.vin))
+        for inp in self.vin:
+            r += ser_string(inp.scriptSig)
+        return TaggedHash("StandardTemplateHash", r)
 
     # Only serialize with witness when explicitly called for
     def serialize_with_witness(self):
