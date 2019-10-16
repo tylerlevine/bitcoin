@@ -294,6 +294,24 @@ uint256 GetOutputsSHA256(const T& txTo)
     return ss.GetSHA256();
 }
 
+template<typename TxType>
+uint256 GetSecuredBagHash(const TxType& tx) {
+    return GetSecuredBagHash(tx, GetOutputsSHA256(tx), GetSequenceSHA256(tx));
+}
+
+static const CHashWriter BagHash = TaggedHash("BagHash");
+template<typename TxType>
+uint256 GetSecuredBagHash(const TxType& tx, const uint256& outputs_hash, const uint256& sequences_hash) {
+    auto h =  CHashWriter(BagHash)
+        << tx.nVersion << tx.nLockTime
+        << outputs_hash << sequences_hash
+        << uint64_t(tx.vin.size());
+    for (const auto& in : tx.vin) {
+        h << in.scriptSig;
+    }
+    return h.GetSHA256();
+}
+
 /** The basic transaction that is broadcasted on the network and contained in
  * blocks.  A transaction can contain multiple inputs and outputs.
  */
