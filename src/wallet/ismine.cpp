@@ -162,6 +162,11 @@ IsMineResult IsMineInner(const CWallet& keystore, const CScript& scriptPubKey, I
         }
         break;
     }
+    case TX_SECURETHEBAG:
+    {
+        ret = IsMineResult::NO;
+        break;
+    }
     }
 
     if (ret == IsMineResult::NO && keystore.HaveWatchOnly(scriptPubKey)) {
