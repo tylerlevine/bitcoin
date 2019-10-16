@@ -458,7 +458,26 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     break;
                 }
 
-                case OP_NOP1: case OP_NOP4: case OP_NOP5:
+                case OP_SECURETHEBAG:
+                {
+                    // when not enabled; treat as a NOP4
+                    if (!(flags & SCRIPT_VERIFY_SECURETHEBAG)) break;
+                    // Read one step ahead; we expect to push 32 bytes
+                    CScript::const_iterator tmp_pc = pc;
+                    opcodetype push_op;
+                    if (!script.GetOp(tmp_pc, push_op, vchPushValue)) return set_error(serror, SCRIPT_ERR_BAD_OPCODE);
+                    // If the push was not 32 bytes, ignore it:
+                    //    upgrade can add semantics for this opcode with different length args
+                    if (vchPushValue.size() != 32) break;
+                    // push_op should be minimal, i.e. 0x20 -- will fail later anyways
+                    if (!CheckMinimalPush(vchPushValue, push_op)) return set_error(serror, SCRIPT_ERR_MINIMALDATA);
+                    // Check the BagHash computed from the transaction matches the literal value
+                    if (!checker.CheckBagSecured(vchPushValue)) return set_error(serror, SCRIPT_ERR_BAG_NOT_SECURED);
+                    // Success
+                    break;
+                }
+
+                case OP_NOP1: case OP_NOP5:
                 case OP_NOP6: case OP_NOP7: case OP_NOP8: case OP_NOP9: case OP_NOP10:
                 {
                     if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
