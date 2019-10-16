@@ -1838,6 +1838,12 @@ static bool IsScriptWitnessEnabled(const Consensus::Params& params)
     return params.SegwitHeight != std::numeric_limits<int>::max();
 }
 
+static bool IsSecureTheBagEnabled(const CBlockIndex* pindexPrev, const Consensus::Params& params)
+{
+    LOCK(cs_main);
+    return (VersionBitsState(pindexPrev, params, Consensus::DEPLOYMENT_SECURETHEBAG, versionbitscache) == ThresholdState::ACTIVE);
+}
+
 static unsigned int GetBlockScriptFlags(const CBlockIndex* pindex, const Consensus::Params& consensusparams) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     AssertLockHeld(cs_main);
 
@@ -1879,6 +1885,10 @@ static unsigned int GetBlockScriptFlags(const CBlockIndex* pindex, const Consens
     // Start enforcing BIP147 NULLDUMMY (activated simultaneously with segwit)
     if (IsWitnessEnabled(pindex->pprev, consensusparams)) {
         flags |= SCRIPT_VERIFY_NULLDUMMY;
+    }
+
+    if (IsSecureTheBagEnabled(pindex->pprev, consensusparams)) {
+        flags |= SCRIPT_VERIFY_SECURETHEBAG;
     }
 
     return flags;
