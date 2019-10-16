@@ -301,11 +301,14 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
         return set_error(serror, SCRIPT_ERR_SCRIPT_SIZE);
     int nOpCount = 0;
     bool fRequireMinimal = (flags & SCRIPT_VERIFY_MINIMALDATA) != 0;
+    bool pushed_literal = false;
 
     try
     {
         while (pc < pend)
         {
+            const bool top_of_stack_is_constexpr = pushed_literal;
+            pushed_literal = false;
             bool fExec = !count(vfExec.begin(), vfExec.end(), false);
 
             //
@@ -346,6 +349,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     return set_error(serror, SCRIPT_ERR_MINIMALDATA);
                 }
                 stack.push_back(vchPushValue);
+                pushed_literal = true;
             } else if (fExec || (OP_IF <= opcode && opcode <= OP_ENDIF))
             switch (opcode)
             {
@@ -375,6 +379,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     stack.push_back(bn.getvch());
                     // The result of these opcodes should always be the minimal way to push the data
                     // they push, so no need for a CheckMinimalPush here.
+                    pushed_literal = true;
                 }
                 break;
 
@@ -458,7 +463,48 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     break;
                 }
 
-                case OP_NOP1: case OP_NOP4: case OP_NOP5:
+                case OP_CHECKTEMPLATEVERIFY:
+                {
+                    // if flags not enabled; treat as a NOP4
+                    if (!(flags & SCRIPT_VERIFY_STANDARD_TEMPLATE)) break;
+
+                    // N.B., for the following two conditions users of OP_CHECKTEMPLATEVERIFY should
+                    // be careful to ensure that they are not *relying* on either of these rules to
+                    // treat OP_CHECKTEMPLATEVERIFY as future soft-forks will use these NOPs for
+                    // upgrades. As such, we return the SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS when
+                    // applicable.
+
+                    // if the top of the stack isn't a constexpr, ignore and treat as OP_NOP4.
+                    //
+                    // Currently only a pushdata or number, not cross scriptSig/scriptPubKey, is
+                    // constexpr.  This allows future soft-forks to broaden what we consider a
+                    // "constexpr" to include stack items like the OP_DUP of something which is
+                    // constexpr, so long as nothing which was formerly constexpr becomes
+                    // non-constexpr.
+                    //
+                    // This also allows an eventual soft-fork to remove the constexpr check
+                    // altogether, if shown to be safe to pass in the template parameters.
+                    if (!top_of_stack_is_constexpr) {
+                        if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
+                            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
+                        break;
+                    }
+                    // null stack should never be a constexpr...
+                    assert(stack.size() > 0);
+                    // If the constexpr was not 32 bytes, treat as OP_NOP4:
+                    //     future upgrade can add semantics for this opcode with different length args
+                    if (stack.back().size() != 32) {
+                        if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
+                            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
+                        break;
+                    }
+                    // Check the Template Hash computed from the transaction matches the literal value
+                    if (!checker.CheckStandardTemplateHash(stack.back())) return set_error(serror, SCRIPT_ERR_TEMPLATE_MISMATCH);
+                    // Success
+                    break;
+                }
+
+                case OP_NOP1: case OP_NOP5:
                 case OP_NOP6: case OP_NOP7: case OP_NOP8: case OP_NOP9: case OP_NOP10:
                 {
                     if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
