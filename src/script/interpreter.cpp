@@ -1394,6 +1394,15 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(const CScriptNum& nSeq
     return true;
 }
 
+template <class T>
+bool GenericTransactionSignatureChecker<T>::CheckStandardTemplateHash(const std::vector<unsigned char>& hash) const
+{
+    // Should already be checked before calling...
+    assert(hash.size() == 32);
+    assert(txTo != nullptr);
+    uint256 hashBag = GetStandardTemplateHash(*txTo);
+    return std::equal(hashBag.begin(), hashBag.end(), hash.data());
+}
 // explicit instantiation
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
