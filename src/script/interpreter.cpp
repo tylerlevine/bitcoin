@@ -8,6 +8,7 @@
 #include <crypto/ripemd160.h>
 #include <crypto/sha1.h>
 #include <crypto/sha256.h>
+#include <primitives/transaction.h>
 #include <pubkey.h>
 #include <script/script.h>
 #include <uint256.h>
@@ -1181,36 +1182,6 @@ public:
         ::Serialize(s, txTo.nLockTime);
     }
 };
-
-template <class T>
-uint256 GetPrevoutHash(const T& txTo)
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    for (const auto& txin : txTo.vin) {
-        ss << txin.prevout;
-    }
-    return ss.GetHash();
-}
-
-template <class T>
-uint256 GetSequenceHash(const T& txTo)
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    for (const auto& txin : txTo.vin) {
-        ss << txin.nSequence;
-    }
-    return ss.GetHash();
-}
-
-template <class T>
-uint256 GetOutputsHash(const T& txTo)
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    for (const auto& txout : txTo.vout) {
-        ss << txout;
-    }
-    return ss.GetHash();
-}
 
 } // namespace
 
