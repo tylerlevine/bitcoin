@@ -193,6 +193,13 @@ unsigned int CScript::GetSigOpCount(const CScript& scriptSig) const
     return subscript.GetSigOpCount(true);
 }
 
+bool CScript::IsBasicSecureTheBag() const
+{
+    // Extra-fast test for pay-to-script-hash CScripts:
+    return (this->size() == 34 &&
+            (*this)[0] == OP_SECURETHEBAG &&
+            (*this)[1] == 0x20);
+}
 bool CScript::IsPayToScriptHash() const
 {
     // Extra-fast test for pay-to-script-hash CScripts:
