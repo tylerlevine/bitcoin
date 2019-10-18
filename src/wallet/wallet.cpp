@@ -2309,8 +2309,17 @@ bool CWalletTx::IsTrusted(interfaces::Chain::Lock& locked_chain, std::set<uint25
     int nDepth = GetDepthInMainChain(locked_chain);
     if (nDepth >= 1) return true;
     if (nDepth < 0) return false;
+    bool is_basic_stb = false;
+    // Filter out most transactions, except those which may be a Basic Secure The Bag
+    if (tx->vin.size() == 1 && tx->vin[0].scriptSig.size() == 0) {
+        const COutPoint& prevout = tx->vin[0].prevout;
+        const CWalletTx* parent = pwallet->GetWalletTx(prevout.hash);
+        if (parent == nullptr) return false;
+        // Check if it is actually a Basic Secure The Bag
+        is_basic_stb = parent->tx->vout[prevout.n].scriptPubKey.IsBasicSecureTheBag();
+    }
     // using wtx's cached debit
-    if (!pwallet->m_spend_zero_conf_change || !IsFromMe(ISMINE_ALL)) return false;
+    if (!is_basic_stb && (!pwallet->m_spend_zero_conf_change || !IsFromMe(ISMINE_ALL))) return false;
 
     // Don't trust unconfirmed transactions from us unless they are in the mempool.
     if (!InMempool()) return false;
@@ -2322,8 +2331,8 @@ bool CWalletTx::IsTrusted(interfaces::Chain::Lock& locked_chain, std::set<uint25
         const CWalletTx* parent = pwallet->GetWalletTx(txin.prevout.hash);
         if (parent == nullptr) return false;
         const CTxOut& parentOut = parent->tx->vout[txin.prevout.n];
-        // Check that this specific input being spent is trusted
-        if (pwallet->IsMine(parentOut) != ISMINE_SPENDABLE) return false;
+        // Make sure it's ours or a basic Secure The Bag
+        if (!(is_basic_stb || pwallet->IsMine(parentOut) == ISMINE_SPENDABLE)) return false;
         // If we've already trusted this parent, continue
         if (trusted_parents.count(parent->GetHash())) continue;
         // Recurse to check that the parent is also trusted
