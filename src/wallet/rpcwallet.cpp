@@ -33,6 +33,7 @@
 #include <wallet/walletutil.h>
 
 #include <stdint.h>
+#include <deque>
 
 #include <univalue.h>
 
@@ -943,6 +944,192 @@ static UniValue sendmany(const JSONRPCRequest& request)
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, strFailReason);
     pwallet->CommitTransaction(tx, std::move(mapValue), {} /* orderForm */);
     return tx->GetHash().GetHex();
+}
+
+static UniValue sendmanycompacted(const JSONRPCRequest& request)
+{
+    std::shared_ptr<CWallet> const swallet = GetWalletForJSONRPCRequest(request);
+    CWallet* const pwallet = swallet.get();
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
+    CWallet& wallet = *pwallet;
+
+    RPCHelpMan{"sendmanycompacted",
+                "\nSend multiple times. Amounts are double-precision floating point numbers." +
+                    HelpRequiringPassphrase(&wallet) + "\n",
+                {
+                    {"amounts", RPCArg::Type::OBJ, RPCArg::Optional::NO, "A json object with addresses and amounts",
+                        {
+                            {"address", RPCArg::Type::AMOUNT, RPCArg::Optional::NO, "The bitcoin address is the key, the numeric amount (can be string) in " + CURRENCY_UNIT + " is the value"},
+                        },
+                    },
+                    {"radix", RPCArg::Type::NUM, /* default */ "4", "Radix to use for the tree"},
+                    {"node_fees", RPCArg::Type::STR, /* default */ "MIN", "The interior node fees. Must be one of:\n"
+                    "       \"MIN\"\n"
+                    "       \"ECONOMICAL\"\n"
+                    "       \"CONSERVATIVE\"\n"
+                    },
+                    {"comment", RPCArg::Type::STR, RPCArg::Optional::OMITTED_NAMED_ARG, "A comment"},
+                    {"root_replaceable", RPCArg::Type::BOOL, /* default */ "wallet default", "Allow this transaction to be replaced by a transaction with higher fees via BIP 125"},
+                    {"root_conf_target", RPCArg::Type::NUM, /* default */ "wallet default", "Confirmation target (in blocks)"},
+                    {"root_estimate", RPCArg::Type::STR, /* default */ "UNSET", "The fee estimate mode, must be one of:\n"
+                    "       \"UNSET\"\n"
+                    "       \"ECONOMICAL\"\n"
+                    "       \"CONSERVATIVE\""},
+                },
+                 RPCResult{
+            "\"[txids]\"                   (string) The transaction ids for the send.\n"
+                 },
+                RPCExamples{
+            "\nSend two amounts to two different addresses:\n"
+            + HelpExampleCli("sendmanycompacted", "\"{\\\"1D1ZrZNe3JUo7ZycKEYQQiQAWd9y54F4XX\\\":0.01,\\\"1353tsE8YMTA4EuV7dgUXGjNFf9KpVvKHz\\\":0.02}\"") +
+            "\nSend two amounts to two different addresses setting the radix to 4:\n"
+            + HelpExampleCli("sendmanycompacted", "\"{\\\"1D1ZrZNe3JUo7ZycKEYQQiQAWd9y54F4XX\\\":0.01,\\\"1353tsE8YMTA4EuV7dgUXGjNFf9KpVvKHz\\\":0.02}\" 4 ") +
+            "\nAs a JSON-RPC call\n"
+            + HelpExampleRpc("sendmanycompacted", "{\"1D1ZrZNe3JUo7ZycKEYQQiQAWd9y54F4XX\":0.01,\"1353tsE8YMTA4EuV7dgUXGjNFf9KpVvKHz\":0.02}, 4")
+                },
+    }.Check(request);
+
+    // Make sure the results are valid at least up to the most recent block
+    // the user could have gotten from another RPC command prior to now
+    wallet.BlockUntilSyncedToCurrentChain();
+
+    auto locked_chain = wallet.chain().lock();
+    LOCK(wallet.cs_wallet);
+    const size_t AMOUNTS = 0;
+    const size_t RADIX = 1;
+    const size_t NODE_FEES = 2;
+    const size_t COMMENT = 3;
+    const size_t ROOT_REPLACEABLE = 4;
+    const size_t ROOT_CONF_TARGET = 5;
+    const size_t ROOT_ESTIMATE = 6;
+    UniValue sendTo = request.params[AMOUNTS].get_obj();
+    size_t radix = 4;
+    if (!request.params[RADIX].isNull()) {
+        int radixIn = request.params[RADIX].get_int();
+        if (radixIn < 2) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Radix must be 2 or more");
+        }
+        radix = (size_t)radixIn;
+    }
+    std::string node_fees = "MIN";
+    if (!request.params[NODE_FEES].isNull()) {
+        node_fees = request.params[NODE_FEES].get_str();
+        if (node_fees != "MIN" && node_fees != "CONSERVATIVE" && node_fees != "ECONOMICAL") {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid estimate_mode parameter");
+        }
+    }
+
+    mapValue_t mapValue;
+    if (!request.params[COMMENT].isNull() && !request.params[COMMENT].get_str().empty())
+        mapValue["comment"] = request.params[COMMENT].get_str();
+
+    CCoinControl coin_control;
+    if (!request.params[ROOT_REPLACEABLE].isNull()) {
+        coin_control.m_signal_bip125_rbf = request.params[ROOT_REPLACEABLE].get_bool();
+    }
+
+    if (!request.params[ROOT_CONF_TARGET].isNull()) {
+        coin_control.m_confirm_target = ParseConfirmTarget(request.params[ROOT_CONF_TARGET], wallet.chain().estimateMaxBlocks());
+    }
+
+    if (!request.params[ROOT_ESTIMATE].isNull()) {
+        if (!FeeModeFromString(request.params[ROOT_ESTIMATE].get_str(), coin_control.m_fee_mode)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid estimate_mode parameter");
+        }
+    }
+
+
+    std::vector<std::string> keys = sendTo.getKeys();
+    std::set<CTxDestination> destinations;
+    std::deque<CTxOut> vecSend;
+    for (const std::string& name_ : keys) {
+        CTxDestination dest = DecodeDestination(name_);
+        if (!IsValidDestination(dest)) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Invalid Bitcoin address: ") + name_);
+        }
+
+        if (destinations.count(dest)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, std::string("Invalid parameter, duplicated address: ") + name_);
+        }
+        destinations.insert(dest);
+
+        CScript scriptPubKey = GetScriptForDestination(dest);
+        CAmount nAmount = AmountFromValue(sendTo[name_]);
+        if (nAmount <= 0)
+            throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount for send");
+
+        CTxOut recipient = {nAmount, scriptPubKey};
+        vecSend.push_back(recipient);
+    }
+
+    // N.B. This map relies on the de-duplication above, otherwise you could
+    // have identical sub-trees which would assemble the incorrect number of
+    // transactions later on (& triggers the assert below)
+    std::map<uint256, CMutableTransaction> templates;
+    const CFeeRate calc_fee = wallet.chain().relayMinFee();
+    std::vector<unsigned char> h_buff(32);
+    while (vecSend.size() > 1) {
+        CMutableTransaction tx;
+        // Add one input for proper Bag Hash computation
+        // and fee computation
+        tx.vin.emplace_back();
+        auto start = vecSend.begin();
+        auto end = start + std::min(radix, vecSend.size());
+        tx.vout.insert(tx.vout.begin(), std::make_move_iterator(start), std::make_move_iterator(end));
+        vecSend.erase(start, end);
+        const uint256 hash = GetStandardTemplateHash(tx, 0);
+        std::memmove(h_buff.data(), hash.begin(), 32);
+        // TODO: compute fee from args?
+        CAmount amount = calc_fee.GetFee(GetSerializeSize(tx));
+        for (const auto& out : tx.vout) amount += out.nValue;
+        const bool inserted = templates.emplace(hash, std::move(tx)).second;
+        CHECK_NONFATAL(inserted); // is guaranteed to be unique
+        vecSend.emplace_back(amount, CScript() << h_buff << OP_CHECKTEMPLATEVERIFY);
+    }
+    EnsureWalletIsUnlocked(&wallet);
+
+    // Create and Commit the root transaction to the wallet.
+    CTransactionRef tx;
+    int root_idx = -1;
+    std::string fail_reason;
+    {
+        std::vector<CRecipient> rec {{vecSend.back().scriptPubKey, vecSend.back().nValue, false}};
+        // Send
+        CAmount fee_required = 0;
+        if (!wallet.CreateTransaction(*locked_chain, rec, tx, fee_required, root_idx, fail_reason, coin_control))
+            throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, fail_reason);
+        root_idx = (root_idx +1)%2;
+        wallet.CommitTransaction(tx, mapValue, {} /* orderForm */);
+    }
+
+    // Fill out the templates for all the children transactions and Commit
+    std::vector<std::pair<COutPoint, uint256>> stack {{{tx->GetHash(), (uint32_t)root_idx}, {}}};
+    std::memmove(stack.back().second.begin(), tx->vout[root_idx].scriptPubKey.data()+1, 32);
+    UniValue ret(UniValue::VARR);
+    ret.push_back(tx->GetHash().GetHex());
+    while (!stack.empty()) {
+        CMutableTransaction  mtx = std::move(templates[stack.back().second]);
+        mtx.vin[0].prevout = stack.back().first;
+        stack.pop_back();
+        CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+        const uint256 txid = tx->GetHash();
+        ret.push_back(txid.GetHex());
+
+        wallet.CommitTransaction(tx, mapValue, {} /* orderForm */);
+
+        uint32_t i = 0;
+        for (auto& out : tx->vout) {
+            if (out.scriptPubKey.IsPayToBasicStandardTemplate()) {
+                stack.emplace_back(COutPoint{txid, i}, uint256{});
+                std::memmove(stack.back().second.begin(), out.scriptPubKey.data()+1, 32);
+            }
+            ++i;
+        }
+    }
+
+    return ret;
 }
 
 static UniValue addmultisigaddress(const JSONRPCRequest& request)
@@ -4303,6 +4490,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "removeprunedfunds",                &removeprunedfunds,             {"txid"} },
     { "wallet",             "rescanblockchain",                 &rescanblockchain,              {"start_height", "stop_height"} },
     { "wallet",             "sendmany",                         &sendmany,                      {"dummy","amounts","minconf","comment","subtractfeefrom","replaceable","conf_target","estimate_mode"} },
+    { "wallet",             "sendmanycompacted",                &sendmanycompacted,             {"amounts","radix","node_fees","comment","root_replaceable","root_conf_target","root_estimate"} },
     { "wallet",             "sendtoaddress",                    &sendtoaddress,                 {"address","amount","comment","comment_to","subtractfeefromamount","replaceable","conf_target","estimate_mode","avoid_reuse"} },
     { "wallet",             "sethdseed",                        &sethdseed,                     {"newkeypool","seed"} },
     { "wallet",             "setlabel",                         &setlabel,                      {"address","label"} },
