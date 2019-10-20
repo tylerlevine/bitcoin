@@ -13,6 +13,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
     hex_str_to_bytes,
+    connect_nodes
 )
 import random
 from io import BytesIO
@@ -66,10 +67,12 @@ def create_transaction_to_script(node, txid, script, *, amount):
     tx.deserialize(BytesIO(hex_str_to_bytes(raw_tx)))
     return tx
 
+
+
 class SecureTheBagTest(BitcoinTestFramework):
     def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [['-whitelist=127.0.0.1', '-par=1']]  # Use only one script thread to get the exact reject reason for testing
+        self.num_nodes = 2
+        self.extra_args = [['-whitelist=127.0.0.1', '-par=1']]*2  # Use only one script thread to get the exact reject reason for testing
         self.setup_clean_chain = True
         self.rpc_timeout = 120
 
@@ -95,7 +98,9 @@ class SecureTheBagTest(BitcoinTestFramework):
         assert_equal(self.nodes[0].getbestblockhash(), self.tip)
 
     def run_test(self):
-        self.nodes[0].add_p2p_connection(P2PInterface())
+        #self.nodes[0].add_p2p_connection(P2PInterface())
+        connect_nodes(self.nodes[0], 1)
+        connect_nodes(self.nodes[1], 0)
 
         BLOCKS = 103
         self.log.info("Mining %d blocks for mature coinbases", BLOCKS)
@@ -178,6 +183,16 @@ class SecureTheBagTest(BitcoinTestFramework):
             out = COutPoint(int(spendtx.rehash(),16), 0)
             txs.append(spendtx)
         self.add_block(txs)
+
+        self.log.info("Testing a congestion control tree using sendmanycompacted and large radix")
+        addrs = {script_to_p2sh(CScript(bytes([0x20])+random_bytes(32))):0.00001 for x in range(1000)}
+        txns = set(self.nodes[0].sendmanycompacted(addrs, 45))
+        mempool = set(self.nodes[0].getrawmempool())
+        assert(txns - mempool == set([]))
+        self.sync_mempools()
+        mempool = set(self.nodes[1].getrawmempool())
+        assert(txns - mempool == set([]))
+
 
 
 if __name__ == '__main__':
