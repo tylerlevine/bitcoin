@@ -17,6 +17,7 @@
 #include <util/moneystr.h>
 #include <util/time.h>
 
+
 CTxMemPoolEntry::CTxMemPoolEntry(const CTransactionRef& _tx, const CAmount& _nFee,
                                  int64_t _nTime, unsigned int _entryHeight,
                                  bool _spendsCoinbase, int64_t _sigOpsCost, LockPoints lp)
@@ -433,23 +434,56 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
 // can save time by not iterating over those entries.
 void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants) const
 {
-    setEntries stage;
+    std::vector<txiter> stage;
     if (setDescendants.count(entryit) == 0) {
-        stage.insert(entryit);
+        stage.emplace_back(entryit);
     }
     // Traverse down the children of entry, only adding children that are not
     // accounted for in setDescendants already (because those children have either
     // already been walked, or will be walked in this iteration).
+    std::vector<txiter> tmp_stage;
+    std::vector<txiter> tmp_output;
     while (!stage.empty()) {
-        txiter it = *stage.begin();
+        txiter it = stage.back();
+        stage.pop_back();
         setDescendants.insert(it);
-        stage.erase(it);
-
         const setEntries &setChildren = GetMemPoolChildren(it);
-        for (txiter childiter : setChildren) {
-            if (!setDescendants.count(childiter)) {
-                stage.insert(childiter);
+        if (!setChildren.empty()) {
+            // This algorithm finds the elements in setChildren which are not
+            // in setDescendants
+            //
+            // It operates in:
+            //
+            // O(|setChildren| + |setDescendants| + log(|setDescendants|) + log(|setChildren|) + |stage|)
+            //
+            // The previous algorithm -- the "obvious" one, ran in:
+            //
+            // O(|setChildren| + |setChildren| * log(|stage| + |setChildren|) + |setChildren| * log(|setDescendants|) )
+            //
+            //  but it's possible that there are further optimizations realizable in the library
+            auto lb = setChildren.lower_bound(*setDescendants.begin());
+            tmp_stage.assign(setChildren.begin(), lb);
+            if (lb != setChildren.end()) {
+                auto ub = setChildren.upper_bound(*(--setDescendants.end()));
+                std::set_difference(lb,
+                                    ub,
+                                    setDescendants.lower_bound(*lb),
+                                    setDescendants.upper_bound(ub == setChildren.end() ? *(--(setChildren.end())) : *ub),
+                                    std::back_inserter(tmp_stage), CompareIteratorByHash());
+                tmp_stage.insert(tmp_stage.end(), ub, setChildren.end());
             }
+            tmp_output.clear();
+            // tmp_stage and stage has at most 1 copy of each
+            // therefore set_union will de-duplicate any extras
+            std::set_union(
+                std::make_move_iterator(tmp_stage.begin()),
+                std::make_move_iterator(tmp_stage.end()),
+                std::make_move_iterator(stage.begin()),
+                std::make_move_iterator(stage.end()),
+                std::back_inserter(tmp_output),
+                CompareIteratorByHash());
+            tmp_output.swap(stage);
+            // we do not need to call tmp_stage.clear() because the subsequent assign() clears
         }
     }
 }
@@ -458,29 +492,28 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
 {
     // Remove transaction from memory pool
     AssertLockHeld(cs);
-        setEntries txToRemove;
+        std::unordered_set<uint256, SaltedTxidHasher> cache;
+        setEntries setAllRemoves;
         txiter origit = mapTx.find(origTx.GetHash());
         if (origit != mapTx.end()) {
-            txToRemove.insert(origit);
+            CalculateDescendants(origit, setAllRemoves);
         } else {
             // When recursively removing but origTx isn't in the mempool
             // be sure to remove any children that are in the pool. This can
             // happen during chain re-orgs if origTx isn't re-accepted into
             // the mempool for any reason.
+            cache.reserve(origTx.vout.size());
             for (unsigned int i = 0; i < origTx.vout.size(); i++) {
                 auto it = mapNextTx.find(COutPoint(origTx.GetHash(), i));
                 if (it == mapNextTx.end())
                     continue;
+                if (!cache.emplace(it->second->GetHash()).second)
+                    continue;
                 txiter nextit = mapTx.find(it->second->GetHash());
                 assert(nextit != mapTx.end());
-                txToRemove.insert(nextit);
+                CalculateDescendants(nextit, setAllRemoves);
             }
         }
-        setEntries setAllRemoves;
-        for (txiter it : txToRemove) {
-            CalculateDescendants(it, setAllRemoves);
-        }
-
         RemoveStaged(setAllRemoves, false, reason);
 }
 
@@ -544,27 +577,26 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
 void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight)
 {
     AssertLockHeld(cs);
-    std::vector<const CTxMemPoolEntry*> entries;
-    for (const auto& tx : vtx)
-    {
-        uint256 hash = tx->GetHash();
-
-        indexed_transaction_set::iterator i = mapTx.find(hash);
-        if (i != mapTx.end())
-            entries.push_back(&*i);
+    std::vector<txiter> entries;
+    entries.resize(vtx.size(), nullptr);
+    for (size_t idx = 0; idx < vtx.size(); ++idx) {
+        entries[idx] = mapTx.find(vtx[idx]->GetHash());
     }
     // Before the txs in the new block have been removed from the mempool, update policy estimates
-    if (minerPolicyEstimator) {minerPolicyEstimator->processBlock(nBlockHeight, entries);}
-    for (const auto& tx : vtx)
-    {
-        txiter it = mapTx.find(tx->GetHash());
-        if (it != mapTx.end()) {
-            setEntries stage;
-            stage.insert(it);
+    if (minerPolicyEstimator) {
+        std::vector<const CTxMemPoolEntry*> entries_2;
+        entries_2.reserve(vtx.size());
+        for (const auto& it : entries)
+            entries_2.emplace_back(it != mapTx.end() ? &*it : nullptr);
+        minerPolicyEstimator->processBlock(nBlockHeight, entries_2);
+    }
+    for (size_t idx = 0; idx < vtx.size(); ++idx) {
+        if (entries[idx] != mapTx.end()) {
+            setEntries stage {entries[idx]};
             RemoveStaged(stage, true, MemPoolRemovalReason::BLOCK);
         }
-        removeConflicts(*tx);
-        ClearPrioritisation(tx->GetHash());
+        removeConflicts(*vtx[idx]);
+        ClearPrioritisation(vtx[idx]->GetHash());
     }
     lastRollingFeeUpdate = GetTime();
     blockSinceLastRollingFeeBump = true;

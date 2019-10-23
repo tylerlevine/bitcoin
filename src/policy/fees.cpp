@@ -605,9 +605,11 @@ void CBlockPolicyEstimator::processBlock(unsigned int nBlockHeight,
     longStats->UpdateMovingAverages();
 
     unsigned int countedTxs = 0;
+    unsigned int nonNullTxs = 0;
     // Update averages with data points from current block
     for (const auto& entry : entries) {
-        if (processBlockTx(nBlockHeight, entry))
+        nonNullTxs += entry != nullptr;
+        if (entry != nullptr && processBlockTx(nBlockHeight, entry))
             countedTxs++;
     }
 
@@ -618,7 +620,7 @@ void CBlockPolicyEstimator::processBlock(unsigned int nBlockHeight,
 
 
     LogPrint(BCLog::ESTIMATEFEE, "Blockpolicy estimates updated by %u of %u block txs, since last block %u of %u tracked, mempool map size %u, max target %u from %s\n",
-             countedTxs, entries.size(), trackedTxs, trackedTxs + untrackedTxs, mapMemPoolTxs.size(),
+             countedTxs, nonNullTxs, trackedTxs, trackedTxs + untrackedTxs, mapMemPoolTxs.size(),
              MaxUsableEstimate(), HistoricalBlockSpan() > BlockSpan() ? "historical" : "current");
 
     trackedTxs = 0;
