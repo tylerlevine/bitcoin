@@ -119,14 +119,14 @@ static inline size_t IncrementalDynamicUsage(const std::map<X, Y, Z>& m)
 
 // indirectmap has underlying map with pointer as key
 
-template<typename X, typename Y>
-static inline size_t DynamicUsage(const indirectmap<X, Y>& m)
+template<typename X, typename Y, typename Z>
+static inline size_t DynamicUsage(const indirectmap<X, Y, Z>& m)
 {
     return MallocUsage(sizeof(stl_tree_node<std::pair<const X*, Y> >)) * m.size();
 }
 
-template<typename X, typename Y>
-static inline size_t IncrementalDynamicUsage(const indirectmap<X, Y>& m)
+template<typename X, typename Y, typename Z>
+static inline size_t IncrementalDynamicUsage(const indirectmap<X, Y, Z>& m)
 {
     return MallocUsage(sizeof(stl_tree_node<std::pair<const X*, Y> >));
 }

@@ -4,9 +4,20 @@
 
 #ifndef BITCOIN_INDIRECTMAP_H
 #define BITCOIN_INDIRECTMAP_H
+#include<unordered_map>
 
 template <class T>
 struct DereferencingComparator { bool operator()(const T a, const T b) const { return *a < *b; } };
+
+template <class H, class K>
+struct DereferencingHasher {
+    private:
+        const H s{};
+    public:
+    size_t operator()(const K& key) const {
+        return s(*key);
+    }
+};
 
 /* Map whose keys are pointers, but are compared by their dereferenced values.
  *
@@ -18,10 +29,10 @@ struct DereferencingComparator { bool operator()(const T a, const T b) const { r
  * Objects pointed to by keys must not be modified in any way that changes the
  * result of DereferencingComparator.
  */
-template <class K, class T>
+template <class K, class T, class H>
 class indirectmap {
 private:
-    typedef std::map<const K*, T, DereferencingComparator<const K*> > base;
+    typedef std::unordered_map<const K*, T, DereferencingHasher<H, const K*>, DereferencingComparator<const K*> > base;
     base m;
 public:
     typedef typename base::iterator iterator;
@@ -31,6 +42,9 @@ public:
 
     // passthrough (pointer interface)
     std::pair<iterator, bool> insert(const value_type& value) { return m.insert(value); }
+    template< class... Args >
+        std::pair<iterator,bool> emplace( Args&&... args )
+     { return m.emplace(std::forward<Args>(args)...);}
 
     // pass address (value interface)
     iterator find(const K& key)                     { return m.find(&key); }
@@ -40,7 +54,11 @@ public:
     size_type erase(const K& key)                   { return m.erase(&key); }
     size_type count(const K& key) const             { return m.count(&key); }
 
+    // Explicit address required -- otherwise, may accidentall insert temporary
+    T& operator[]( const K* key ) {return m[key];}
+
     // passthrough
+    iterator erase(const_iterator pos)                   { return m.erase(pos); }
     bool empty() const              { return m.empty(); }
     size_type size() const          { return m.size(); }
     size_type max_size() const      { return m.max_size(); }
