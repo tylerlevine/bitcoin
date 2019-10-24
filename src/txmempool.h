@@ -355,6 +355,19 @@ enum class MemPoolRemovalReason {
     REPLACED,    //!< Removed for replacement
 };
 
+template<typename It>
+class SaltedTxIterHasher
+{
+    private:
+        /** Salt */
+        const uint64_t k0, k1;
+    public:
+        SaltedTxIterHasher();
+        size_t operator()(const It& it) const {
+            return SipHashUint256(k0, k1, it->GetTx().GetHash());
+        }
+};
+
 class SaltedTxidHasher
 {
 private:
@@ -533,14 +546,14 @@ public:
     const setEntries & GetMemPoolChildren(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
     uint64_t CalculateDescendantMaximum(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 private:
-    typedef std::map<txiter, setEntries, CompareIteratorByHash> cacheMap;
+    typedef std::unordered_map<txiter, std::unordered_set<txiter, SaltedTxIterHasher<txiter>>, SaltedTxIterHasher<txiter>> cacheMap;
 
     struct TxLinks {
         setEntries parents;
         setEntries children;
     };
 
-    typedef std::map<txiter, TxLinks, CompareIteratorByHash> txlinksMap;
+    typedef std::unordered_map<txiter, TxLinks, SaltedTxIterHasher<txiter>> txlinksMap;
     txlinksMap mapLinks;
 
     void UpdateParent(txiter entry, txiter parent, bool add);
@@ -550,7 +563,7 @@ private:
 
 public:
     indirectmap<COutPoint, const CTransaction*> mapNextTx GUARDED_BY(cs);
-    std::map<uint256, CAmount> mapDeltas;
+    std::unordered_map<uint256, CAmount, SaltedTxidHasher> mapDeltas;
 
     /** Create a new CTxMemPool.
      */
@@ -716,7 +729,7 @@ private:
      */
     void UpdateForDescendants(txiter updateIt,
             cacheMap &cachedDescendants,
-            const std::set<uint256> &setExclude) EXCLUSIVE_LOCKS_REQUIRED(cs);
+            const std::unordered_set<uint256, SaltedTxidHasher> &setExclude) EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Update ancestors of hash to add/remove it as a descendant transaction. */
     void UpdateAncestorsOf(bool add, txiter hash, setEntries &setAncestors) EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Set ancestor state for an entry */

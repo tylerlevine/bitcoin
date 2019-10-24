@@ -56,7 +56,7 @@ size_t CTxMemPoolEntry::GetTxSize() const
 // Update the given tx for any in-mempool descendants.
 // Assumes that setMemPoolChildren is correct for the given tx and all
 // descendants.
-void CTxMemPool::UpdateForDescendants(txiter updateIt, cacheMap &cachedDescendants, const std::set<uint256> &setExclude)
+void CTxMemPool::UpdateForDescendants(txiter updateIt, cacheMap &cachedDescendants, const std::unordered_set<uint256, SaltedTxidHasher> &setExclude)
 {
     setEntries stageEntries, setAllDescendants;
     stageEntries = GetMemPoolChildren(updateIt);
@@ -85,12 +85,15 @@ void CTxMemPool::UpdateForDescendants(txiter updateIt, cacheMap &cachedDescendan
     int64_t modifySize = 0;
     CAmount modifyFee = 0;
     int64_t modifyCount = 0;
+    cacheMap::mapped_type* table = nullptr;
     for (txiter cit : setAllDescendants) {
         if (!setExclude.count(cit->GetTx().GetHash())) {
+            // insert the entry and get a pointer if it's our first pass
+            table = table ? table : &cachedDescendants[updateIt];
             modifySize += cit->GetTxSize();
             modifyFee += cit->GetModifiedFee();
             modifyCount++;
-            cachedDescendants[updateIt].insert(cit);
+            table->insert(cit);
             // Update ancestor state for each descendant
             mapTx.modify(cit, update_ancestor_state(updateIt->GetTxSize(), updateIt->GetModifiedFee(), 1, updateIt->GetSigOpCost()));
         }
@@ -113,7 +116,7 @@ void CTxMemPool::UpdateTransactionsFromBlock(const std::vector<uint256> &vHashes
 
     // Use a set for lookups into vHashesToUpdate (these entries are already
     // accounted for in the state of their ancestors)
-    std::set<uint256> setAlreadyIncluded(vHashesToUpdate.begin(), vHashesToUpdate.end());
+    std::unordered_set<uint256, SaltedTxidHasher> setAlreadyIncluded(vHashesToUpdate.begin(), vHashesToUpdate.end());
 
     // Iterate in reverse, so that whenever we are looking at a transaction
     // we are sure that all in-mempool descendants have already been processed.
@@ -122,7 +125,7 @@ void CTxMemPool::UpdateTransactionsFromBlock(const std::vector<uint256> &vHashes
     // UpdateForDescendants.
     for (const uint256 &hash : reverse_iterate(vHashesToUpdate)) {
         // we cache the in-mempool children to avoid duplicate updates
-        setEntries setChildren;
+        std::unordered_set<uint256, SaltedTxidHasher> setChildren;
         // calculate children from mapNextTx
         txiter it = mapTx.find(hash);
         if (it == mapTx.end()) {
@@ -133,14 +136,17 @@ void CTxMemPool::UpdateTransactionsFromBlock(const std::vector<uint256> &vHashes
         // include them, and update their setMemPoolParents to include this tx.
         for (; iter != mapNextTx.end() && iter->first->hash == hash; ++iter) {
             const uint256 &childHash = iter->second->GetHash();
+            // if we've already visited this node, skip looking up in mapTx
+            if (!setChildren.insert(childHash).second) continue;
+
             txiter childIter = mapTx.find(childHash);
             assert(childIter != mapTx.end());
             // We can skip updating entries we've encountered before or that
             // are in the block (which are already accounted for).
-            if (setChildren.insert(childIter).second && !setAlreadyIncluded.count(childHash)) {
-                UpdateChild(it, childIter, true);
-                UpdateParent(childIter, it, true);
-            }
+            if (setAlreadyIncluded.count(childHash)) continue;
+
+            UpdateChild(it, childIter, true);
+            UpdateParent(childIter, it, true);
         }
         UpdateForDescendants(it, mapMemPoolDescendantsToUpdate, setAlreadyIncluded);
     }
@@ -873,8 +879,8 @@ void CTxMemPool::PrioritiseTransaction(const uint256& hash, const CAmount& nFeeD
 void CTxMemPool::ApplyDelta(const uint256 hash, CAmount &nFeeDelta) const
 {
     LOCK(cs);
-    std::map<uint256, CAmount>::const_iterator pos = mapDeltas.find(hash);
-    if (pos == mapDeltas.end())
+    const auto pos = mapDeltas.find(hash);
+    if (pos == mapDeltas.cend())
         return;
     const CAmount &delta = pos->second;
     nFeeDelta += delta;
@@ -1043,12 +1049,63 @@ void CTxMemPool::trackPackageRemoved(const CFeeRate& rate) {
     }
 }
 
+
+template<typename X, typename Y, typename Z>
+static inline size_t rehash_savings_estimate(const std::unordered_map<X, Y, Z>& m)
+{
+    // no savings because we have more nodes than buckets
+    if (m.size() > m.bucket_count())
+        return 0;
+    // no savings because our buckets are already saturated
+    size_t virtual_required_buckets = size_t(std::ceil(m.size()/m.max_load_factor()));
+    if (virtual_required_buckets >= m.max_load_factor())
+        return 0;
+    // return the size for the number of buckets which are extra
+    return memusage::MallocUsage(sizeof(void*) * (m.bucket_count() - virtual_required_buckets));
+}
 void CTxMemPool::TrimToSize(size_t sizelimit, std::vector<COutPoint>* pvNoSpendsRemaining) {
     AssertLockHeld(cs);
 
     unsigned nTxnRemoved = 0;
     CFeeRate maxFeeRateRemoved(0);
-    while (!mapTx.empty() && DynamicMemoryUsage() > sizelimit) {
+    size_t usage = 0;
+
+    while (!mapTx.empty() && (usage = DynamicMemoryUsage()) > sizelimit) {
+
+        // When using unordered_map in the mempool we can sometimes be holding onto a large
+        // excess of memory if the unordered_maps have grown and then shrunk
+        // In this loop, we see if any of the unordered_maps we have would throw us under the limit
+        // and rehash them one by one. This *can be* expensive, but it shouldn't need to be done particularly
+        // often.
+        //
+        // In particular, note that we only clear the maps if it is possible that it will trim us to the size we want.
+        // If the savings aren't good enough, then we skip it.
+        //
+        // We do this inside the loop in case after removing a big package, we would benefit from rehashing
+        for (auto i = 0; i < 3; ++i) {
+            auto mapLinks_savings = rehash_savings_estimate(mapLinks);
+            auto mapDeltas_savings = rehash_savings_estimate(mapDeltas);
+            auto total_savings = mapLinks_savings + mapDeltas_savings;
+            auto overage = usage-sizelimit;
+            // Only rehash if we'll clear the overage completely
+            // and the total_savings is more than 5% of the size limit
+            if (total_savings >= overage && total_savings > 0.05*sizelimit ) {
+                std::pair<size_t, size_t> which = std::max(std::make_pair(mapLinks_savings,0), std::make_pair(mapDeltas_savings,1));
+                switch (which.second) {
+                    case 0:
+                        mapLinks.rehash(0);
+                        break;
+                    case 1:
+                        mapDeltas.rehash(0);
+                        break;
+                }
+                usage = DynamicMemoryUsage();
+            } else {
+                break;
+            }
+        }
+
+
         indexed_transaction_set::index<descendant_score>::type::iterator it = mapTx.get<descendant_score>().begin();
 
         // We set the new mempool min fee to the feerate of the removed set, plus the
@@ -1131,3 +1188,5 @@ void CTxMemPool::SetIsLoaded(bool loaded)
 }
 
 SaltedTxidHasher::SaltedTxidHasher() : k0(GetRand(std::numeric_limits<uint64_t>::max())), k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
+template<typename T>
+SaltedTxIterHasher<T>::SaltedTxIterHasher() : k0(GetRand(std::numeric_limits<uint64_t>::max())), k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
