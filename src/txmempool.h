@@ -562,7 +562,7 @@ private:
     std::vector<indexed_transaction_set::const_iterator> GetSortedDepthAndScore() const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
 public:
-    std::unordered_map<uint256, std::unordered_map<uint32_t, const CTransaction*>, SaltedTxidHasher> mapNextTx GUARDED_BY(cs);
+    std::unordered_map<uint256, std::unordered_map<uint32_t, txiter>, SaltedTxidHasher> mapNextTx GUARDED_BY(cs);
     std::unordered_map<uint256, CAmount, SaltedTxidHasher> mapDeltas;
 
     /** Create a new CTxMemPool.

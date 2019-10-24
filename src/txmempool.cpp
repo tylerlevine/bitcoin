@@ -136,7 +136,7 @@ void CTxMemPool::UpdateTransactionsFromBlock(const std::vector<uint256> &vHashes
         // include them, and update their setMemPoolParents to include this tx.
         if (iter != mapNextTx.end()) {
             for (const auto& tx : iter->second) {
-                const uint256 &childHash = tx.second->GetHash();
+                const uint256 &childHash = tx.second->GetTx().GetHash();
                 // if we've already visited this node, skip looking up in mapTx
                 if (!setChildren.insert(childHash).second) continue;
 
@@ -388,7 +388,7 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
     const CTransaction& tx = newit->GetTx();
     std::set<uint256> setParentTransactions;
     for (unsigned int i = 0; i < tx.vin.size(); i++) {
-        mapNextTx[tx.vin[i].prevout.hash].emplace(tx.vin[i].prevout.n, &tx);
+        mapNextTx[tx.vin[i].prevout.hash].emplace(tx.vin[i].prevout.n, newit);
         setParentTransactions.insert(tx.vin[i].prevout.hash);
     }
     // Don't bother worrying about child transactions of this one.
@@ -522,9 +522,9 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
                 std::unordered_set<uint256, SaltedTxidHasher> cache;
                 cache.reserve(origTx.vout.size());
                 for (const auto& elt : it->second) {
-                    if (!cache.emplace(elt.second->GetHash()).second)
+                    if (!cache.emplace(elt.second->GetTx().GetHash()).second)
                         continue;
-                    txiter nextit = mapTx.find(elt.second->GetHash());
+                    txiter nextit = mapTx.find(elt.second->GetTx().GetHash());
                     assert(nextit != mapTx.end());
                     CalculateDescendants(nextit, setAllRemoves);
                 }
@@ -579,7 +579,7 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
         if (it == mapNextTx.end()) continue;
         auto it2 = it->second.find(txin.prevout.n);
         if (it2 == it->second.end()) continue;
-        const CTransaction &txConflict = *it2->second;
+        const CTransaction &txConflict = it2->second->GetTx();
         if (txConflict == tx) continue;
         ClearPrioritisation(txConflict.GetHash());
         removeRecursive(txConflict, MemPoolRemovalReason::CONFLICT);
@@ -692,7 +692,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
             auto it4 = it3->second.find(txin.prevout.n);
             assert(it4 != it3->second.end());
             assert(it4->first == txin.prevout.n);
-            assert(it4->second == &tx);
+            assert(&it4->second->GetTx() == &tx);
             i++;
         }
         assert(setParentCheck == GetMemPoolParents(it));
@@ -723,7 +723,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         uint64_t child_sizes = 0;
         if (iter != mapNextTx.end()) {
             for (auto& child_tx : iter->second) {
-                txiter childit = mapTx.find(child_tx.second->GetHash());
+                txiter childit = mapTx.find(child_tx.second->GetTx().GetHash());
                 assert(childit != mapTx.end()); // mapNextTx points to in-mempool transactions
                 if (setChildrenCheck.insert(childit).second) {
                     child_sizes += childit->GetTxSize();
@@ -756,11 +756,11 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
     }
     for (const auto& parent : mapNextTx) {
         for (const auto& child: parent.second) {
-            uint256 hash = child.second->GetHash();
+            uint256 hash = child.second->GetTx().GetHash();
             indexed_transaction_set::const_iterator it = mapTx.find(hash);
             assert(it != mapTx.end());
             const CTransaction& tx = it->GetTx();
-            assert(&tx == child.second);
+            assert(&tx == &child.second->GetTx());
 
         }
     }
@@ -915,7 +915,7 @@ const CTransaction* CTxMemPool::GetConflictTx(const COutPoint& prevout) const
     if (it == mapNextTx.end()) return nullptr;
     const auto it2 = it->second.find(prevout.n);
     if (it2 == it->second.end()) return nullptr;
-    return it2->second;
+    return &it2->second->GetTx();
 }
 
 boost::optional<CTxMemPool::txiter> CTxMemPool::GetIter(const uint256& txid) const
