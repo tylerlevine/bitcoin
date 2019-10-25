@@ -279,7 +279,10 @@ void CTxMemPool::UpdateChildrenForRemoval(txiter it)
 {
     auto p = GetMemPoolChildren(it);
     if (!p) return;
+    auto new_epoch = GetFreshEpoch();
     for (const auto& updateIt : *p) {
+        if (updateIt.second->epoch >= new_epoch) continue;
+        updateIt.second->epoch = new_epoch;
         UpdateParent(updateIt.second, it, false);
     }
 }
