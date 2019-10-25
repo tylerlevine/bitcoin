@@ -299,9 +299,10 @@ void CTxMemPool::UpdateForRemoveFromMempool(const setEntries &entriesToRemove, b
         // Here we only update statistics and not data in mapLinks (which
         // we need to preserve until we're finished with all operations that
         // need to traverse the mempool).
+        auto new_epoch = GetFreshEpoch();
         for (txiter removeIt : entriesToRemove) {
             setEntries setDescendants;
-            CalculateDescendants(removeIt, setDescendants);
+            CalculateDescendants(removeIt, setDescendants, new_epoch);
             setDescendants.erase(removeIt); // don't update state for self
             int64_t modifySize = -((int64_t)removeIt->GetTxSize());
             CAmount modifyFee = -removeIt->GetModifiedFee();
@@ -595,8 +596,9 @@ void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMem
         }
     }
     setEntries setAllRemoves;
+    auto new_epoch = GetFreshEpoch();
     for (txiter it : txToRemove) {
-        CalculateDescendants(it, setAllRemoves);
+        CalculateDescendants(it, setAllRemoves, new_epoch);
     }
     RemoveStaged(setAllRemoves, false, MemPoolRemovalReason::REORG);
 }
@@ -1017,8 +1019,9 @@ int CTxMemPool::Expire(std::chrono::seconds time)
         it++;
     }
     setEntries stage;
+    auto new_epoch = GetFreshEpoch();
     for (txiter removeit : toremove) {
-        CalculateDescendants(removeit, stage);
+        CalculateDescendants(removeit, stage, new_epoch);
     }
     RemoveStaged(stage, false, MemPoolRemovalReason::EXPIRY);
     return stage.size();
