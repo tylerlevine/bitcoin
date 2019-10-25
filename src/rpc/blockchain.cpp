@@ -444,9 +444,12 @@ static void entryToJSON(const CTxMemPool& pool, UniValue& info, const CTxMemPool
 
     UniValue spent(UniValue::VARR);
     const CTxMemPool::txiter& it = pool.mapTx.find(tx.GetHash());
-    const CTxMemPool::setEntries& setChildren = pool.GetMemPoolChildren(it);
-    for (CTxMemPool::txiter childiter : setChildren) {
-        spent.push_back(childiter->GetTx().GetHash().ToString());
+    const auto p = pool.GetMemPoolChildren(it);
+    if (p) {
+        const CTxMemPool::nextTxSet& setChildren = *p;
+        for (const auto& childiter : setChildren) {
+            spent.push_back(childiter.second->GetTx().GetHash().ToString());
+        }
     }
 
     info.pushKV("spentby", spent);

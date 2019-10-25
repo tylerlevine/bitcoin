@@ -58,45 +58,77 @@ size_t CTxMemPoolEntry::GetTxSize() const
 // descendants.
 void CTxMemPool::UpdateForDescendants(txiter updateIt, cacheMap &cachedDescendants, const std::unordered_set<uint256, SaltedTxidHasher> &setExclude)
 {
-    setEntries stageEntries, setAllDescendants;
-    stageEntries = GetMemPoolChildren(updateIt);
-
-    while (!stageEntries.empty()) {
-        const txiter cit = *stageEntries.begin();
-        setAllDescendants.insert(cit);
-        stageEntries.erase(cit);
-        const setEntries &setChildren = GetMemPoolChildren(cit);
-        for (txiter childEntry : setChildren) {
-            cacheMap::iterator cacheIt = cachedDescendants.find(childEntry);
-            if (cacheIt != cachedDescendants.end()) {
-                // We've already calculated this one, just add the entries for this set
-                // but don't traverse again.
-                for (txiter cacheEntry : cacheIt->second) {
-                    setAllDescendants.insert(cacheEntry);
-                }
-            } else if (!setAllDescendants.count(childEntry)) {
-                // Schedule for later processing
-                stageEntries.insert(childEntry);
-            }
-        }
-    }
-    // setAllDescendants now contains all in-mempool descendants of updateIt.
-    // Update and add to cached descendant map
+    const nextTxSet* p_stage_entries = GetMemPoolChildren(updateIt);
     int64_t modifySize = 0;
     CAmount modifyFee = 0;
     int64_t modifyCount = 0;
-    cacheMap::mapped_type* table = nullptr;
-    for (txiter cit : setAllDescendants) {
-        if (!setExclude.count(cit->GetTx().GetHash())) {
-            // insert the entry and get a pointer if it's our first pass
-            table = table ? table : &cachedDescendants[updateIt];
-            modifySize += cit->GetTxSize();
-            modifyFee += cit->GetModifiedFee();
-            modifyCount++;
-            table->insert(cit);
-            // Update ancestor state for each descendant
-            mapTx.modify(cit, update_ancestor_state(updateIt->GetTxSize(), updateIt->GetModifiedFee(), 1, updateIt->GetSigOpCost()));
+
+    if (p_stage_entries) {
+        const nextTxSet& stageEntries =  *p_stage_entries;
+        setEntries setAllDescendants;
+        // we use two stacks to minimize memory allocations
+        // One is stageEntries, the other is stack
+        // Drain stageEntries first
+        std::deque<txiter> queue;
+        nextTxSet::const_iterator stage_entries_iter = stageEntries.begin();
+        while (stage_entries_iter != stageEntries.cend() || !queue.empty()) {
+            txiter cit;
+            // prioritze reading from the stage_entries_iter
+            // then from the queue
+            //
+            // This implements a breadth-first search among children
+            // which is most-likely to return to us higher-level caches
+            // that can eliminate common children
+            if (queue.empty()) {
+                // implies !stageEntries.empty()
+                cit = stage_entries_iter->second;
+                ++stage_entries_iter;
+            } else {
+                // implies that !stack.empty()
+                cit = queue.front();
+                queue.pop_front();
+            }
+
+            // if we don't insert anything into setAllDescendants,
+            // we already have it and it's children accounted for so we can skip
+            //
+            // We can't special case this because even if we're coming off the
+            // stack, an earlier call could have put it into setAllDescendants
+            if (!setAllDescendants.insert(cit).second) continue;
+
+            const nextTxSet * p_set_children = GetMemPoolChildren(cit);
+            if (!p_set_children) continue; // no children
+
+            for (const auto& childEntry : *p_set_children) {
+                cacheMap::iterator cacheIt = cachedDescendants.find(childEntry.second);
+                if (cacheIt != cachedDescendants.end()) {
+                    // We've already calculated this one, just add the entries for this set
+                    // but don't traverse again.
+                    for (auto& elt : cacheIt->second)
+                        setAllDescendants.insert(elt);
+                } else if (!setAllDescendants.count(childEntry.second)) {
+                    // Schedule for later processing if not already in
+                    // setAllDescendants
+                    queue.push_back(childEntry.second);
+                }
+            }
         }
+        // setAllDescendants now contains all in-mempool descendants of updateIt.
+        // Update and add to cached descendant map
+        cacheMap::mapped_type* table = nullptr;
+        for (txiter cit : setAllDescendants) {
+            if (!setExclude.count(cit->GetTx().GetHash())) {
+                // insert the entry and get a pointer if it's our first pass
+                table = table ? table : &cachedDescendants[updateIt];
+                modifySize += cit->GetTxSize();
+                modifyFee += cit->GetModifiedFee();
+                modifyCount++;
+                table->insert(cit);
+                // Update ancestor state for each descendant
+                mapTx.modify(cit, update_ancestor_state(updateIt->GetTxSize(), updateIt->GetModifiedFee(), 1, updateIt->GetSigOpCost()));
+            }
+        }
+
     }
     mapTx.modify(updateIt, update_descendant_state(modifySize, modifyFee, modifyCount));
 }
@@ -247,9 +279,10 @@ void CTxMemPool::UpdateEntryForAncestors(txiter it, const setEntries &setAncesto
 
 void CTxMemPool::UpdateChildrenForRemoval(txiter it)
 {
-    const setEntries &setMemPoolChildren = GetMemPoolChildren(it);
-    for (txiter updateIt : setMemPoolChildren) {
-        UpdateParent(updateIt, it, false);
+    auto p = GetMemPoolChildren(it);
+    if (!p) return;
+    for (const auto& updateIt : *p) {
+        UpdateParent(updateIt.second, it, false);
     }
 }
 
@@ -435,7 +468,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
 
     totalTxSize -= it->GetTxSize();
     cachedInnerUsage -= it->DynamicMemoryUsage();
-    cachedInnerUsage -= memusage::DynamicUsage(mapLinks[it].parents) + memusage::DynamicUsage(mapLinks[it].children);
+    cachedInnerUsage -= memusage::DynamicUsage(mapLinks[it].parents);
     mapLinks.erase(it);
     mapTx.erase(it);
     nTransactionsUpdated++;
@@ -463,34 +496,36 @@ void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants
         txiter it = stage.back();
         stage.pop_back();
         setDescendants.insert(it);
-        const setEntries &setChildren = GetMemPoolChildren(it);
+        auto p = GetMemPoolChildren(it);
+        if (!p) continue;
+        const nextTxSet &setChildren = *p;
         if (!setChildren.empty()) {
             // This algorithm finds the elements in setChildren which are not
             // in setDescendants
+            // see: https://lemire.me/blog/2017/01/27/how-expensive-are-the-union-and-intersection-of-two-unordered_set-in-c/
             //
-            // It operates in:
+            // it currently runs in
             //
-            // O(|setChildren| + |setDescendants| + log(|setDescendants|) + log(|setChildren|) + |stage|)
+            // O(|setChildren| * log (|setDescendant|) + |setChildren| *
+            // log(|setChildren|) + |setChildren| + |stage|)
             //
-            // The previous algorithm -- the "obvious" one, ran in:
+            // but it's important to note that the sorting
+            // of the tmp_stage should be a bit faster as it's a vector
             //
-            // O(|setChildren| + |setChildren| * log(|stage| + |setChildren|) + |setChildren| * log(|setDescendants|) )
+            // further, it is actually |setChildren  - setDescendant| log
+            // (|setChildren - setDescendant|), which means across iterations
+            // we are overall bounded
             //
-            //  but it's possible that there are further optimizations realizable in the library
-            auto lb = setChildren.lower_bound(*setDescendants.begin());
-            tmp_stage.assign(setChildren.begin(), lb);
-            if (lb != setChildren.end()) {
-                auto ub = setChildren.upper_bound(*(--setDescendants.end()));
-                std::set_difference(lb,
-                                    ub,
-                                    setDescendants.lower_bound(*lb),
-                                    setDescendants.upper_bound(ub == setChildren.end() ? *(--(setChildren.end())) : *ub),
-                                    std::back_inserter(tmp_stage), CompareIteratorByHash());
-                tmp_stage.insert(tmp_stage.end(), ub, setChildren.end());
+            // TODO: make setDescendant a hash_set or insert early
+            tmp_stage.clear();
+            for (auto& child : setChildren) {
+                if (setDescendants.count(child.second)) continue;
+                tmp_stage.push_back(child.second);
             }
-            tmp_output.clear();
+            std::sort(tmp_stage.begin(), tmp_stage.end(), CompareIteratorByHash());
             // tmp_stage and stage has at most 1 copy of each
             // therefore set_union will de-duplicate any extras
+            tmp_output.clear();
             std::set_union(
                 std::make_move_iterator(tmp_stage.begin()),
                 std::make_move_iterator(tmp_stage.end()),
@@ -671,7 +706,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         txlinksMap::const_iterator linksiter = mapLinks.find(it);
         assert(linksiter != mapLinks.end());
         const TxLinks &links = linksiter->second;
-        innerUsage += memusage::DynamicUsage(links.parents) + memusage::DynamicUsage(links.children);
+        innerUsage += memusage::DynamicUsage(links.parents);
         bool fDependsWait = false;
         setEntries setParentCheck;
         for (const CTxIn &txin : tx.vin) {
@@ -717,12 +752,14 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         assert(it->GetSigOpCostWithAncestors() == nSigOpCheck);
         assert(it->GetModFeesWithAncestors() == nFeesCheck);
 
-        // Check children against mapNextTx
-        CTxMemPool::setEntries setChildrenCheck;
-        auto iter = mapNextTx.find(it->GetTx().GetHash());
+        // Check children against mapNextTx (same data structure, so can't get
+        // out of sync, so just check against)
+        //
+        std::unordered_set<txiter, SaltedTxIterHasher<txiter>> setChildrenCheck;
+        auto p = GetMemPoolChildren(it);
         uint64_t child_sizes = 0;
-        if (iter != mapNextTx.end()) {
-            for (auto& child_tx : iter->second) {
+        if (p) {
+            for (auto& child_tx : *p) {
                 txiter childit = mapTx.find(child_tx.second->GetTx().GetHash());
                 assert(childit != mapTx.end()); // mapNextTx points to in-mempool transactions
                 if (setChildrenCheck.insert(childit).second) {
@@ -730,7 +767,6 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
                 }
             }
         }
-        assert(setChildrenCheck == GetMemPoolChildren(it));
         // Also check to make sure size is greater than sum with immediate children.
         // just a sanity check, not definitive that this calc is correct...
         assert(it->GetSizeWithDescendants() >= child_sizes + it->GetTxSize());
@@ -1004,10 +1040,28 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, bool validFeeEstimat
 void CTxMemPool::UpdateChild(txiter entry, txiter child, bool add)
 {
     setEntries s;
-    if (add && mapLinks[entry].children.insert(child).second) {
+    // TODO:
+    const CTransaction& tx = entry->GetTx();
+    auto parent_hash = tx.GetHash();
+    if (add) {
+        // insert if not found
+        auto& child_set = mapNextTx[parent_hash];
+        for (const auto& input : child->GetTx().vin) {
+            if (input.prevout.hash != parent_hash) continue;
+            child_set.emplace(input.prevout.n, child);
+        }
         cachedInnerUsage += memusage::IncrementalDynamicUsage(s);
-    } else if (!add && mapLinks[entry].children.erase(child)) {
+    } else {
+        auto it = mapNextTx.find(parent_hash);
+        // already gone
+        if (it == mapNextTx.end()) return;
+        auto& child_set = it->second;
+        for (const auto& input : child->GetTx().vin) {
+            if (input.prevout.hash != parent_hash) continue;
+            child_set.erase(input.prevout.n);
+        }
         cachedInnerUsage -= memusage::IncrementalDynamicUsage(s);
+        if (child_set.empty()) mapNextTx.erase(it);
     }
 }
 
@@ -1029,12 +1083,11 @@ const CTxMemPool::setEntries & CTxMemPool::GetMemPoolParents(txiter entry) const
     return it->second.parents;
 }
 
-const CTxMemPool::setEntries & CTxMemPool::GetMemPoolChildren(txiter entry) const
+const std::unordered_map<uint32_t, CTxMemPool::txiter>* CTxMemPool::GetMemPoolChildren(txiter entry) const
 {
     assert (entry != mapTx.end());
-    txlinksMap::const_iterator it = mapLinks.find(entry);
-    assert(it != mapLinks.end());
-    return it->second.children;
+    auto it = mapNextTx.find(entry->GetTx().GetHash());
+    return it != mapNextTx.end() ? &it->second : nullptr;
 }
 
 CFeeRate CTxMemPool::GetMinFee(size_t sizelimit) const {

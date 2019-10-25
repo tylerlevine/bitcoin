@@ -541,16 +541,16 @@ public:
         }
     };
     typedef std::set<txiter, CompareIteratorByHash> setEntries;
+    typedef std::unordered_map<uint32_t, txiter> nextTxSet;
 
     const setEntries & GetMemPoolParents(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
-    const setEntries & GetMemPoolChildren(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    const nextTxSet*  GetMemPoolChildren(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
     uint64_t CalculateDescendantMaximum(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 private:
     typedef std::unordered_map<txiter, std::unordered_set<txiter, SaltedTxIterHasher<txiter>>, SaltedTxIterHasher<txiter>> cacheMap;
 
     struct TxLinks {
         setEntries parents;
-        setEntries children;
     };
 
     typedef std::unordered_map<txiter, TxLinks, SaltedTxIterHasher<txiter>> txlinksMap;
