@@ -485,38 +485,51 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
 void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants) const
 {
     auto new_epoch = GetFreshEpoch();
-    std::vector<txiter> stage;
-    if (setDescendants.count(entryit) == 0) {
-        stage.emplace_back(entryit);
-    }
+    assert(setDescendants.empty());
+    CalculateDescendants(entryit, setDescendants, new_epoch);
+}
+void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants, const uint64_t reference_epoch, const size_t depth) const {
+    std::vector<txiter> stack;
+    setDescendants.insert(entryit);
+    auto it = entryit;
+    do {
+        CalculateDescendants(it, setDescendants, reference_epoch, stack, depth);
+    } while(!stack.empty() && (it = stack.back(), stack.pop_back(), true));
+
+} 
+// N.B. Does not insert self
+void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants, const uint64_t reference_epoch, std::vector<txiter>& defer, const size_t depth) const
+{
     // Traverse down the children of entry, only adding children that are not
     // accounted for in setDescendants already (because those children have either
     // already been walked, or will be walked in this iteration).
-    while (!stage.empty()) {
-        txiter it = stage.back();
-        stage.pop_back();
+    auto p = GetMemPoolChildren(entryit);
+    if (!p) return;
+    const nextTxSet &setChildren = *p;
+    for (auto child : setChildren){
         // We are yet to walk it on this function call...
-        if (it->epoch >= new_epoch) continue;
-        it->epoch = new_epoch;
-        setDescendants.insert(it);
-        auto p = GetMemPoolChildren(it);
+        if (child.second->epoch >= reference_epoch) continue;
+        child.second->epoch = reference_epoch;
+        setDescendants.insert(child.second);
+        auto p = GetMemPoolChildren(child.second);
         if (!p) continue;
         const nextTxSet &setChildren = *p;
         if (!setChildren.empty()) {
             // This algorithm finds the elements in setChildren which are not
             // in setDescendants
-            // see: https://lemire.me/blog/2017/01/27/how-expensive-are-the-union-and-intersection-of-two-unordered_set-in-c/
-            //
-            // it currently runs in
-            //
-            // O(|setChildren| + |setChildren|  + |stage|)
             for (auto& child : setChildren) {
-                if (child.second->epoch >= new_epoch) continue;
-                stage.push_back(child.second);
+                if (child.second->epoch >= reference_epoch) continue;
+                // if (setDescendants.count(child.second)) continue; // not
+                // needed because we are using the reference_epoch
+                // N.B. This recursion is safe because of the ancestor limit --
+                // an explicit recursion limit is also used in case ancestor
+                // limits are set differently
+                if (depth == 0) {
+                    defer.push_back(child.second);
+                } else{
+                    CalculateDescendants(child.second, setDescendants, reference_epoch, depth-1);
+                }
             }
-            // tmp_stage and stage has at most 1 copy of each
-            // therefore set_union will de-duplicate any extras
-            // we do not need to call tmp_stage.clear() because the subsequent assign() clears
         }
     }
 }
@@ -536,14 +549,15 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
             // the mempool for any reason.
             auto it = mapNextTx.find(origTx.GetHash());
             if (it != mapNextTx.end()) {
-                std::unordered_set<uint256, SaltedTxidHasher> cache;
-                cache.reserve(origTx.vout.size());
+                auto new_epoch = GetFreshEpoch();
                 for (const auto& elt : it->second) {
-                    if (!cache.emplace(elt.second->GetTx().GetHash()).second)
-                        continue;
+                    if (elt.second->epoch >= new_epoch) continue;
+                    elt.second->epoch = new_epoch;
                     txiter nextit = mapTx.find(elt.second->GetTx().GetHash());
                     assert(nextit != mapTx.end());
-                    CalculateDescendants(nextit, setAllRemoves);
+                    // note CalculateDescendants may set the epoch even higher
+                    // each time it runs, but it won't interfere
+                    CalculateDescendants(nextit, setAllRemoves, new_epoch);
                 }
             }
         }
