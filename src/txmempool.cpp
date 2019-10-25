@@ -56,82 +56,78 @@ size_t CTxMemPoolEntry::GetTxSize() const
 // Update the given tx for any in-mempool descendants.
 // Assumes that setMemPoolChildren is correct for the given tx and all
 // descendants.
-void CTxMemPool::UpdateForDescendants(txiter updateIt, cacheMap &cachedDescendants, const std::unordered_set<uint256, SaltedTxidHasher> &setExclude)
+void CTxMemPool::UpdateForDescendants(txiter updateIt, cacheMap &cachedDescendants, const std::unordered_set<uint256, SaltedTxidHasher> &setExclude, const size_t depth)
 {
-    const nextTxSet* p_stage_entries = GetMemPoolChildren(updateIt);
+
+    std::vector<txiter> setAllDescendants;
+    std::vector<txiter> stack;
+    auto it = updateIt;
+    auto cached_epoch = GetFreshEpoch();
+    do {
+        UpdateForDescendants(updateIt, it, cachedDescendants, setExclude, setAllDescendants, cached_epoch, stack, depth);
+    } while(!stack.empty() && (it = stack.back(), stack.pop_back(), true));
+
+    // setAllDescendants now contains all in-mempool descendants of updateIt.
+    // Update and add to cached descendant map
     int64_t modifySize = 0;
     CAmount modifyFee = 0;
-    int64_t modifyCount = 0;
+    int64_t modifyCount = setAllDescendants.size();
+    cacheMap::mapped_type* table = modifyCount > 0 ? &cachedDescendants[updateIt] : nullptr;
+    for (txiter cit : setAllDescendants) {
+        // insert the entry and get a pointer if it's our first pass
+        modifySize += cit->GetTxSize();
+        modifyFee += cit->GetModifiedFee();
+        table->insert(cit);
+        // Update ancestor state for each descendant
+        mapTx.modify(cit, update_ancestor_state(updateIt->GetTxSize(), updateIt->GetModifiedFee(), 1, updateIt->GetSigOpCost()));
+    }
+    mapTx.modify(updateIt, update_descendant_state(modifySize, modifyFee, modifyCount));
+
+}
+void CTxMemPool::UpdateForDescendants(txiter updateIt, txiter walkIt, cacheMap &cachedDescendants, const std::unordered_set<uint256, SaltedTxidHasher> &setExclude, std::vector<txiter>& setAllDescendants, uint64_t cached_epoch, std::vector<txiter>& defer, const size_t depth)
+{
+    const nextTxSet* p_stage_entries = GetMemPoolChildren(walkIt);
 
     if (p_stage_entries) {
         const nextTxSet& stageEntries =  *p_stage_entries;
-        auto new_epoch = GetFreshEpoch();
-        std::vector<txiter> setAllDescendants;
-        // we use two stacks to minimize memory allocations
-        // One is stageEntries, the other is stack
-        // Drain stageEntries first
-        std::deque<txiter> queue;
-        nextTxSet::const_iterator stage_entries_iter = stageEntries.begin();
-        while (stage_entries_iter != stageEntries.cend() || !queue.empty()) {
-            txiter cit;
-            // prioritze reading from the stage_entries_iter
-            // then from the queue
-            //
-            // This implements a breadth-first search among children
-            // which is most-likely to return to us higher-level caches
-            // that can eliminate common children
-            if (queue.empty()) {
-                // implies !stageEntries.empty()
-                cit = stage_entries_iter->second;
-                ++stage_entries_iter;
-            } else {
-                // implies that !stack.empty()
-                cit = queue.front();
-                queue.pop_front();
-            }
+        for(auto& entry : stageEntries) {
+            txiter cit = entry.second;
 
 
             const nextTxSet * p_set_children = GetMemPoolChildren(cit);
             if (!p_set_children) continue; // no children
 
             for (const auto& childEntry : *p_set_children) {
-                if (childEntry.second->epoch >= new_epoch) continue;
-                childEntry.second->epoch = new_epoch;
+                // ignore if already processed
+                if (childEntry.second->epoch >= cached_epoch) continue;
+                childEntry.second->epoch = cached_epoch;
                 cacheMap::iterator cacheIt = cachedDescendants.find(childEntry.second);
                 if (cacheIt != cachedDescendants.end()) {
                     // We've already calculated this one, just add the entries for this set
                     // but don't traverse again.
                     for (auto& elt : cacheIt->second) {
-                        if (elt->epoch >= new_epoch) continue;
-                        elt->epoch = new_epoch;
+                        if (elt->epoch >= cached_epoch) continue;
+                        elt->epoch = cached_epoch;
                         if (setExclude.count(elt->GetTx().GetHash())) continue;
                         setAllDescendants.push_back(elt);
                     }
                 } else {
                     // Schedule for later processing if not already touched this
                     // epoch
-                    if (setExclude.count(childEntry.second->GetTx().GetHash())) continue;
-                    queue.push_back(childEntry.second);
-                    setAllDescendants.push_back(cit);
+                    if (depth == 0) {
+                        defer.push_back(childEntry.second);
+                    } else {
+                        UpdateForDescendants(updateIt, childEntry.second,
+                                cachedDescendants, setExclude,
+                                setAllDescendants, cached_epoch, defer,
+                                depth-1);
+                    }
+                    setAllDescendants.push_back(childEntry.second);
                 }
             }
         }
-        // setAllDescendants now contains all in-mempool descendants of updateIt.
-        // Update and add to cached descendant map
-        cacheMap::mapped_type* table = nullptr;
-        for (txiter cit : setAllDescendants) {
-            // insert the entry and get a pointer if it's our first pass
-            table = table ? table : &cachedDescendants[updateIt];
-            modifySize += cit->GetTxSize();
-            modifyFee += cit->GetModifiedFee();
-            modifyCount++;
-            table->insert(cit);
-            // Update ancestor state for each descendant
-            mapTx.modify(cit, update_ancestor_state(updateIt->GetTxSize(), updateIt->GetModifiedFee(), 1, updateIt->GetSigOpCost()));
-        }
 
     }
-    mapTx.modify(updateIt, update_descendant_state(modifySize, modifyFee, modifyCount));
 }
 
 // vHashesToUpdate is the set of transaction hashes from a disconnected block
@@ -498,7 +494,7 @@ void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants
         CalculateDescendants(it, setDescendants, reference_epoch, stack, depth);
     } while(!stack.empty() && (it = stack.back(), stack.pop_back(), true));
 
-} 
+}
 // N.B. Does not insert self
 void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants, const uint64_t reference_epoch, std::vector<txiter>& defer, const size_t depth) const
 {

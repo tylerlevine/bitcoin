@@ -733,7 +733,13 @@ private:
      */
     void UpdateForDescendants(txiter updateIt,
             cacheMap &cachedDescendants,
-            const std::unordered_set<uint256, SaltedTxidHasher> &setExclude) EXCLUSIVE_LOCKS_REQUIRED(cs);
+            const std::unordered_set<uint256, SaltedTxidHasher> &setExclude, std::vector<txiter>& defer, const size_t depth) EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    void UpdateForDescendants(txiter updateIt,
+            cacheMap &cachedDescendants,
+            const std::unordered_set<uint256, SaltedTxidHasher> &setExclude, const size_t depth=25) EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    void UpdateForDescendants(txiter updateIt, txiter walkIt, cacheMap &cachedDescendants, const std::unordered_set<uint256, SaltedTxidHasher> &setExclude, std::vector<txiter>& setAllDescendants, uint64_t cached_epoch, std::vector<txiter>& defer, const size_t depth) EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Update ancestors of hash to add/remove it as a descendant transaction. */
     void UpdateAncestorsOf(bool add, txiter hash, setEntries &setAncestors) EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Set ancestor state for an entry */
