@@ -22,7 +22,7 @@ CTxMemPoolEntry::CTxMemPoolEntry(const CTransactionRef& _tx, const CAmount& _nFe
                                  int64_t _nTime, unsigned int _entryHeight,
                                  bool _spendsCoinbase, int64_t _sigOpsCost, LockPoints lp)
     : tx(_tx), nFee(_nFee), nTxWeight(GetTransactionWeight(*tx)), nUsageSize(RecursiveDynamicUsage(tx)), nTime(_nTime), entryHeight(_entryHeight),
-    spendsCoinbase(_spendsCoinbase), sigOpCost(_sigOpsCost), lockPoints(lp)
+    spendsCoinbase(_spendsCoinbase), sigOpCost(_sigOpsCost), lockPoints(lp), epoch(0)
 {
     nCountWithDescendants = 1;
     nSizeWithDescendants = GetTxSize();
@@ -156,8 +156,6 @@ void CTxMemPool::UpdateTransactionsFromBlock(const std::vector<uint256> &vHashes
     // setMemPoolChildren will be updated, an assumption made in
     // UpdateForDescendants.
     for (const uint256 &hash : reverse_iterate(vHashesToUpdate)) {
-        // we cache the in-mempool children to avoid duplicate updates
-        std::unordered_set<uint256, SaltedTxidHasher> setChildren;
         // calculate children from mapNextTx
         txiter it = mapTx.find(hash);
         if (it == mapTx.end()) {
@@ -167,10 +165,13 @@ void CTxMemPool::UpdateTransactionsFromBlock(const std::vector<uint256> &vHashes
         // First calculate the children, and update setMemPoolChildren to
         // include them, and update their setMemPoolParents to include this tx.
         if (iter != mapNextTx.end()) {
+            // fresh epoch to avoid duplicate updates
+            auto new_epoch = GetFreshEpoch();
             for (const auto& tx : iter->second) {
-                const uint256 &childHash = tx.second->GetTx().GetHash();
                 // if we've already visited this node, skip looking up in mapTx
-                if (!setChildren.insert(childHash).second) continue;
+                if (tx.second->epoch >= epoch) continue;
+                tx.second->epoch = new_epoch;
+                const uint256 &childHash = tx.second->GetTx().GetHash();
 
                 txiter childIter = mapTx.find(childHash);
                 assert(childIter != mapTx.end());
@@ -483,6 +484,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
 // can save time by not iterating over those entries.
 void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants) const
 {
+    auto new_epoch = GetFreshEpoch();
     std::vector<txiter> stage;
     if (setDescendants.count(entryit) == 0) {
         stage.emplace_back(entryit);
@@ -490,11 +492,12 @@ void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants
     // Traverse down the children of entry, only adding children that are not
     // accounted for in setDescendants already (because those children have either
     // already been walked, or will be walked in this iteration).
-    std::vector<txiter> tmp_stage;
-    std::vector<txiter> tmp_output;
     while (!stage.empty()) {
         txiter it = stage.back();
         stage.pop_back();
+        // We are yet to walk it on this function call...
+        if (it->epoch >= new_epoch) continue;
+        it->epoch = new_epoch;
         setDescendants.insert(it);
         auto p = GetMemPoolChildren(it);
         if (!p) continue;
@@ -506,34 +509,13 @@ void CTxMemPool::CalculateDescendants(txiter entryit, setEntries& setDescendants
             //
             // it currently runs in
             //
-            // O(|setChildren| * log (|setDescendant|) + |setChildren| *
-            // log(|setChildren|) + |setChildren| + |stage|)
-            //
-            // but it's important to note that the sorting
-            // of the tmp_stage should be a bit faster as it's a vector
-            //
-            // further, it is actually |setChildren  - setDescendant| log
-            // (|setChildren - setDescendant|), which means across iterations
-            // we are overall bounded
-            //
-            // TODO: make setDescendant a hash_set or insert early
-            tmp_stage.clear();
+            // O(|setChildren| + |setChildren|  + |stage|)
             for (auto& child : setChildren) {
-                if (setDescendants.count(child.second)) continue;
-                tmp_stage.push_back(child.second);
+                if (child.second->epoch >= new_epoch) continue;
+                stage.push_back(child.second);
             }
-            std::sort(tmp_stage.begin(), tmp_stage.end(), CompareIteratorByHash());
             // tmp_stage and stage has at most 1 copy of each
             // therefore set_union will de-duplicate any extras
-            tmp_output.clear();
-            std::set_union(
-                std::make_move_iterator(tmp_stage.begin()),
-                std::make_move_iterator(tmp_stage.end()),
-                std::make_move_iterator(stage.begin()),
-                std::make_move_iterator(stage.end()),
-                std::back_inserter(tmp_output),
-                CompareIteratorByHash());
-            tmp_output.swap(stage);
             // we do not need to call tmp_stage.clear() because the subsequent assign() clears
         }
     }
@@ -1263,3 +1245,7 @@ void CTxMemPool::SetIsLoaded(bool loaded)
 SaltedTxidHasher::SaltedTxidHasher() : k0(GetRand(std::numeric_limits<uint64_t>::max())), k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
 template<typename T>
 SaltedTxIterHasher<T>::SaltedTxIterHasher() : k0(GetRand(std::numeric_limits<uint64_t>::max())), k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
+
+uint64_t CTxMemPool::GetFreshEpoch() const {
+    return ++epoch;
+}
