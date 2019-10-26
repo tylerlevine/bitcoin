@@ -883,7 +883,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         }
     }
     for (const auto& parent : mapNextTx) {
-        innerUsageNextTx += MonotonicDynamicUsage(parent.second);
+        Increment(innerUsageNextTx, MonotonicDynamicUsage(parent.second));
         for (const auto& child: parent.second) {
             uint256 hash = child.second->GetTx().GetHash();
             indexed_transaction_set::const_iterator it = mapTx.find(hash);
@@ -1160,6 +1160,7 @@ void CTxMemPool::UpdateChild(txiter entry, txiter child, bool add)
         Increment(cachedInnerUsageNextTx, post_erase_child_usage);
         // cleanup and compaction
         if (child_set.empty()) {
+            Decrement(cachedInnerUsageNextTx, post_erase_child_usage);
             // have to delete before calling erase
             mapNextTx.erase(child_set_it);
         }  else if (rehash_savings_estimate(child_set) > post_erase_child_usage*0.75) {
