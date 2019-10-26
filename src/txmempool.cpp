@@ -263,7 +263,8 @@ void CTxMemPool::UpdateChildrenForRemoval(txiter it)
     }
 }
 
-void CTxMemPool::UpdateForRemoveFromMempool(const setEntries &entriesToRemove, bool updateDescendants)
+template <typename T>
+void CTxMemPool::UpdateForRemoveFromMempoolImpl(const T &entriesToRemove, bool updateDescendants)
 {
     // For each entry, walk back all ancestors and decrement size associated with this
     // transaction
@@ -318,6 +319,13 @@ void CTxMemPool::UpdateForRemoveFromMempool(const setEntries &entriesToRemove, b
     for (txiter removeIt : entriesToRemove) {
         UpdateChildrenForRemoval(removeIt);
     }
+}
+void CTxMemPool::UpdateForRemoveFromMempool(const std::vector<txiter> &entriesToRemove, bool updateDescendants) {
+    UpdateForRemoveFromMempoolImpl(entriesToRemove, updateDescendants);
+}
+
+void CTxMemPool::UpdateForRemoveFromMempool(const setEntries &entriesToRemove, bool updateDescendants) {
+    UpdateForRemoveFromMempoolImpl(entriesToRemove, updateDescendants);
 }
 
 void CTxMemPoolEntry::UpdateDescendantState(int64_t modifySize, CAmount modifyFee, int64_t modifyCount)
@@ -525,10 +533,12 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
                 txToRemove.insert(nextit);
             }
         }
-        setEntries setAllRemoves;
+        std::vector<txiter> setAllRemoves;
         const uint64_t epoch = GetFreshEpoch();
         for (txiter it : txToRemove) {
-            CalculateDescendants(it, setAllRemoves, epoch);
+            CalculateDescendantsVec(it, setAllRemoves, epoch);
+            if (!it->already_touched(epoch))
+                setAllRemoves.push_back(it);
         }
 
         RemoveStaged(setAllRemoves, false, reason);
@@ -564,10 +574,12 @@ void CTxMemPool::removeForReorg(const CCoinsViewCache *pcoins, unsigned int nMem
             mapTx.modify(it, update_lock_points(lp));
         }
     }
-    setEntries setAllRemoves;
+    std::vector<txiter> setAllRemoves;
     const uint64_t epoch = GetFreshEpoch();
     for (txiter it : txToRemove) {
-        CalculateDescendants(it, setAllRemoves, epoch);
+        CalculateDescendantsVec(it, setAllRemoves, epoch);
+        if (!it->already_touched(epoch))
+                setAllRemoves.push_back(it);
     }
     RemoveStaged(setAllRemoves, false, MemPoolRemovalReason::REORG);
 }
@@ -610,8 +622,7 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
     {
         txiter it = mapTx.find(tx->GetHash());
         if (it != mapTx.end()) {
-            setEntries stage;
-            stage.insert(it);
+            std::vector<txiter> stage{it};
             RemoveStaged(stage, true, MemPoolRemovalReason::BLOCK);
         }
         removeConflicts(*tx);
@@ -959,12 +970,20 @@ size_t CTxMemPool::DynamicMemoryUsage() const {
     return memusage::MallocUsage(sizeof(CTxMemPoolEntry) + 12 * sizeof(void*)) * mapTx.size() + memusage::DynamicUsage(mapNextTx) + memusage::DynamicUsage(mapDeltas) + memusage::DynamicUsage(mapLinks) + memusage::DynamicUsage(vTxHashes) + cachedInnerUsage;
 }
 
-void CTxMemPool::RemoveStaged(setEntries &stage, bool updateDescendants, MemPoolRemovalReason reason) {
+template<typename T>
+void CTxMemPool::RemoveStagedImpl(T &stage, bool updateDescendants, MemPoolRemovalReason reason) {
     AssertLockHeld(cs);
     UpdateForRemoveFromMempool(stage, updateDescendants);
     for (txiter it : stage) {
         removeUnchecked(it, reason);
     }
+}
+
+void CTxMemPool::RemoveStaged(std::vector<txiter> &stage, bool updateDescendants, MemPoolRemovalReason reason) {
+    RemoveStagedImpl(stage, updateDescendants, reason);
+}
+void CTxMemPool::RemoveStaged(setEntries &stage, bool updateDescendants, MemPoolRemovalReason reason) {
+    RemoveStagedImpl(stage, updateDescendants, reason);
 }
 
 int CTxMemPool::Expire(std::chrono::seconds time)
@@ -976,10 +995,12 @@ int CTxMemPool::Expire(std::chrono::seconds time)
         toremove.insert(mapTx.project<0>(it));
         it++;
     }
-    setEntries stage;
+    std::vector<txiter> stage;
     const uint64_t epoch = GetFreshEpoch();
     for (txiter removeit : toremove) {
-        CalculateDescendants(removeit, stage, epoch);
+        CalculateDescendantsVec(removeit, stage, epoch);
+        if (!removeit->already_touched(epoch))
+                stage.push_back(removeit);
     }
     RemoveStaged(stage, false, MemPoolRemovalReason::EXPIRY);
     return stage.size();
@@ -1079,8 +1100,9 @@ void CTxMemPool::TrimToSize(size_t sizelimit, std::vector<COutPoint>* pvNoSpends
         trackPackageRemoved(removed);
         maxFeeRateRemoved = std::max(maxFeeRateRemoved, removed);
 
-        setEntries stage;
-        CalculateDescendants(mapTx.project<0>(it), stage);
+        std::vector<txiter> stage;
+        CalculateDescendantsVec(mapTx.project<0>(it), stage);
+        stage.push_back(mapTx.project<0>(it));
         nTxnRemoved += stage.size();
 
         std::vector<CTransaction> txn;
