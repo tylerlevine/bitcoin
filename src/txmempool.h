@@ -361,26 +361,34 @@ class SaltedTxIterHasher
 {
     private:
         /** Salt */
-        const uint64_t k0, k1;
+        uint64_t k0, k1;
     public:
         SaltedTxIterHasher();
         size_t operator()(const It& it) const {
             return SipHashUint256(k0, k1, it->GetTx().GetHash());
         }
+        friend void swap(SaltedTxIterHasher& a, SaltedTxIterHasher& b) {
+            std::swap(a.k0, b.k0);
+            std::swap(a.k1, b.k1);
+        }
 };
 
 class SaltedTxidHasher
 {
-private:
-    /** Salt */
-    const uint64_t k0, k1;
+    private:
+        /** Salt */
+        uint64_t k0, k1;
 
-public:
-    SaltedTxidHasher();
+    public:
+        SaltedTxidHasher();
 
-    size_t operator()(const uint256& txid) const {
-        return SipHashUint256(k0, k1, txid);
-    }
+        size_t operator()(const uint256& txid) const {
+            return SipHashUint256(k0, k1, txid);
+        }
+        friend void swap(SaltedTxidHasher& a, SaltedTxidHasher& b) {
+            std::swap(a.k0, b.k0);
+            std::swap(a.k1, b.k1);
+        }
 };
 
 /**
@@ -463,7 +471,9 @@ private:
     CBlockPolicyEstimator* minerPolicyEstimator;
 
     uint64_t totalTxSize;      //!< sum of all mempool tx's virtual sizes. Differs from serialized tx size since witness data is discounted. Defined in BIP 141.
-    uint64_t cachedInnerUsage; //!< sum of dynamic memory usage of all the map elements (NOT the maps themselves)
+    uint64_t cachedInnerUsageNextTx; //!< sum of dynamic memory usage of mapNextTx interior elements
+    uint64_t cachedInnerUsageLinks; //!< sum of dynamic memory usage of mapLinks interior elements
+    uint64_t cachedInnerUsageEntries; //!< sum of dynamic memory usage of mapTx interior elements
 
     mutable int64_t lastRollingFeeUpdate;
     mutable bool blockSinceLastRollingFeeBump;
@@ -545,7 +555,7 @@ public:
     typedef std::set<txiter, CompareIteratorByHash> setEntries;
     typedef std::unordered_map<uint32_t, txiter> nextTxSet;
 
-    const setEntries & GetMemPoolParents(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    const setEntries* GetMemPoolParents(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
     const nextTxSet*  GetMemPoolChildren(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
     uint64_t CalculateDescendantMaximum(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 private:

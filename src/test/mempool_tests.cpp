@@ -537,7 +537,7 @@ BOOST_AUTO_TEST_CASE(MempoolSizeLimitTest)
         pool.addUnchecked(entry.Fee(1000LL).FromTx(tx5));
     pool.addUnchecked(entry.Fee(9000LL).FromTx(tx7));
 
-    pool.TrimToSize(pool.DynamicMemoryUsage() / 2); // should maximize mempool size by only removing 5/7
+    pool.TrimToSize((6*pool.DynamicMemoryUsage())/10); // should maximize mempool size by only removing 5/7
     BOOST_CHECK(pool.exists(tx4.GetHash()));
     BOOST_CHECK(!pool.exists(tx5.GetHash()));
     BOOST_CHECK(pool.exists(tx6.GetHash()));
