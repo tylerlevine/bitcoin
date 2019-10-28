@@ -234,8 +234,10 @@ int BlockAssembler::UpdatePackagesForAdded(const Iterable& alreadyAdded,
         // can't use external epoch to loop because we want to update
         // all descendants
         // No need to add self (it) because we would filter it from the loop
-        mempool.GetFreshEpoch();
-        mempool.CalculateDescendantsVec(it, descendants);
+        {
+            const auto epoch = mempool.GetFreshEpoch();
+            mempool.CalculateDescendantsVec(it, descendants);
+        } // release epoch guard just in case predicate uses epochs (it doesn't)
         // Insert all descendants (not yet in block) into the modified set
         for (CTxMemPool::txiter desc : descendants) {
             if (predicate(desc)) continue;

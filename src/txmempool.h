@@ -456,6 +456,7 @@ private:
     mutable bool blockSinceLastRollingFeeBump;
     mutable double rollingMinimumFeeRate; //!< minimum fee to get into the pool, decreases exponentially
     mutable uint64_t m_epoch;
+    mutable bool has_epoch_guard;
 
     void trackPackageRemoved(const CFeeRate& rate) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
@@ -754,9 +755,16 @@ private:
     void removeUnchecked(txiter entry, MemPoolRemovalReason reason) EXCLUSIVE_LOCKS_REQUIRED(cs);
 public:
     // This function mutates mutable state!
-    uint64_t GetFreshEpoch() const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    class EpochGuard {
+        const CTxMemPool& pool;
+        public:
+        EpochGuard(const CTxMemPool& in);
+        ~EpochGuard();
+    };
+    EpochGuard GetFreshEpoch() const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     bool already_touched(txiter it, uint64_t during) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        assert(has_epoch_guard);
         bool ret = it->m_epoch >= during;
         it->m_epoch = std::max(it->m_epoch, during);
         return ret;
@@ -765,6 +773,7 @@ public:
         return !it || already_touched(*it, during);
     }
     bool already_touched(txiter it) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        assert(has_epoch_guard);
         bool ret = it->m_epoch >= m_epoch;
         it->m_epoch = std::max(it->m_epoch, m_epoch);
         return ret;
