@@ -389,12 +389,12 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, vecEntries &ancestor
             mapTx.modify(newit, update_fee_delta(delta));
     }
 
-    // Update cachedInnerUsage to include contained transaction's usage.
+    // Update cachedInnerUsage* to include contained transaction's usage.
     // (When we update the entry for in-mempool parents, memory usage will be
     // further updated.)
-    cachedInnerUsage += entry.DynamicMemoryUsage();
-    cachedInnerUsage += memusage::DynamicUsage(entry.GetMemPoolParentsConst());
-    cachedInnerUsage += memusage::DynamicUsage(entry.GetMemPoolChildrenConst());
+    cachedInnerUsageEntry += entry.DynamicMemoryUsage();
+    cachedInnerUsageParents += memusage::DynamicUsage(entry.GetMemPoolParentsConst());
+    cachedInnerUsageChildren += memusage::DynamicUsage(entry.GetMemPoolChildrenConst());
 
     const CTransaction& tx = newit->GetTx();
     {
@@ -407,11 +407,11 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, vecEntries &ancestor
                     std::forward_as_tuple(1));
             auto& parents_children = (*it.first).second;
             // only count if we inserted something
-            if (it.second) cachedInnerUsage += memusage::DynamicUsage(parents_children);
+            if (it.second) cachedInnerUsageMapNextTx += memusage::DynamicUsage(parents_children);
             // conflicts must already be fully removed
-            cachedInnerUsage -= memusage::DynamicUsage(parents_children);
+            cachedInnerUsageMapNextTx -= memusage::DynamicUsage(parents_children);
             parents_children.emplace(tx.vin[i].prevout.n, newit);
-            cachedInnerUsage += memusage::DynamicUsage(parents_children);
+            cachedInnerUsageMapNextTx += memusage::DynamicUsage(parents_children);
             // Update ancestors with information about this tx
             auto maybe_it = GetIter(tx.vin[i].prevout.hash);
             if (!already_touched(maybe_it)) UpdateParent(newit, *maybe_it, true);
@@ -469,13 +469,13 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
         if (spends == mapNextTx.end()) continue;
         size_t delta = memusage::DynamicUsage(spends->second);
         if (spends->second.erase(txin.prevout.n)) {
-            cachedInnerUsage -= delta;
+            cachedInnerUsageMapNextTx -= delta;
             --cachedInnerMapNextTxSize;
             if (spends->second.empty()) {
                 mapNextTx.erase(spends);
             } else{
                 resize_if_savings(spends->second);
-                cachedInnerUsage += memusage::DynamicUsage(spends->second);
+                cachedInnerUsageMapNextTx += memusage::DynamicUsage(spends->second);
             }
         }
     }
@@ -490,8 +490,9 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
         vTxHashes.clear();
 
     totalTxSize -= it->GetTxSize();
-    cachedInnerUsage -= it->DynamicMemoryUsage();
-    cachedInnerUsage -= memusage::DynamicUsage(it->GetMemPoolParentsConst()) + memusage::DynamicUsage(it->GetMemPoolChildrenConst());
+    cachedInnerUsageEntry -= it->DynamicMemoryUsage();
+    cachedInnerUsageParents -= memusage::DynamicUsage(it->GetMemPoolParentsConst());
+    cachedInnerUsageChildren -= memusage::DynamicUsage(it->GetMemPoolChildrenConst());
     mapTx.erase(it);
     nTransactionsUpdated++;
     if (minerPolicyEstimator) {minerPolicyEstimator->removeTx(hash, false);}
@@ -663,7 +664,10 @@ void CTxMemPool::_clear()
     decltype(mapNextTx) tmp;
     std::swap(tmp, mapNextTx);
     totalTxSize = 0;
-    cachedInnerUsage = 0;
+    cachedInnerUsageEntry = 0;
+    cachedInnerUsageParents = 0;
+    cachedInnerUsageChildren = 0;
+    cachedInnerUsageMapNextTx = 0;
     cachedInnerMapNextTxSize = 0;
     lastRollingFeeUpdate = GetTime();
     blockSinceLastRollingFeeBump = false;
@@ -700,7 +704,10 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
     LogPrint(BCLog::MEMPOOL, "Checking mempool with %u transactions and %u inputs\n", (unsigned int)mapTx.size(), (unsigned int) cachedInnerMapNextTxSize);
 
     uint64_t checkTotal = 0;
-    uint64_t innerUsage = 0;
+    uint64_t innerUsageEntry = 0;
+    uint64_t innerUsageParents = 0;
+    uint64_t innerUsageChildren = 0;
+    uint64_t innerUsageMapNextTx = 0;
 
     CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(pcoins));
     const int64_t spendheight = GetSpendHeight(mempoolDuplicate);
@@ -709,9 +716,10 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
     for (indexed_transaction_set::const_iterator it = mapTx.begin(); it != mapTx.end(); it++) {
         unsigned int i = 0;
         checkTotal += it->GetTxSize();
-        innerUsage += it->DynamicMemoryUsage();
+        innerUsageEntry += it->DynamicMemoryUsage();
         const CTransaction& tx = it->GetTx();
-        innerUsage += memusage::DynamicUsage(it->GetMemPoolParentsConst()) + memusage::DynamicUsage(it->GetMemPoolChildrenConst());
+        innerUsageParents += memusage::DynamicUsage(it->GetMemPoolParentsConst());
+        innerUsageChildren += memusage::DynamicUsage(it->GetMemPoolChildrenConst());
         bool fDependsWait = false;
         {
         const auto epoch = GetFreshEpoch();
@@ -814,7 +822,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         }
     }
     for (auto parent : mapNextTx) {
-        innerUsage += memusage::DynamicUsage(parent.second);
+        innerUsageMapNextTx += memusage::DynamicUsage(parent.second);
         for (auto child : parent.second) {
             uint256 hash = child.second->GetTx().GetHash();
             indexed_transaction_set::const_iterator it2 = mapTx.find(hash);
@@ -824,7 +832,10 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
     }
 
     assert(totalTxSize == checkTotal);
-    assert(innerUsage == cachedInnerUsage);
+    assert(innerUsageEntry == cachedInnerUsageEntry);
+    assert(innerUsageParents == cachedInnerUsageParents);
+    assert(innerUsageChildren == cachedInnerUsageChildren);
+    assert(innerUsageMapNextTx == cachedInnerUsageMapNextTx);
 }
 
 bool CTxMemPool::CompareDepthAndScore(const uint256& hasha, const uint256& hashb)
@@ -1013,7 +1024,7 @@ bool CCoinsViewMemPool::GetCoin(const COutPoint &outpoint, Coin &coin) const {
 size_t CTxMemPool::DynamicMemoryUsage() const {
     LOCK(cs);
     // Estimate the overhead of mapTx to be 12 pointers + an allocation, as no exact formula for boost::multi_index_contained is implemented.
-    return memusage::MallocUsage(sizeof(CTxMemPoolEntry) + 12 * sizeof(void*)) * mapTx.size() + memusage::DynamicUsage(mapNextTx) + memusage::DynamicUsage(mapDeltas) + memusage::DynamicUsage(vTxHashes) + cachedInnerUsage;
+    return memusage::MallocUsage(sizeof(CTxMemPoolEntry) + 12 * sizeof(void*)) * mapTx.size() + memusage::DynamicUsage(mapNextTx) + memusage::DynamicUsage(mapDeltas) + memusage::DynamicUsage(vTxHashes) + cachedInnerUsageEntry + cachedInnerUsageParents + cachedInnerUsageChildren + cachedInnerUsageMapNextTx;
 }
 
 void CTxMemPool::RemoveStaged(vecEntries &stage, bool updateDescendants, MemPoolRemovalReason reason) {
@@ -1078,19 +1089,19 @@ static void resize_if_savings(CTxMemPoolEntry::relatives& relatives) {
 void CTxMemPool::UpdateChild(txiter entry, txiter child, bool add)
 {
     auto& children  = entry->GetMemPoolChildren();
-    cachedInnerUsage -= memusage::DynamicUsage(children);
+    cachedInnerUsageChildren -= memusage::DynamicUsage(children);
     if (add) children.insert(*child);
     else if (children.erase(*child)) resize_if_savings(children);
-    cachedInnerUsage += memusage::DynamicUsage(children);
+    cachedInnerUsageChildren += memusage::DynamicUsage(children);
 }
 
 void CTxMemPool::UpdateParent(txiter entry, txiter parent, bool add)
 {
     auto& parents  = entry->GetMemPoolParents();
-    cachedInnerUsage -= memusage::DynamicUsage(parents);
+    cachedInnerUsageParents -= memusage::DynamicUsage(parents);
     if (add) parents.insert(*parent);
     else if (parents.erase(*parent)) resize_if_savings(parents);
-    cachedInnerUsage += memusage::DynamicUsage(parents);
+    cachedInnerUsageParents += memusage::DynamicUsage(parents);
 }
 
 CFeeRate CTxMemPool::GetMinFee(size_t sizelimit) const {

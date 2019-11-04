@@ -514,8 +514,11 @@ private:
     CBlockPolicyEstimator* minerPolicyEstimator;
 
     uint64_t totalTxSize;      //!< sum of all mempool tx's virtual sizes. Differs from serialized tx size since witness data is discounted. Defined in BIP 141.
-    uint64_t cachedInnerUsage; //!< sum of dynamic memory usage of all the map elements (NOT the maps themselves)
-    uint64_t cachedInnerMapNextTxSize = 0;
+    uint64_t cachedInnerUsageEntry; //!< sum of dynamic memory usage of all the parent map elements (NOT the maps themselves)
+    uint64_t cachedInnerUsageParents; //!< sum of dynamic memory usage of all the parent map elements (NOT the maps themselves)
+    uint64_t cachedInnerUsageChildren; //!< sum of dynamic memory usage of all the children map elements (NOT the maps themselves)
+    uint64_t cachedInnerUsageMapNextTx; //!< sum of dynamic memory usage of all the mapNextTx map elements (NOT the maps themselves)
+    uint64_t cachedInnerMapNextTxSize; //!< count of number of UTXOs mapped in mapNextTx
 
     mutable int64_t lastRollingFeeUpdate;
     mutable bool blockSinceLastRollingFeeBump;
