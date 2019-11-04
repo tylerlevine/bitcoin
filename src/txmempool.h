@@ -65,9 +65,41 @@ struct CompareIteratorByHashGeneric {
 };
 
 struct EqualIteratorByHash {
+    // SFINAE for a is a pointer or a reference
+    template<typename T>
+    bool operator()(const std::reference_wrapper<T> &a, const std::reference_wrapper<T> &b) const {
+        return a.get().GetTx().GetHash() == b.get().GetTx().GetHash();
+    }
     template<typename T>
     bool operator()(const T &a, const T &b) const {
         return a->GetTx().GetHash() == b->GetTx().GetHash();
+    }
+};
+
+class SaltedTxidHasher
+{
+private:
+    /** Salt */
+    mutable uint64_t k0, k1;
+public:
+    SaltedTxidHasher();
+
+    size_t operator()(const uint256& txid) const {
+        return SipHashUint256(k0, k1, txid);
+    }
+    template<typename T>
+    size_t operator()(const std::reference_wrapper<T>& it) const {
+        return SipHashUint256(k0, k1, it.get().GetTx().GetHash());
+    }
+    template<typename It>
+    size_t operator()(const It& it) const {
+        return SipHashUint256(k0, k1, it->GetTx().GetHash());
+    }
+
+    // allows swapping tables
+    friend void swap(SaltedTxidHasher& a, SaltedTxidHasher& b) {
+        std::swap(a.k0, b.k0);
+        std::swap(a.k1, b.k1);
     }
 };
 
@@ -87,7 +119,7 @@ class CTxMemPoolEntry
 {
 public:
     typedef std::reference_wrapper<const CTxMemPoolEntry> CTxMemPoolEntryRef;
-    typedef std::set<CTxMemPoolEntryRef, CompareIteratorByHashGeneric> relatives;
+    typedef std::unordered_set<CTxMemPoolEntryRef, SaltedTxidHasher, EqualIteratorByHash> relatives;
 private:
     const CTransactionRef tx;
     mutable relatives parents;
@@ -387,22 +419,6 @@ enum class MemPoolRemovalReason {
     REPLACED,    //!< Removed for replacement
 };
 
-class SaltedTxidHasher
-{
-private:
-    /** Salt */
-    const uint64_t k0, k1;
-public:
-    SaltedTxidHasher();
-
-    size_t operator()(const uint256& txid) const {
-        return SipHashUint256(k0, k1, txid);
-    }
-    template<typename It>
-    size_t operator()(const It& it) const {
-        return SipHashUint256(k0, k1, it->GetTx().GetHash());
-    }
-};
 
 /**
  * CTxMemPool stores valid-according-to-the-current-best-chain transactions

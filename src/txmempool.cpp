@@ -657,7 +657,10 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         const CTransaction& tx = it->GetTx();
         innerUsage += memusage::DynamicUsage(it->GetMemPoolParentsConst()) + memusage::DynamicUsage(it->GetMemPoolChildrenConst());
         bool fDependsWait = false;
-        CTxMemPoolEntry::relatives setParentCheck;
+        {
+        const auto epoch = GetFreshEpoch();
+        const CTxMemPoolEntry::relatives& parents = it->GetMemPoolParentsConst();
+        size_t n_parents_to_check = parents.size();
         for (const CTxIn &txin : tx.vin) {
             // Check that every mempool transaction's inputs refer to available coins, or other mempool tx's.
             indexed_transaction_set::const_iterator it2 = mapTx.find(txin.prevout.hash);
@@ -665,7 +668,10 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
                 const CTransaction& tx2 = it2->GetTx();
                 assert(tx2.vout.size() > txin.prevout.n && !tx2.vout[txin.prevout.n].IsNull());
                 fDependsWait = true;
-                setParentCheck.insert(*it2);
+                if (!already_touched(it2)) {
+                    assert(parents.count(*it2));
+                    --n_parents_to_check;
+                }
             } else {
                 assert(pcoins->HaveCoin(txin.prevout));
             }
@@ -676,12 +682,12 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
             assert(it3->second == it);
             i++;
         }
-        const auto rel_eq = [](const CTxMemPoolEntry::relatives& one, const CTxMemPoolEntry::relatives& two) -> bool {
-            const auto eq = [](const std::reference_wrapper<const CTxMemPoolEntry>& a,
-                        const std::reference_wrapper<const CTxMemPoolEntry>& b) -> bool { return &(a.get()) == &(b.get()); };
-            return one.size() == two.size() && std::equal(one.cbegin(), one.cend(), two.cbegin(), eq);
-        };
-        assert(rel_eq(setParentCheck, it->GetMemPoolParentsConst()));
+        // the above asserts imply that every element from tx.vin was in parents
+        // the below assert implies that there were exactly parents.size() unique elements
+        // which together, imply that the sets are equal
+        assert(n_parents_to_check == 0);
+        } // release epoch guard
+
         // Verify ancestor state is correct.
         vecEntries ancestors;
         uint64_t nNoLimit = std::numeric_limits<uint64_t>::max();
@@ -704,17 +710,27 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         assert(it->GetModFeesWithAncestors() == nFeesCheck);
 
         // Check children against mapNextTx
-        CTxMemPoolEntry::relatives setChildrenCheck;
         auto iter = mapNextTx.lower_bound(COutPoint(it->GetTx().GetHash(), 0));
         uint64_t child_sizes = 0;
+        {
+        const auto epoch = GetFreshEpoch();
+        const CTxMemPoolEntry::relatives& children = it->GetMemPoolChildrenConst();
+        size_t n_children_to_check = children.size();
         for (; iter != mapNextTx.end() && iter->first->hash == it->GetTx().GetHash(); ++iter) {
             txiter childit = mapTx.find(iter->second->GetTx().GetHash());
             assert(childit != mapTx.end()); // mapNextTx points to in-mempool transactions
-            if (setChildrenCheck.insert(*childit).second) {
+            if (!already_touched(childit)) {
                 child_sizes += childit->GetTxSize();
+                assert(children.count(*childit));
+                --n_children_to_check;
             }
         }
-        assert(rel_eq(setChildrenCheck, it->GetMemPoolChildren()));
+        // the above asserts imply that every element from mapNextTx was in children
+        // the below assert implies that there were exactly children.size() unique elements
+        // which together, imply that the sets are equal
+        assert(n_children_to_check == 0);
+        } // release epoch guard
+
         // Also check to make sure size is greater than sum with immediate children.
         // just a sanity check, not definitive that this calc is correct...
         assert(it->GetSizeWithDescendants() >= child_sizes + it->GetTxSize());
@@ -970,25 +986,45 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, bool validFeeEstimat
     CalculateMemPoolAncestors(entry, ancestors, nNoLimit, nNoLimit, nNoLimit, nNoLimit, dummy);
     return addUnchecked(entry, ancestors, validFeeEstimate);
 }
-
+static void resize_if_savings(CTxMemPoolEntry::relatives& relatives) {
+    // This is still O(N) if resizing while erasing O(N) elements because
+    // we'll erase N/2 elements, then rehash for cost of O(N/2)
+    // then erase N/4 elements, then rehash for a cost of O(N/4)
+    // TODO: batching can be made much more efficient
+    assert(relatives.max_load_factor() == 1);
+    // If we're at 0, clear out the map
+    if (relatives.size() == 0) {
+        CTxMemPoolEntry::relatives tmp;
+        std::swap(tmp, relatives);
+        return;
+    }
+    // don't bother saving for small enough sets
+    // 19 buckets isn't very large, and fits in with the usual
+    // prime rehash policies
+    if (relatives.bucket_count() <= 19) return;
+    // don't bother rehashing if we're more than half full
+    const size_t full_size = relatives.bucket_count();
+    if (relatives.size() > full_size/2) return;
+    // OSX doesn't support make_move_iterator for a reference_wrapper
+    CTxMemPoolEntry::relatives tmp{relatives.begin(), relatives.end(), relatives.size()};
+    std::swap(tmp, relatives);
+}
 void CTxMemPool::UpdateChild(txiter entry, txiter child, bool add)
 {
-    setEntries s;
-    if (add && entry->GetMemPoolChildren().insert(*child).second) {
-        cachedInnerUsage += memusage::IncrementalDynamicUsage(s);
-    } else if (!add && entry->GetMemPoolChildren().erase(*child)) {
-        cachedInnerUsage -= memusage::IncrementalDynamicUsage(s);
-    }
+    auto& children  = entry->GetMemPoolChildren();
+    cachedInnerUsage -= memusage::DynamicUsage(children);
+    if (add) children.insert(*child);
+    else if (children.erase(*child)) resize_if_savings(children);
+    cachedInnerUsage += memusage::DynamicUsage(children);
 }
 
 void CTxMemPool::UpdateParent(txiter entry, txiter parent, bool add)
 {
-    setEntries s;
-    if (add && entry->GetMemPoolParents().insert(*parent).second) {
-        cachedInnerUsage += memusage::IncrementalDynamicUsage(s);
-    } else if (!add && entry->GetMemPoolParents().erase(*parent)) {
-        cachedInnerUsage -= memusage::IncrementalDynamicUsage(s);
-    }
+    auto& parents  = entry->GetMemPoolParents();
+    cachedInnerUsage -= memusage::DynamicUsage(parents);
+    if (add) parents.insert(*parent);
+    else if (parents.erase(*parent)) resize_if_savings(parents);
+    cachedInnerUsage += memusage::DynamicUsage(parents);
 }
 
 CFeeRate CTxMemPool::GetMinFee(size_t sizelimit) const {
