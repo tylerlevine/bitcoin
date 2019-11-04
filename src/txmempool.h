@@ -501,6 +501,7 @@ private:
 
     uint64_t totalTxSize;      //!< sum of all mempool tx's virtual sizes. Differs from serialized tx size since witness data is discounted. Defined in BIP 141.
     uint64_t cachedInnerUsage; //!< sum of dynamic memory usage of all the map elements (NOT the maps themselves)
+    uint64_t cachedInnerMapNextTxSize = 0;
 
     mutable int64_t lastRollingFeeUpdate;
     mutable bool blockSinceLastRollingFeeBump;
@@ -593,7 +594,9 @@ private:
     std::vector<indexed_transaction_set::const_iterator> GetSortedDepthAndScore() const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
 public:
-    indirectmap<COutPoint, const txiter> mapNextTx GUARDED_BY(cs);
+    // N.B.: because unordered_node<std::pair<uint32_t, txiter>> is 4 bytes then 8 bytes then 8 bytes for pointer, we end up
+    // with 24 bytes rather than 20 bytes. Perhaps these extra 4 bytes in a map are useful sometime down the line.
+    std::unordered_map<uint256, std::unordered_map<uint32_t, const txiter>, SaltedTxidHasher> mapNextTx GUARDED_BY(cs);
     std::map<uint256, CAmount> mapDeltas;
 
     /** Create a new CTxMemPool.
