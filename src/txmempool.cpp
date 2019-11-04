@@ -946,22 +946,20 @@ int CTxMemPool::Expire(std::chrono::seconds time)
 {
     AssertLockHeld(cs);
     indexed_transaction_set::index<entry_time>::type::iterator it = mapTx.get<entry_time>().begin();
-    setEntries toremove;
-    while (it != mapTx.get<entry_time>().end() && it->GetTime() < time) {
-        toremove.insert(mapTx.project<0>(it));
-        it++;
-    }
-    vecEntries stage;
+    vecEntries tx_to_remove;
     {
         const auto epoch = GetFreshEpoch();
-        for (txiter removeit : toremove) {
-            CalculateDescendantsVec(removeit, stage);
-            if (!already_touched(removeit))
-                stage.push_back(removeit);
+        while (it != mapTx.get<entry_time>().end() && it->GetTime() < time) {
+            auto hashed_it = mapTx.project<0>(it);
+            if (!already_touched(hashed_it)) tx_to_remove.emplace_back(hashed_it);
+            it++;
+        }
+        for (size_t idx = 0; idx < tx_to_remove.size(); ++idx) {
+            CalculateDescendantsVec(tx_to_remove[idx], tx_to_remove);
         }
     } // release epoch guard for RemoveStaged
-    RemoveStaged(stage, false, MemPoolRemovalReason::EXPIRY);
-    return stage.size();
+    RemoveStaged(tx_to_remove, false, MemPoolRemovalReason::EXPIRY);
+    return tx_to_remove.size();
 }
 
 void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, bool validFeeEstimate)
@@ -1072,24 +1070,48 @@ void CTxMemPool::TrimToSize(size_t sizelimit, std::vector<COutPoint>* pvNoSpends
     }
 }
 
+// CalculateDescendantMaximum needs to allocate something somewhere for traversal because we can't track state otherwise
+// This optimized version re-uses our stack variable in the special case we have exactly one parent.
+// If there is exactly one parent going all the way up, this function is cheap / allocation free
+// If there is not, we're still agressive about not putting data onto the heap
 uint64_t CTxMemPool::CalculateDescendantMaximum(txiter entry) const {
     // find parent with highest descendant count
+    const auto epoch = GetFreshEpoch();
     std::vector<std::reference_wrapper<const CTxMemPoolEntry>> candidates;
-    setEntries counted;
-    candidates.push_back(*entry);
     uint64_t maximum = 0;
-    while (candidates.size()) {
-        const CTxMemPoolEntry& candidate = candidates.back();
-        candidates.pop_back();
-        if (!counted.insert(mapTx.iterator_to(candidate)).second) continue;
-        const CTxMemPoolEntry::relatives& parents = candidate.GetMemPoolParentsConst();
+    std::reference_wrapper<const CTxMemPoolEntry> candidate = *entry;
+    while (true) {
+        const CTxMemPoolEntry::relatives& parents = candidate.get().GetMemPoolParentsConst();
         if (parents.size() == 0) {
-            maximum = std::max(maximum, candidate.GetCountWithDescendants());
-        } else {
+            maximum = std::max(maximum, candidate.get().GetCountWithDescendants());
+        } else if (parents.size() == 1) {
+            // in the special case where we only have one
+            // parent for this entry, we do not need to put
+            // it onto the heap
+            candidate = *parents.begin();
+            // if this is a good one to walk, do it now
+            if (!already_touched(mapTx.iterator_to(candidate))) continue;
+        } else{
+            bool found_one_already = false;
             for (const auto& i : parents) {
-                candidates.push_back(i);
+                if (already_touched(mapTx.iterator_to(i))) continue;
+                // if we find one, make it the next one
+                // if we find more than one, queue them
+                if (!found_one_already) {
+                    candidate = i;
+                } else {
+                    candidates.emplace_back(i);
+                }
+                found_one_already = true;
             }
+            // if we found one, walk it now
+            if (found_one_already) continue;
         }
+        // Break if nothing left to do
+        if (candidates.empty()) break;
+        // remove one from heap
+        candidate = candidates.back();
+        candidates.pop_back();
     }
     return maximum;
 }
