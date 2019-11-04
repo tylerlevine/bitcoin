@@ -76,6 +76,20 @@ struct EqualIteratorByHash {
     }
 };
 
+class SaltedUInt32Hasher
+{
+private:
+    uint64_t a;
+public:
+    SaltedUInt32Hasher();
+    // the std::hash<uint32_t> returns
+    // the integer itself, so it's fine that
+    // we're up-casting a uint32_t here
+    size_t operator()(const uint32_t x) const {
+        return HalfSipHashUint32(a,x);
+    }
+};
+
 class SaltedTxidHasher
 {
 private:
@@ -596,7 +610,7 @@ private:
 public:
     // N.B.: because unordered_node<std::pair<uint32_t, txiter>> is 4 bytes then 8 bytes then 8 bytes for pointer, we end up
     // with 24 bytes rather than 20 bytes. Perhaps these extra 4 bytes in a map are useful sometime down the line.
-    std::unordered_map<uint256, std::unordered_map<uint32_t, const txiter>, SaltedTxidHasher> mapNextTx GUARDED_BY(cs);
+    std::unordered_map<uint256, std::unordered_map<uint32_t, const txiter, SaltedUInt32Hasher>, SaltedTxidHasher> mapNextTx GUARDED_BY(cs);
     std::map<uint256, CAmount> mapDeltas;
 
     /** Create a new CTxMemPool.
