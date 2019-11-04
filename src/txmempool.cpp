@@ -140,21 +140,19 @@ void CTxMemPool::UpdateTransactionsFromBlock(const std::vector<uint256> &vHashes
         if (it == mapTx.end()) {
             continue;
         }
-        auto iter = mapNextTx.lower_bound(COutPoint(hash, 0));
+        auto childIter = mapNextTx.lower_bound(COutPoint(hash, 0));
         // First calculate the children, and update setMemPoolChildren to
         // include them, and update their setMemPoolParents to include this tx.
         // we cache the in-mempool children to avoid duplicate updates
         {
             const auto epoch = GetFreshEpoch();
-            for (; iter != mapNextTx.end() && iter->first->hash == hash; ++iter) {
-                const uint256 &childHash = iter->second->GetHash();
-                txiter childIter = mapTx.find(childHash);
-                assert(childIter != mapTx.end());
+            for (; childIter != mapNextTx.end() && childIter->first->hash == hash; ++childIter) {
+                const uint256 &childHash = childIter->second->GetTx().GetHash();
                 // We can skip updating entries we've encountered before or that
                 // are in the block (which are already accounted for).
-                if (!already_touched(childIter) && !setAlreadyIncluded.count(childHash)) {
-                    UpdateChild(it, childIter, true);
-                    UpdateParent(childIter, it, true);
+                if (!already_touched(childIter->second) && !setAlreadyIncluded.count(childHash)) {
+                    UpdateChild(it, childIter->second, true);
+                    UpdateParent(childIter->second, it, true);
                 }
             }
         } // release epoch guard for UpdateForDescendants
@@ -396,7 +394,7 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, vecEntries &ancestor
     {
         const auto epoch = GetFreshEpoch();
         for (unsigned int i = 0; i < tx.vin.size(); i++) {
-            mapNextTx.insert(std::make_pair(&tx.vin[i].prevout, &tx));
+            mapNextTx.insert(std::make_pair(&tx.vin[i].prevout, newit));
             // Update ancestors with information about this tx
             auto maybe_it = GetIter(tx.vin[i].prevout.hash);
             if (!already_touched(maybe_it)) UpdateParent(newit, *maybe_it, true);
@@ -490,13 +488,11 @@ void CTxMemPool::removeRecursive(const CTransaction &origTx, MemPoolRemovalReaso
             // happen during chain re-orgs if origTx isn't re-accepted into
             // the mempool for any reason.
             for (unsigned int i = 0; i < origTx.vout.size(); i++) {
-                auto it = mapNextTx.find(COutPoint(origTx.GetHash(), i));
-                if (it == mapNextTx.end())
+                auto nextit = mapNextTx.find(COutPoint(origTx.GetHash(), i));
+                if (nextit == mapNextTx.end())
                     continue;
-                txiter nextit = mapTx.find(it->second->GetHash());
-                assert(nextit != mapTx.end());
-                if (already_touched(nextit)) continue;
-                txToRemove.push_back(nextit);
+                if (already_touched(nextit->second)) continue;
+                txToRemove.push_back(nextit->second);
             }
         }
         // max_idx is used rather than iterator because txToRemove may grow
@@ -566,7 +562,7 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
     for (const CTxIn &txin : tx.vin) {
         auto it = mapNextTx.find(txin.prevout);
         if (it != mapNextTx.end()) {
-            const CTransaction &txConflict = *it->second;
+            const CTransaction &txConflict = it->second->GetTx();
             if (txConflict != tx)
             {
                 ClearPrioritisation(txConflict.GetHash());
@@ -677,7 +673,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
             auto it3 = mapNextTx.find(txin.prevout);
             assert(it3 != mapNextTx.end());
             assert(it3->first == &txin.prevout);
-            assert(it3->second == &tx);
+            assert(it3->second == it);
             i++;
         }
         const auto rel_eq = [](const CTxMemPoolEntry::relatives& one, const CTxMemPoolEntry::relatives& two) -> bool {
@@ -712,7 +708,7 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         auto iter = mapNextTx.lower_bound(COutPoint(it->GetTx().GetHash(), 0));
         uint64_t child_sizes = 0;
         for (; iter != mapNextTx.end() && iter->first->hash == it->GetTx().GetHash(); ++iter) {
-            txiter childit = mapTx.find(iter->second->GetHash());
+            txiter childit = mapTx.find(iter->second->GetTx().GetHash());
             assert(childit != mapTx.end()); // mapNextTx points to in-mempool transactions
             if (setChildrenCheck.insert(*childit).second) {
                 child_sizes += childit->GetTxSize();
@@ -743,11 +739,10 @@ void CTxMemPool::check(const CCoinsViewCache *pcoins) const
         }
     }
     for (auto it = mapNextTx.cbegin(); it != mapNextTx.cend(); it++) {
-        uint256 hash = it->second->GetHash();
+        uint256 hash = it->second->GetTx().GetHash();
         indexed_transaction_set::const_iterator it2 = mapTx.find(hash);
-        const CTransaction& tx = it2->GetTx();
         assert(it2 != mapTx.end());
-        assert(&tx == it->second);
+        assert(it2 == it->second);
     }
 
     assert(totalTxSize == checkTotal);
@@ -894,10 +889,10 @@ void CTxMemPool::ClearPrioritisation(const uint256 hash)
     mapDeltas.erase(hash);
 }
 
-const CTransaction* CTxMemPool::GetConflictTx(const COutPoint& prevout) const
+const Optional<CTxMemPool::txiter> CTxMemPool::GetConflictTx(const COutPoint& prevout) const
 {
     const auto it = mapNextTx.find(prevout);
-    return it == mapNextTx.end() ? nullptr : it->second;
+    return it == mapNextTx.end() ?  Optional<txiter>{} : Optional<txiter>{it->second};
 }
 
 Optional<CTxMemPool::txiter> CTxMemPool::GetIter(const uint256& txid) const
@@ -905,16 +900,6 @@ Optional<CTxMemPool::txiter> CTxMemPool::GetIter(const uint256& txid) const
     auto it = mapTx.find(txid);
     if (it != mapTx.end()) return it;
     return Optional<txiter>{};
-}
-
-CTxMemPool::setEntries CTxMemPool::GetIterSet(const std::set<uint256>& hashes) const
-{
-    CTxMemPool::setEntries ret;
-    for (const auto& h : hashes) {
-        const auto mi = GetIter(h);
-        if (mi) ret.insert(*mi);
-    }
-    return ret;
 }
 
 bool CTxMemPool::HasNoInputsOf(const CTransaction &tx) const
