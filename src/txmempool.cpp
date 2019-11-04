@@ -1074,46 +1074,60 @@ void CTxMemPool::TrimToSize(size_t sizelimit, std::vector<COutPoint>* pvNoSpends
 // This optimized version re-uses our stack variable in the special case we have exactly one parent.
 // If there is exactly one parent going all the way up, this function is cheap / allocation free
 // If there is not, we're still agressive about not putting data onto the heap
+// We also use recursion where possible to allocate on the stack instead of heap
+uint64_t CTxMemPool::CalculateDescendantMaximumInner(std::reference_wrapper<const CTxMemPoolEntry> candidate,
+        std::vector<std::reference_wrapper<const CTxMemPoolEntry>>& candidates, uint64_t maximum, uint8_t limit) const {
+    bool have_one_to_do = true;
+    while (have_one_to_do) {
+        have_one_to_do = false;
+        const CTxMemPoolEntry::relatives& parents = candidate.get().GetMemPoolParentsConst();
+        switch(parents.size()) {
+            case 0:
+                maximum = std::max(maximum, candidate.get().GetCountWithDescendants());
+                break;
+            case 1:
+                // in the special case where we only have one
+                // parent for this entry, we do not need to put
+                // it onto the heap or stack
+                candidate = *parents.begin();
+                // if this one has already been walked we won't increase the maximum
+                if (already_touched(mapTx.iterator_to(candidate))) return maximum;
+                // We *could* recurse here, but then we are subject to the compiler's
+                // choice of TCO. So instead, we re-start the loop
+                have_one_to_do = true;
+                break;
+            default:
+                for (const auto& i : parents) {
+                    // skip if we've seen it already
+                    if (already_touched(mapTx.iterator_to(i))) continue;
+                    // first one we find, make it the next one
+                    else if (!have_one_to_do) candidate = i;
+                    // if we find more than one and can recurse, recurse
+                    else if (limit != 0) maximum = CalculateDescendantMaximumInner(i, candidates, maximum, limit-1);
+                    // if we find more than one and cannot recurse, queue them
+                    else candidates.emplace_back(i);
+
+                    have_one_to_do = true;
+                }
+                break;
+        };
+    }
+    return maximum;
+}
 uint64_t CTxMemPool::CalculateDescendantMaximum(txiter entry) const {
     // find parent with highest descendant count
     const auto epoch = GetFreshEpoch();
     std::vector<std::reference_wrapper<const CTxMemPoolEntry>> candidates;
-    uint64_t maximum = 0;
     std::reference_wrapper<const CTxMemPoolEntry> candidate = *entry;
-    while (true) {
-        const CTxMemPoolEntry::relatives& parents = candidate.get().GetMemPoolParentsConst();
-        if (parents.size() == 0) {
-            maximum = std::max(maximum, candidate.get().GetCountWithDescendants());
-        } else if (parents.size() == 1) {
-            // in the special case where we only have one
-            // parent for this entry, we do not need to put
-            // it onto the heap
-            candidate = *parents.begin();
-            // if this is a good one to walk, do it now
-            if (!already_touched(mapTx.iterator_to(candidate))) continue;
-        } else{
-            bool found_one_already = false;
-            for (const auto& i : parents) {
-                if (already_touched(mapTx.iterator_to(i))) continue;
-                // if we find one, make it the next one
-                // if we find more than one, queue them
-                if (!found_one_already) {
-                    candidate = i;
-                } else {
-                    candidates.emplace_back(i);
-                }
-                found_one_already = true;
-            }
-            // if we found one, walk it now
-            if (found_one_already) continue;
-        }
+    uint64_t maximum = 0;
+    do {
+        maximum = CalculateDescendantMaximumInner(candidate, candidates, maximum, 25);
         // Break if nothing left to do
-        if (candidates.empty()) break;
+        if (candidates.empty()) return maximum;
         // remove one from heap
         candidate = candidates.back();
         candidates.pop_back();
-    }
-    return maximum;
+    } while (true);
 }
 
 void CTxMemPool::GetTransactionAncestry(const uint256& txid, size_t& ancestors, size_t& descendants) const {

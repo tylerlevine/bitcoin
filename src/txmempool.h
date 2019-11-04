@@ -565,6 +565,8 @@ public:
 
     uint64_t CalculateDescendantMaximum(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 private:
+    uint64_t CalculateDescendantMaximumInner(std::reference_wrapper<const CTxMemPoolEntry> candidate,
+            std::vector<std::reference_wrapper<const CTxMemPoolEntry>>& candidates, uint64_t maximum, uint8_t limit) const EXCLUSIVE_LOCKS_REQUIRED(cs);
     typedef std::unordered_map<txiter, std::vector<txiter>, SaltedTxidHasher, EqualIteratorByHash> cacheMap;
 
 
