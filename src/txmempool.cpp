@@ -57,7 +57,7 @@ size_t CTxMemPoolEntry::GetTxSize() const
 // Assumes that setMemPoolChildren is correct for the given tx and all
 // descendants.
 //
-void CTxMemPool::UpdateForDescendants(txiter update_it, cacheMap& cache, const std::set<uint256>& exclude) {
+void CTxMemPool::UpdateForDescendants(txiter update_it, cacheMap& cache, const std::unordered_set<uint256, SaltedTxidHasher>& exclude) {
     const auto epoch = GetFreshEpoch();
     int64_t modify_size = 0;
     CAmount modify_fee = 0;
@@ -127,7 +127,7 @@ void CTxMemPool::UpdateTransactionsFromBlock(const std::vector<uint256> &vHashes
 
     // Use a set for lookups into vHashesToUpdate (these entries are already
     // accounted for in the state of their ancestors)
-    std::set<uint256> setAlreadyIncluded(vHashesToUpdate.begin(), vHashesToUpdate.end());
+    std::unordered_set<uint256, SaltedTxidHasher> setAlreadyIncluded(vHashesToUpdate.begin(), vHashesToUpdate.end());
 
     // Iterate in reverse, so that whenever we are looking at a transaction
     // we are sure that all in-mempool descendants have already been processed.

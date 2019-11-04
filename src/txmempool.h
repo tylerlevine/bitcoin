@@ -64,6 +64,13 @@ struct CompareIteratorByHashGeneric {
     }
 };
 
+struct EqualIteratorByHash {
+    template<typename T>
+    bool operator()(const T &a, const T &b) const {
+        return a->GetTx().GetHash() == b->GetTx().GetHash();
+    }
+};
+
 /** \class CTxMemPoolEntry
  *
  * CTxMemPoolEntry stores data about the corresponding transaction, as well
@@ -391,6 +398,10 @@ public:
     size_t operator()(const uint256& txid) const {
         return SipHashUint256(k0, k1, txid);
     }
+    template<typename It>
+    size_t operator()(const It& it) const {
+        return SipHashUint256(k0, k1, it->GetTx().GetHash());
+    }
 };
 
 /**
@@ -554,7 +565,7 @@ public:
 
     uint64_t CalculateDescendantMaximum(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 private:
-    typedef std::map<txiter, std::vector<txiter>, SaltedTxidHasher, EqualIteratorByHash> cacheMap;
+    typedef std::unordered_map<txiter, std::vector<txiter>, SaltedTxidHasher, EqualIteratorByHash> cacheMap;
 
 
 
@@ -737,7 +748,7 @@ private:
      */
     void UpdateForDescendants(txiter updateIt,
             cacheMap &cachedDescendants,
-            const std::set<uint256> &setExclude) EXCLUSIVE_LOCKS_REQUIRED(cs);
+            const std::unordered_set<uint256, SaltedTxidHasher> &setExclude) EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Update ancestors of hash to add/remove it as a descendant transaction. */
     void UpdateAncestorsOf(bool add, txiter hash, vecEntries &ancestors) EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Set ancestor state for an entry */
