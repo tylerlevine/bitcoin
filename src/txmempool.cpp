@@ -57,71 +57,60 @@ size_t CTxMemPoolEntry::GetTxSize() const
 // Assumes that setMemPoolChildren is correct for the given tx and all
 // descendants.
 //
-void CTxMemPool::UpdateForDescendantsInner(txiter param_it, txiter update_it, int64_t&size, CAmount&
-        fee, int64_t& count, cacheMap& cache, const std::set<uint256>& exclude, vecEntries&
-        stack, bool update_child_epochs, const uint8_t limit) {
-        const auto& direct_children = param_it->GetMemPoolChildrenConst();
-        for (const auto& p_it : direct_children) {
-            auto cit = mapTx.iterator_to(p_it);
-            if (update_child_epochs) already_touched(cit);
+void CTxMemPool::UpdateForDescendants(txiter update_it, cacheMap& cache, const std::set<uint256>& exclude) {
+    const auto epoch = GetFreshEpoch();
+    int64_t modify_size = 0;
+    CAmount modify_fee = 0;
+    int64_t modify_count = 0;
+    const CTxMemPoolEntry::relatives& direct_children = update_it->GetMemPoolChildrenConst();
+    std::vector<txiter> update_cache;
+    for (const CTxMemPoolEntry& direct_child : direct_children) {
+        const txiter t = mapTx.iterator_to(direct_child);
+        update_cache.emplace_back(t);
+        already_touched(t);
+    }
+    size_t already_traversed = 0;
+    while (already_traversed < update_cache.size()) {
+        // rotate to the front OR drop
+        const txiter child_it = update_cache.back();
+        const CTxMemPoolEntry& child = *child_it;
+        // Only put back in if we want it later for the cache
+        // & collect stats
+        if (exclude.count(child.GetTx().GetHash())) {
+            update_cache.pop_back();
+        } else {
+            std::swap(update_cache[already_traversed++], update_cache.back());
+            modify_size += child.GetTxSize();
+            modify_fee += child.GetModifiedFee();
+            modify_count++;
+            mapTx.modify(child_it, update_ancestor_state(update_it->GetTxSize(), update_it->GetModifiedFee(), 1, update_it->GetSigOpCost()));
 
-            // collect stats
-            if (!exclude.count(cit->GetTx().GetHash())) {
-                size += cit->GetTxSize();
-                fee += cit->GetModifiedFee();
-                count++;
-                cache[update_it].insert(cit);
-                // Update ancestor state for each descendant
-                mapTx.modify(cit, update_ancestor_state(update_it->GetTxSize(), update_it->GetModifiedFee(), 1, update_it->GetSigOpCost()));
-            }
+        }
 
-            const CTxMemPoolEntry::relatives &setChildren = cit->GetMemPoolChildrenConst();
-            for (const auto& pchildEntry : setChildren) {
-                auto childEntry = mapTx.iterator_to(pchildEntry);
-                if (already_touched(childEntry)) continue;
-                cacheMap::iterator cacheIt = cache.find(childEntry);
-                if (cacheIt != cache.end()) {
-                    // We've already calculated this one, just add the entries for this set
-                    // but don't traverse again.
-                    for (txiter cacheEntry : cacheIt->second) {
-                        if (already_touched(cacheEntry)) continue;
-                        if (exclude.count(cacheEntry->GetTx().GetHash())) continue;
-                        size += cacheEntry->GetTxSize();
-                        fee += cacheEntry->GetModifiedFee();
-                        count++;
-                        cache[update_it].insert(cacheEntry);
-                        // Update ancestor state for each descendant
-                        mapTx.modify(cacheEntry, update_ancestor_state(update_it->GetTxSize(), update_it->GetModifiedFee(), 1, update_it->GetSigOpCost()));
-                    }
-                } else if (limit == 0) {
-                    // Schedule for later processing, we're at the recursion limit
-                    stack.push_back(childEntry);
-                } else {
-                    UpdateForDescendantsInner(childEntry, update_it, size, fee, count, cache,
-                            exclude, stack, false, limit-1);
+        // N.B. grand_children may also be children
+        const CTxMemPoolEntry::relatives& grand_children = child.GetMemPoolChildrenConst();
+        for (const CTxMemPoolEntry& grand_child : grand_children) {
+            const txiter grand_child_it = mapTx.iterator_to(grand_child);
+            if (already_touched(grand_child_it)) continue;
+            cacheMap::iterator cached_great_grand_children = cache.find(grand_child_it);
+            if (cached_great_grand_children != cache.end()) {
+                for (const txiter great_grand_child : cached_great_grand_children->second) {
+                    if (already_touched(great_grand_child)) continue;
+                    // Not needed to check excluded-- if it's in the cache it's not excluded
+                    update_cache.emplace_back(great_grand_child);
+                    // place on the back and then swap into the already_traversed index
+                    // so we don't walk it ourselves
+                    std::swap(update_cache[already_traversed++], update_cache.back());
                 }
+            } else {
+                // Schedule for later processing
+                update_cache.emplace_back(grand_child_it);
             }
         }
-    };
-void CTxMemPool::UpdateForDescendants(txiter updateIt, cacheMap &cachedDescendants, const std::set<uint256> &setExclude)
-{
-    // Our children are natrually uniqueu
-    vecEntries stack;
-    const auto epoch = GetFreshEpoch();
-
-    int64_t modifySize = 0;
-    CAmount modifyFee = 0;
-    int64_t modifyCount = 0;
-
-    // Update and add to cached descendant map
-    bool first_pass = true;
-    auto next_it = updateIt;
-    do {
-        UpdateForDescendantsInner(next_it, updateIt, modifySize, modifyFee, modifyCount, cachedDescendants, setExclude, stack, first_pass);
-        first_pass = false;
-    } while (!stack.empty() && (next_it = stack.back(), stack.pop_back(), true));
-    mapTx.modify(updateIt, update_descendant_state(modifySize, modifyFee, modifyCount));
-}
+    }
+    if (!update_cache.empty()) cache.emplace(update_it, std::move(update_cache));
+    mapTx.modify(update_it, update_descendant_state(modify_size, modify_fee, modify_count));
+};
 
 // vHashesToUpdate is the set of transaction hashes from a disconnected block
 // which has been re-added to the mempool.
