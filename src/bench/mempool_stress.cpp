@@ -101,3 +101,64 @@ static void ComplexMemPool(benchmark::State& state) {
 
 BENCHMARK(ComplexMemPool, 1);
 BENCHMARK_ASYMPTOTE(ComplexMemPoolAsymptotic);
+
+
+static void ManyParentsAsymptotic(benchmark::State& state, const std::vector<size_t>* asymptotic_factors)
+{
+    const std::vector<size_t> DEFAULTS {};
+    const std::vector<size_t> scaling_factors = asymptotic_factors ? *asymptotic_factors : DEFAULTS;
+    size_t CHILD_TXS = 800;
+    size_t STARTING_TXS = 100;
+    size_t DESCENDANTS_COUNT_MAX = 10;
+    size_t ANCESTORS_COUNT_MAX = 10;
+    if (scaling_factors.size() > 0) CHILD_TXS = scaling_factors[0];
+    if (scaling_factors.size() > 1) STARTING_TXS = scaling_factors[1];
+    if (scaling_factors.size() > 2) DESCENDANTS_COUNT_MAX = scaling_factors[2];
+    if (scaling_factors.size() > 3) ANCESTORS_COUNT_MAX = scaling_factors[3];
+
+
+    std::vector<CTransactionRef> ordered_coins;
+    // Create some base transactions
+    size_t tx_counter = 1;
+    for (size_t x = 0; x < STARTING_TXS; ++x) {
+        CMutableTransaction tx = CMutableTransaction();
+        tx.vin.resize(1);
+        tx.vin[0].scriptSig = CScript() << CScriptNum(tx_counter);
+        tx.vin[0].scriptWitness.stack.push_back(CScriptNum(x).getvch());
+        tx.vout.resize(DESCENDANTS_COUNT_MAX);
+        for (auto& out : tx.vout) {
+            out.scriptPubKey = CScript() << CScriptNum(tx_counter) << OP_EQUAL;
+            out.nValue = 10 * COIN;
+        }
+        ordered_coins.emplace_back(MakeTransactionRef(tx));
+    }
+
+    CMutableTransaction tx = CMutableTransaction();
+
+    for (size_t idx = 0; idx < ordered_coins.size(); ++idx) {
+        for (size_t n_vin = 0; n_vin < ordered_coins[idx]->vin.size(); ++n_vin){
+            tx.vin.emplace_back();
+            tx.vin.back().prevout = COutPoint(ordered_coins[idx]->GetHash(), n_vin);
+            tx.vin.back().scriptSig = CScript() << idx;
+            tx.vin.back().scriptWitness.stack.push_back(CScriptNum(idx).getvch());
+        }
+    }
+
+    CTxMemPool pool;
+    LOCK2(cs_main, pool.cs);
+    for (auto& parent_tx : ordered_coins) {
+        AddTx(parent_tx, pool);
+    }
+    ordered_coins.emplace_back(MakeTransactionRef(tx));
+    // clear memory!
+    std::vector<CTransactionRef> clr;
+    std::swap(clr, ordered_coins);
+    auto txref = MakeTransactionRef(tx);
+    while (state.KeepRunning()) {
+        AddTx(txref, pool);
+        CTxMemPool::setEntries set = {*pool.GetIter(txref->GetHash())};
+        pool.RemoveStaged(set, false, MemPoolRemovalReason::EXPIRY);
+    }
+}
+
+BENCHMARK_ASYMPTOTE(ManyParentsAsymptotic);
