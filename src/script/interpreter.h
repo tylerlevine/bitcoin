@@ -119,6 +119,10 @@ enum
     // support OP_CHECKTEMPLATEVERIFY for standard template
     //
     SCRIPT_VERIFY_STANDARD_TEMPLATE = (1U << 17),
+
+    // support OP_CHECKTEMPLATEVERIFY for standard template, even if data is not constexpr
+    //
+    SCRIPT_VERIFY_STRICT_STANDARD_TEMPLATE = (1U << 18),
 };
 
 bool CheckSignatureEncoding(const std::vector<unsigned char> &vchSig, unsigned int flags, ScriptError* serror);

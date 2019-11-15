@@ -484,24 +484,33 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     //
                     // This also allows an eventual soft-fork to remove the constexpr check
                     // altogether, if shown to be safe to pass in the template parameters.
-                    if (!top_of_stack_is_constexpr) {
+                    const bool treat_as_nop = !(top_of_stack_is_constexpr ||
+                                               ((flags & SCRIPT_VERIFY_STRICT_STANDARD_TEMPLATE) && !stack.empty()));
+                    if (treat_as_nop) {
                         if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
                             return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
                         break;
                     }
-                    // null stack should never be a constexpr...
+                    // null stack should never pass here
                     assert(stack.size() > 0);
                     // If the constexpr was not 32 bytes, treat as OP_NOP4:
                     //     future upgrade can add semantics for this opcode with different length args
-                    if (stack.back().size() != 32) {
+                    switch (stack.back().size()) {
+                    case 32:
+                    {
+                        // Check the Template Hash computed from the transaction matches the literal value
+                        // Success
+                        if (!checker.CheckStandardTemplateHash(stack.back()))
+                            return set_error(serror, SCRIPT_ERR_TEMPLATE_MISMATCH);
+                        break;
+                    }
+                    default:
+                    {
                         if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
                             return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
                         break;
                     }
-                    // Check the Template Hash computed from the transaction matches the literal value
-                    if (!checker.CheckStandardTemplateHash(stack.back())) return set_error(serror, SCRIPT_ERR_TEMPLATE_MISMATCH);
-                    // Success
-                    break;
+                    }
                 }
 
                 case OP_NOP1: case OP_NOP5:
