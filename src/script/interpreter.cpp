@@ -484,23 +484,34 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     //
                     // This also allows an eventual soft-fork to remove the constexpr check
                     // altogether, if shown to be safe to pass in the template parameters.
-                    if (!top_of_stack_is_constexpr) {
-                        if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
-                            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
-                        break;
+                    bool was_nop = stack.empty();
+                    if (!was_nop) {
+                        // If the data was not 32 bytes, treat as OP_NOP4:
+                        //     future upgrade can add semantics for this opcode with different length args
+                        switch (stack.back().size()) {
+                        case 32:
+                        {
+                            // only constexpr data is not treated as NOP
+                            was_nop |= !top_of_stack_is_constexpr;
+                            // don't check further if we were a NOP for consensus, and we don't want to check
+                            // for standardness rules
+                            if (was_nop && !(flags & SCRIPT_VERIFY_STRICT_STANDARD_TEMPLATE))
+                                break;
+                            // Check the Template Hash computed from the transaction matches the literal value
+                            if (!checker.CheckStandardTemplateHash(stack.back()))
+                                return set_error(serror, SCRIPT_ERR_TEMPLATE_MISMATCH);
+                            break; //! break to end of switch
+                        }
+                        default:
+                        {
+                            was_nop |= true;
+                            break; //! break to end of switch
+                        }
+                        } //! end switch
                     }
-                    // null stack should never be a constexpr...
-                    assert(stack.size() > 0);
-                    // If the constexpr was not 32 bytes, treat as OP_NOP4:
-                    //     future upgrade can add semantics for this opcode with different length args
-                    if (stack.back().size() != 32) {
-                        if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
-                            return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
-                        break;
-                    }
-                    // Check the Template Hash computed from the transaction matches the literal value
-                    if (!checker.CheckStandardTemplateHash(stack.back())) return set_error(serror, SCRIPT_ERR_TEMPLATE_MISMATCH);
-                    // Success
+
+                    if ((flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) && was_nop)
+                        return set_error(serror, SCRIPT_ERR_DISCOURAGE_UPGRADABLE_NOPS);
                     break;
                 }
 
