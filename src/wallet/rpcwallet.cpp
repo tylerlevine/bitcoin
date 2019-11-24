@@ -1077,7 +1077,7 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
         CAmount amount = calc_fee.GetFee(GetSerializeSize(tx));
         for (const auto& out : tx.vout) amount += out.nValue;
         const bool inserted = templates.emplace(hash, std::move(tx)).second;
-        assert(inserted); // is guaranteed to be unique
+        CHECK_NONFATAL(inserted); // is guaranteed to be unique
         vecSend.emplace_back(amount, CScript() << h_buff << OP_CHECKTEMPLATEVERIFY);
     }
     EnsureWalletIsUnlocked(&wallet);
