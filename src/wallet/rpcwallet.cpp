@@ -1219,7 +1219,7 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
 
     struct VaultTemplate {
         CMutableTransaction vault_to_vault, hot_to_hot, vault_to_cold, hot_to_cold;
-        CAmount fees = 0;
+        CAmount amount = 0;
         /*
          *                   [      vault_to_vault n  ]
          *                     |a                   |b
@@ -1268,33 +1268,44 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
 
             std::vector<unsigned char> h_buff(32);
             {
+                CScript vault_to_vault_redeem{};
                 vault_to_vault.vout[0].nValue = a+f;
-                fees += f;
+                amount += f + a;
                 // construct script
                 uint256 hash = GetStandardTemplateHash(hot_to_cold, 0);
                 std::memmove(h_buff.data(), hash.begin(), 32);
-                vault_to_vault.vout[0].scriptPubKey << OP_IF << h_buff << OP_ELSE;
+                vault_to_vault_redeem << OP_IF << h_buff << OP_ELSE;
                 hash = GetStandardTemplateHash(hot_to_hot, 0);
                 std::memmove(h_buff.data(), hash.begin(), 32);
-                vault_to_vault.vout[0].scriptPubKey << h_buff << OP_ENDIF << OP_CHECKTEMPLATEVERIFY;
-
+                vault_to_vault_redeem << h_buff << OP_ENDIF << OP_CHECKTEMPLATEVERIFY;
+                vault_to_vault.vout[0].scriptPubKey = GetScriptForWitness(vault_to_vault_redeem);
+                hot_to_cold.vin[0].scriptWitness.stack.push_back({1});
+                hot_to_cold.vin[0].scriptWitness.stack.push_back({vault_to_vault_redeem.begin(), vault_to_vault_redeem.end()});
+                hot_to_hot.vin[0].scriptWitness.stack.push_back({});
+                hot_to_hot.vin[0].scriptWitness.stack.push_back({vault_to_vault_redeem.begin(), vault_to_vault_redeem.end()});
 
             }
             if (b != 0 && vault_to_attach!=nullptr){
+                CScript vault_to_vault_redeem{};
                 vault_to_vault.vout.emplace_back();
                 vault_to_vault.vout[1].nValue = b+f;
-                fees += f;
+                amount += b + f;
                 uint256 hash = GetStandardTemplateHash(vault_to_cold, 0);
                 std::memmove(h_buff.data(), hash.begin(), 32);
-                vault_to_vault.vout[1].scriptPubKey << OP_IF << h_buff << OP_ELSE;
+                vault_to_vault_redeem << OP_IF << h_buff << OP_ELSE;
                 hash = GetStandardTemplateHash(vault_to_attach->vault_to_vault, 0);
                 std::memmove(h_buff.data(), hash.begin(), 32);
-                vault_to_vault.vout[1].scriptPubKey << h_buff << OP_ENDIF << OP_CHECKTEMPLATEVERIFY;
+                vault_to_vault_redeem << h_buff << OP_ENDIF << OP_CHECKTEMPLATEVERIFY;
+                vault_to_vault.vout[1].scriptPubKey = GetScriptForWitness(vault_to_vault_redeem);
+                vault_to_cold.vin[0].scriptWitness.stack.push_back({1});
+                vault_to_cold.vin[0].scriptWitness.stack.push_back({vault_to_vault_redeem.begin(), vault_to_vault_redeem.end()});
+                vault_to_attach->vault_to_vault.vin[0].scriptWitness.stack.push_back({});
+                vault_to_attach->vault_to_vault.vin[0].scriptWitness.stack.push_back({vault_to_vault_redeem.begin(), vault_to_vault_redeem.end()});
 
             }
 
         }
-        void attach(uint256& hashIn, int64_t n) {
+        void attach(const uint256& hashIn, int64_t n) {
             vault_to_vault.vin[0].prevout.hash = hashIn;
             if (n > 0) vault_to_vault.vin[0].prevout.n = n;
             uint256 hash = vault_to_vault.GetHash();
@@ -1313,29 +1324,26 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
     const CAmount flat_fee = 1000;
     std::vector<VaultTemplate> templates(steps);
     templates.back() = VaultTemplate(amount, 0, flat_fee, maturity, step_period, hot_dest, cold_dest, nullptr);
-    CAmount running_total = amount+templates.back().fees;
     // steps -2, steps -3... 0
     for (uint64_t i = (steps - 1) ; i-- > 0;) {
-        templates[i] = VaultTemplate(amount, running_total, flat_fee, maturity, step_period, hot_dest, cold_dest, &templates[i +1]);
-        running_total += amount + templates[i].fees;
+        templates[i] = VaultTemplate(amount, templates[i+1].amount, flat_fee, maturity, step_period, hot_dest, cold_dest, &templates[i +1]);
     }
     EnsureWalletIsUnlocked(&wallet);
 
     CTransactionRef tx;
-    int root_idx = -1;
     std::string fail_reason;
     {
         std::vector<unsigned char> h_buff(32);
         uint256 hash = GetStandardTemplateHash(templates[0].vault_to_vault, 0);
         std::memmove(h_buff.data(), hash.begin(), 32);
-        std::vector<CRecipient> rec {{CScript() << h_buff << OP_CHECKTEMPLATEVERIFY, running_total, false}};
+        std::vector<CRecipient> rec {{CScript() << h_buff << OP_CHECKTEMPLATEVERIFY, templates[0].amount + flat_fee, false}};
         // Send
         CAmount fee_required = 0;
         CCoinControl coin_control;
-        if (!wallet.CreateTransaction(*locked_chain, rec, tx, fee_required, root_idx, fail_reason, coin_control))
+        int change_at = 0;
+        if (!wallet.CreateTransaction(*locked_chain, rec, tx, fee_required, change_at, fail_reason, coin_control))
             throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, fail_reason);
-        root_idx = (root_idx +1)%2;
-        templates[0].attach(hash, root_idx);
+        templates[0].attach(tx->GetHash(), 1);
     }
 
     for (auto i = 1; i < steps; ++i) {
@@ -1367,14 +1375,13 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
     UniValue metadata(UniValue::VOBJ);
     UniValue outpoint(UniValue::VOBJ);
     outpoint.pushKV("hash", tx->GetHash().ToString());
-    outpoint.pushKV("n", root_idx);
+    outpoint.pushKV("n", 1);
     metadata.pushKV("prevout", outpoint);
     metadata.pushKV("create_tx", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
     metadata.pushKV("steps", steps);
     metadata.pushKV("amount", amount);
-    metadata.pushKV("total_amount", running_total);
+    metadata.pushKV("total_amount", templates[0].amount);
     last.pushKV("metadata", metadata);
-    wallet.CommitTransaction(tx, {} /* mapValue */, {} /* orderForm */);
     return last;
 }
 
