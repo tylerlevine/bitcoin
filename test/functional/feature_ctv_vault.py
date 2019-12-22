@@ -70,7 +70,7 @@ class CheckTemplateVerifyTest(BitcoinTestFramework):
         self.log.info("Creating setup transactions")
 
         vault = Vault(self.nodes[0].create_ctv_vault(0.1, 20, 1, 1), self.nodes[0])
-        self.log.info("Created vault at: " + vault.create())
+        vault.create()
         self.nodes[0].generate(1)
         self.log.info("withdraw funds")
         vault.withdraw_step()
