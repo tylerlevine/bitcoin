@@ -1128,6 +1128,232 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     return ret;
 }
 
+
+
+static UniValue create_ctv_vault(const JSONRPCRequest& request)
+{
+    std::shared_ptr<CWallet> const swallet = GetWalletForJSONRPCRequest(request);
+    CWallet* const pwallet = swallet.get();
+    if (!EnsureWalletIsAvailable(pwallet, request.fHelp)) {
+        return NullUniValue;
+    }
+    CWallet& wallet = *pwallet;
+
+            RPCHelpMan{"create_ctv_vault",
+                "\nSend an amount to a given address." +
+                    HelpRequiringPassphrase(pwallet) + "\n",
+                {
+                    {"amount", RPCArg::Type::AMOUNT, RPCArg::Optional::NO, "The amount per step in " + CURRENCY_UNIT + " to send. eg 0.1"},
+                    {"steps", RPCArg::Type::NUM, RPCArg::Optional::NO, "The number of steps to take."},
+                    {"hot_address", RPCArg::Type::STR, RPCArg::Optional::OMITTED_NAMED_ARG, "The bitcoin address to send to for hot storage."},
+                    {"cold_address", RPCArg::Type::STR, RPCArg::Optional::OMITTED_NAMED_ARG, "The bitcoin address to send to for cold storage."},
+                },
+                RPCResult{
+            "\"txid\"                  (string) The transaction id.\n"
+                },
+                RPCExamples{
+                    HelpExampleCli("create_ctv_vault", "\"1M72Sfpbz1BPpXFHz9m3CdqATR44Jvaydd\" 0.1")
+            + HelpExampleCli("create_ctv_vault", "\"1M72Sfpbz1BPpXFHz9m3CdqATR44Jvaydd\" 0.1 \"donation\" \"seans outpost\"")
+            + HelpExampleCli("create_ctv_vault", "\"1M72Sfpbz1BPpXFHz9m3CdqATR44Jvaydd\" 0.1 \"\" \"\" true")
+            + HelpExampleRpc("create_ctv_vault", "\"1M72Sfpbz1BPpXFHz9m3CdqATR44Jvaydd\", 0.1, \"donation\", \"seans outpost\"")
+                },
+            }.Check(request);
+
+    // Make sure the results are valid at least up to the most recent block
+    // the user could have gotten from another RPC command prior to now
+    wallet.BlockUntilSyncedToCurrentChain();
+
+    auto locked_chain = wallet.chain().lock();
+    LOCK(wallet.cs_wallet);
+    const size_t AMOUNT = 0;
+    const size_t STEPS = 1;
+    const size_t HOT_ADDRESS = 2;
+    const size_t COLD_ADDRESS = 3;
+    const CAmount amount = AmountFromValue(request.params[AMOUNT]);
+    const int64_t steps = request.params[STEPS].get_int64();
+    if (steps <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Must have at least 1 step.");
+    const CAmount total_amount = steps*amount;
+    if ((total_amount / steps != amount) || !MoneyRange(total_amount)) throw JSONRPCError(RPC_INVALID_PARAMETER, "Total money too much.");
+
+    const auto bal = wallet.GetBalance(1, false);
+    if (bal.m_mine_trusted < total_amount) throw JSONRPCError(RPC_INVALID_PARAMETER, "Insufficient funds.");
+
+    auto get_new_dest = [&]()->CTxDestination{
+        ///
+        if (!wallet.CanGetAddresses()) {
+            throw JSONRPCError(RPC_WALLET_ERROR, "Error: This wallet has no available keys");
+        }
+        CTxDestination dest;
+        std::string error;
+        if (!wallet.GetNewDestination(wallet.m_default_address_type, "", dest, error)) {
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, error);
+        }
+        return dest;
+    };
+    CTxDestination hot_dest = request.params[HOT_ADDRESS].isNull() ? get_new_dest() : DecodeDestination(request.params[HOT_ADDRESS].get_str());
+    if (!IsValidDestination(hot_dest)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
+    }
+
+    CTxDestination cold_dest = request.params[COLD_ADDRESS].isNull() ? get_new_dest() : DecodeDestination(request.params[COLD_ADDRESS].get_str());
+    if (!IsValidDestination(cold_dest)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
+    }
+
+    struct VaultTemplate {
+        CMutableTransaction vault_to_vault, hot_to_hot, vault_to_cold, hot_to_cold;
+        /*
+         *            [      vault_to_vault n  ]
+         *              |a                   |b
+         *             (0)                  (1)
+         *             /\                   /\
+         * wait + 6   /  \                 /  \ wait + 100    (attach)
+         * [hot_to_hot]  /  [vault_to_cold]    [vault_to_vault n - 1]
+         *              /                         |           |
+         * [hot_to_cold]                         (0)         (1)
+         *                                        .           .
+         *                                        .           .
+         *                                                    .
+         *                                              wait + 100 n   (attached)
+         *                                            [vault_to_vault 0]
+         *                                               |
+         *                                              (0)
+         *                                              */
+
+        VaultTemplate() {}
+
+        VaultTemplate(CAmount a, CAmount b, uint32_t hot_pause, uint32_t vault_pause,
+                CTxDestination& hot, CTxDestination& cold, VaultTemplate* vault_to_attach) {
+            hot_to_cold.vin.resize(1);
+            hot_to_cold.vout.resize(1);
+            hot_to_cold.vout[0].nValue = a;
+            hot_to_cold.vout[0].scriptPubKey = GetScriptForDestination(cold);
+            hot_to_cold.vin[0].prevout.n = 0;
+
+            hot_to_hot.vin.resize(1);
+            hot_to_hot.vout.resize(1);
+            hot_to_hot.vout[0].nValue = a;
+            hot_to_hot.vout[0].scriptPubKey = GetScriptForDestination(hot);
+            hot_to_hot.vin[0].nSequence = hot_pause;
+            hot_to_hot.vin[0].prevout.n = 0;
+
+            vault_to_cold.vin.resize(1);
+            vault_to_cold.vout.resize(1);
+            vault_to_cold.vout[0].nValue = b;
+            vault_to_cold.vout[0].scriptPubKey = GetScriptForDestination(cold);
+            vault_to_cold.vin[0].prevout.n = 1;
+
+            vault_to_vault.vin.resize(1);
+            vault_to_vault.vin[0].nSequence = vault_pause;
+            vault_to_vault.vin[0].prevout.n = 1;
+            vault_to_vault.vout.emplace_back();
+
+            std::vector<unsigned char> h_buff(32);
+            {
+                vault_to_vault.vout[0].nValue = a;
+                // construct script
+                uint256 hash = GetStandardTemplateHash(hot_to_cold, 0);
+                std::memmove(h_buff.data(), hash.begin(), 32);
+                vault_to_vault.vout[0].scriptPubKey << OP_IF << h_buff << OP_ELSE;
+                hash = GetStandardTemplateHash(hot_to_hot, 0);
+                std::memmove(h_buff.data(), hash.begin(), 32);
+                vault_to_vault.vout[0].scriptPubKey << h_buff << OP_ENDIF << OP_CHECKTEMPLATEVERIFY;
+
+
+            }
+            if (b != 0 && vault_to_attach!=nullptr){
+                vault_to_vault.vout.emplace_back();
+                vault_to_vault.vout[1].nValue = b;
+                uint256 hash = GetStandardTemplateHash(vault_to_cold, 0);
+                std::memmove(h_buff.data(), hash.begin(), 32);
+                vault_to_vault.vout[1].scriptPubKey << OP_IF << h_buff << OP_ELSE;
+                hash = GetStandardTemplateHash(vault_to_attach->vault_to_vault, 0);
+                std::memmove(h_buff.data(), hash.begin(), 32);
+                vault_to_vault.vout[1].scriptPubKey << h_buff << OP_ENDIF << OP_CHECKTEMPLATEVERIFY;
+
+            }
+
+        }
+        void attach(uint256& hashIn, int64_t n) {
+            vault_to_vault.vin[0].prevout.hash = hashIn;
+            if (n > 0) vault_to_vault.vin[0].prevout.n = n;
+            uint256 hash = vault_to_vault.GetHash();
+            hot_to_hot.vin[0].prevout.hash = hash;
+            hot_to_cold.vin[0].prevout.hash = hash;
+            vault_to_cold.vin[0].prevout.hash = hash;
+
+        }
+        void attach(VaultTemplate& sub_template) {
+            uint256 hash = sub_template.vault_to_vault.GetHash();
+            attach(hash, -1);
+        }
+    };
+    // TODO: Dynamic Fees.
+    // TODO: Higher feerate on move to cold-storage
+    const CAmount flat_fee = 1000;
+    std::vector<VaultTemplate> templates(steps);
+    templates.back() = VaultTemplate(amount+flat_fee, 0, 6, 6, hot_dest, cold_dest, nullptr);
+    CAmount running_total = amount+flat_fee;
+    // steps -2, steps -3... 0
+    for (uint64_t i = (steps - 1) ; i-- > 0;) {
+        templates[i] = VaultTemplate(amount, running_total,6, 6, hot_dest, cold_dest, &templates[i +1]);
+        running_total += amount + flat_fee*2;
+    }
+    EnsureWalletIsUnlocked(&wallet);
+
+    CTransactionRef tx;
+    int root_idx = -1;
+    std::string fail_reason;
+    {
+        std::vector<unsigned char> h_buff(32);
+        uint256 hash = GetStandardTemplateHash(templates[0].vault_to_vault, 0);
+        std::memmove(h_buff.data(), hash.begin(), 32);
+        std::vector<CRecipient> rec {{CScript() << h_buff << OP_CHECKTEMPLATEVERIFY, running_total, false}};
+        // Send
+        CAmount fee_required = 0;
+        CCoinControl coin_control;
+        if (!wallet.CreateTransaction(*locked_chain, rec, tx, fee_required, root_idx, fail_reason, coin_control))
+            throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, fail_reason);
+        root_idx = (root_idx +1)%2;
+        templates[0].attach(hash, root_idx);
+    }
+
+    for (auto i = 1; i < steps; ++i) {
+        templates[i].attach(templates[i-1]);
+    }
+
+
+    // Fill out the templates for all the children transactions and Commit
+    UniValue last(UniValue::VOBJ);
+    for (auto it = templates.rbegin(); it != templates.rend(); ++it) {
+        UniValue obj(UniValue::VOBJ);
+        auto& tmpl = *it;
+        UniValue withdrawal(UniValue::VOBJ);
+        withdrawal.pushKV("to_hot", EncodeHexTx(CTransaction(tmpl.hot_to_hot), wallet.chain().rpcSerializationFlags()));
+        withdrawal.pushKV("to_cold", EncodeHexTx(CTransaction(tmpl.hot_to_cold), wallet.chain().rpcSerializationFlags()));
+        obj.pushKV("withdrawal", withdrawal);
+        if (it != templates.rbegin()) {
+            UniValue vault(UniValue::VOBJ);
+            vault.pushKV("to_cold", EncodeHexTx(CTransaction(tmpl.vault_to_cold), wallet.chain().rpcSerializationFlags()));
+            vault.pushKV("withdraw", EncodeHexTx(CTransaction(tmpl.vault_to_vault), wallet.chain().rpcSerializationFlags()));
+            vault.pushKV("next", last);
+            obj.pushKV("vault", vault);
+        }
+
+        last = obj;
+    }
+    UniValue outpoint(UniValue::VOBJ);
+    outpoint.pushKV("hash", tx->GetHash().ToString());
+    outpoint.pushKV("n", root_idx);
+    last.pushKV("prevout", outpoint);
+    last.pushKV("create_tx", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
+    last.pushKV("steps", steps);
+    last.pushKV("amount", amount);
+    last.pushKV("total_amount", running_total);
+    wallet.CommitTransaction(tx, {} /* mapValue */, {} /* orderForm */);
+    return last;
+}
+
 static UniValue addmultisigaddress(const JSONRPCRequest& request)
 {
     std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
@@ -4428,6 +4654,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "backupwallet",                     &backupwallet,                  {"destination"} },
     { "wallet",             "bumpfee",                          &bumpfee,                       {"txid", "options"} },
     { "wallet",             "createwallet",                     &createwallet,                  {"wallet_name", "disable_private_keys", "blank", "passphrase", "avoid_reuse"} },
+    { "wallet",             "create_ctv_vault",                &create_ctv_vault,             {"amount", "steps", "hot_address", "cold_address"} },
     { "wallet",             "dumpprivkey",                      &dumpprivkey,                   {"address"}  },
     { "wallet",             "dumpwallet",                       &dumpwallet,                    {"filename"} },
     { "wallet",             "encryptwallet",                    &encryptwallet,                 {"passphrase"} },
