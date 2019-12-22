@@ -1145,6 +1145,8 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
                 {
                     {"amount", RPCArg::Type::AMOUNT, RPCArg::Optional::NO, "The amount per step in " + CURRENCY_UNIT + " to send. eg 0.1"},
                     {"steps", RPCArg::Type::NUM, RPCArg::Optional::NO, "The number of steps to take."},
+                    {"step_period", RPCArg::Type::NUM, RPCArg::Optional::NO, "The amount per step in " + CURRENCY_UNIT + " to send. eg 0.1"},
+                    {"maturity", RPCArg::Type::NUM, RPCArg::Optional::NO, "The amount per step in " + CURRENCY_UNIT + " to send. eg 0.1"},
                     {"hot_address", RPCArg::Type::STR, RPCArg::Optional::OMITTED_NAMED_ARG, "The bitcoin address to send to for hot storage."},
                     {"cold_address", RPCArg::Type::STR, RPCArg::Optional::OMITTED_NAMED_ARG, "The bitcoin address to send to for cold storage."},
                 },
@@ -1167,8 +1169,10 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
     LOCK(wallet.cs_wallet);
     const size_t AMOUNT = 0;
     const size_t STEPS = 1;
-    const size_t HOT_ADDRESS = 2;
-    const size_t COLD_ADDRESS = 3;
+    const size_t STEP_PERIOD = 2;
+    const size_t MATURITY = 3;
+    const size_t HOT_ADDRESS = 4;
+    const size_t COLD_ADDRESS = 5;
     const CAmount amount = AmountFromValue(request.params[AMOUNT]);
     const int64_t steps = request.params[STEPS].get_int64();
     if (steps <= 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Must have at least 1 step.");
@@ -1177,6 +1181,15 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
 
     const auto bal = wallet.GetBalance(1, false);
     if (bal.m_mine_trusted < total_amount) throw JSONRPCError(RPC_INVALID_PARAMETER, "Insufficient funds.");
+
+    const int64_t step_period = request.params[STEP_PERIOD].get_int64();
+    if (step_period < 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "step_period must be positive number of blocks.");
+    if (step_period > CTxIn::SEQUENCE_LOCKTIME_MASK)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "step_period must be less than SEQUENCE_LOCKTIME_MASK");
+    const int64_t maturity = request.params[MATURITY].get_int64();
+    if (maturity < 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "Maturity must be positive number of blocks.");
+    if (maturity > CTxIn::SEQUENCE_LOCKTIME_MASK)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "maturity must be less than SEQUENCE_LOCKTIME_MASK");
 
     auto get_new_dest = [&]()->CTxDestination{
         ///
@@ -1202,27 +1215,28 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
 
     struct VaultTemplate {
         CMutableTransaction vault_to_vault, hot_to_hot, vault_to_cold, hot_to_cold;
+        CAmount fees = 0;
         /*
-         *            [      vault_to_vault n  ]
-         *              |a                   |b
-         *             (0)                  (1)
-         *             /\                   /\
-         * wait + 6   /  \                 /  \ wait + 100    (attach)
-         * [hot_to_hot]  /  [vault_to_cold]    [vault_to_vault n - 1]
-         *              /                         |           |
-         * [hot_to_cold]                         (0)         (1)
-         *                                        .           .
-         *                                        .           .
-         *                                                    .
-         *                                              wait + 100 n   (attached)
-         *                                            [vault_to_vault 0]
-         *                                               |
-         *                                              (0)
-         *                                              */
+         *                   [      vault_to_vault n  ]
+         *                     |a                   |b
+         *                    (0)                  (1)
+         *                    /\                   /\
+         * wait + maturity   /  \                 /  \ wait + step_period    (attached)
+         * [   hot_to_hot   ]   /  [vault_to_cold]    [vault_to_vault n - 1]
+         *                     /                         |           |
+         *        [hot_to_cold]                         (0)         (1)
+         *                                               .           .
+         *                                               .           .
+         *                                                           .
+         *                                                     wait + step_period * n   (attached)
+         *                                                   [vault_to_vault 0]
+         *                                                      |
+         *                                                     (0)
+         *                                                     */
 
         VaultTemplate() {}
 
-        VaultTemplate(CAmount a, CAmount b, uint32_t hot_pause, uint32_t vault_pause,
+        VaultTemplate(CAmount a, CAmount b, CAmount f, uint32_t hot_pause, uint32_t vault_pause,
                 CTxDestination& hot, CTxDestination& cold, VaultTemplate* vault_to_attach) {
             hot_to_cold.vin.resize(1);
             hot_to_cold.vout.resize(1);
@@ -1250,7 +1264,8 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
 
             std::vector<unsigned char> h_buff(32);
             {
-                vault_to_vault.vout[0].nValue = a;
+                vault_to_vault.vout[0].nValue = a+f;
+                fees += f;
                 // construct script
                 uint256 hash = GetStandardTemplateHash(hot_to_cold, 0);
                 std::memmove(h_buff.data(), hash.begin(), 32);
@@ -1263,7 +1278,8 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
             }
             if (b != 0 && vault_to_attach!=nullptr){
                 vault_to_vault.vout.emplace_back();
-                vault_to_vault.vout[1].nValue = b;
+                vault_to_vault.vout[1].nValue = b+f;
+                fees += f;
                 uint256 hash = GetStandardTemplateHash(vault_to_cold, 0);
                 std::memmove(h_buff.data(), hash.begin(), 32);
                 vault_to_vault.vout[1].scriptPubKey << OP_IF << h_buff << OP_ELSE;
@@ -1292,12 +1308,12 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
     // TODO: Higher feerate on move to cold-storage
     const CAmount flat_fee = 1000;
     std::vector<VaultTemplate> templates(steps);
-    templates.back() = VaultTemplate(amount+flat_fee, 0, 6, 6, hot_dest, cold_dest, nullptr);
-    CAmount running_total = amount+flat_fee;
+    templates.back() = VaultTemplate(amount, 0, flat_fee, maturity, step_period, hot_dest, cold_dest, nullptr);
+    CAmount running_total = amount+templates.back().fees;
     // steps -2, steps -3... 0
     for (uint64_t i = (steps - 1) ; i-- > 0;) {
-        templates[i] = VaultTemplate(amount, running_total,6, 6, hot_dest, cold_dest, &templates[i +1]);
-        running_total += amount + flat_fee*2;
+        templates[i] = VaultTemplate(amount, running_total, flat_fee, maturity, step_period, hot_dest, cold_dest, &templates[i +1]);
+        running_total += amount + templates[i].fees;
     }
     EnsureWalletIsUnlocked(&wallet);
 
@@ -1328,28 +1344,32 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
     for (auto it = templates.rbegin(); it != templates.rend(); ++it) {
         UniValue obj(UniValue::VOBJ);
         auto& tmpl = *it;
+        obj.pushKV("step", EncodeHexTx(CTransaction(tmpl.vault_to_vault), wallet.chain().rpcSerializationFlags()));
+        UniValue children(UniValue::VOBJ);
         UniValue withdrawal(UniValue::VOBJ);
         withdrawal.pushKV("to_hot", EncodeHexTx(CTransaction(tmpl.hot_to_hot), wallet.chain().rpcSerializationFlags()));
         withdrawal.pushKV("to_cold", EncodeHexTx(CTransaction(tmpl.hot_to_cold), wallet.chain().rpcSerializationFlags()));
-        obj.pushKV("withdrawal", withdrawal);
+        children.pushKV("withdrawal", withdrawal);
         if (it != templates.rbegin()) {
             UniValue vault(UniValue::VOBJ);
             vault.pushKV("to_cold", EncodeHexTx(CTransaction(tmpl.vault_to_cold), wallet.chain().rpcSerializationFlags()));
-            vault.pushKV("withdraw", EncodeHexTx(CTransaction(tmpl.vault_to_vault), wallet.chain().rpcSerializationFlags()));
             vault.pushKV("next", last);
-            obj.pushKV("vault", vault);
+            children.pushKV("sub_vault", vault);
         }
+        obj.pushKV("children", children);
 
         last = obj;
     }
+    UniValue metadata(UniValue::VOBJ);
     UniValue outpoint(UniValue::VOBJ);
     outpoint.pushKV("hash", tx->GetHash().ToString());
     outpoint.pushKV("n", root_idx);
-    last.pushKV("prevout", outpoint);
-    last.pushKV("create_tx", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
-    last.pushKV("steps", steps);
-    last.pushKV("amount", amount);
-    last.pushKV("total_amount", running_total);
+    metadata.pushKV("prevout", outpoint);
+    metadata.pushKV("create_tx", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
+    metadata.pushKV("steps", steps);
+    metadata.pushKV("amount", amount);
+    metadata.pushKV("total_amount", running_total);
+    last.pushKV("metadata", metadata);
     wallet.CommitTransaction(tx, {} /* mapValue */, {} /* orderForm */);
     return last;
 }
