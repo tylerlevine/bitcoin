@@ -1348,37 +1348,48 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
 
 
     // Fill out the templates for all the children transactions and Commit
-    UniValue last(UniValue::VOBJ);
-    for (auto it = templates.rbegin(); it != templates.rend(); ++it) {
-        UniValue obj(UniValue::VOBJ);
-        auto& tmpl = *it;
-        obj.pushKV("step", EncodeHexTx(CTransaction(tmpl.vault_to_vault), wallet.chain().rpcSerializationFlags()));
-        UniValue children(UniValue::VOBJ);
-        UniValue withdrawal(UniValue::VOBJ);
-        withdrawal.pushKV("to_hot", EncodeHexTx(CTransaction(tmpl.hot_to_hot), wallet.chain().rpcSerializationFlags()));
-        withdrawal.pushKV("to_cold", EncodeHexTx(CTransaction(tmpl.hot_to_cold), wallet.chain().rpcSerializationFlags()));
-        children.pushKV("withdrawal", withdrawal);
-        if (it != templates.rbegin()) {
-            UniValue vault(UniValue::VOBJ);
-            vault.pushKV("to_cold", EncodeHexTx(CTransaction(tmpl.vault_to_cold), wallet.chain().rpcSerializationFlags()));
-            vault.pushKV("next", last);
-            children.pushKV("sub_vault", vault);
-        }
-        obj.pushKV("children", children);
+    std::vector<UniValue> txns;
 
-        last = obj;
+    UniValue parent(UniValue::VOBJ);
+    parent.pushKV("hex", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
+    parent.pushKV("label", "create_tx");
+    parent.pushKV("color", "grey");
+    txns.push_back(parent);
+    for (auto it = templates.begin(); it != templates.end(); ++it) {
+        UniValue main(UniValue::VOBJ);
+        auto& tmpl = *it;
+        main.pushKV("hex", EncodeHexTx(CTransaction(tmpl.vault_to_vault), wallet.chain().rpcSerializationFlags()));
+        main.pushKV("label", "vault_to_vault");
+        main.pushKV("color", "green");
+        UniValue to_hot(UniValue::VOBJ);
+        to_hot.pushKV("hex", EncodeHexTx(CTransaction(tmpl.hot_to_hot), wallet.chain().rpcSerializationFlags()));
+        to_hot.pushKV("label", "to_hot");
+        to_hot.pushKV("color", "red");
+        UniValue to_cold(UniValue::VOBJ);
+        to_cold.pushKV("hex", EncodeHexTx(CTransaction(tmpl.hot_to_cold), wallet.chain().rpcSerializationFlags()));
+        to_cold.pushKV("label", "to_cold");
+        to_cold.pushKV("color", "blue");
+
+        txns.push_back(main);
+        txns.push_back(to_hot);
+        txns.push_back(to_cold);
+
     }
     UniValue metadata(UniValue::VOBJ);
     UniValue outpoint(UniValue::VOBJ);
     outpoint.pushKV("hash", tx->GetHash().ToString());
     outpoint.pushKV("n", 1);
     metadata.pushKV("prevout", outpoint);
-    metadata.pushKV("create_tx", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
     metadata.pushKV("steps", steps);
     metadata.pushKV("amount", amount);
     metadata.pushKV("total_amount", templates[0].amount);
-    last.pushKV("metadata", metadata);
-    return last;
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("metadata", metadata);
+    UniValue arr(UniValue::VARR);
+    arr.push_backV(txns);
+    ret.pushKV("program", arr);
+    return ret;
 }
 
 static UniValue addmultisigaddress(const JSONRPCRequest& request)
