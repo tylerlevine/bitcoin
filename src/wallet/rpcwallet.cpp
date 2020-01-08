@@ -1378,11 +1378,15 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
     parent.pushKV("color", "grey");
     txns.push_back(parent);
     for (auto it = templates.begin(); it != templates.end(); ++it) {
-        UniValue main(UniValue::VOBJ);
         auto& tmpl = *it;
-        main.pushKV("hex", EncodeHexTx(CTransaction(tmpl.vault_to_vault), wallet.chain().rpcSerializationFlags()));
-        main.pushKV("label", "vault_to_vault");
-        main.pushKV("color", "green");
+        UniValue vault_to_vault(UniValue::VOBJ);
+        vault_to_vault.pushKV("hex", EncodeHexTx(CTransaction(tmpl.vault_to_vault), wallet.chain().rpcSerializationFlags()));
+        vault_to_vault.pushKV("label", "vault_to_vault");
+        vault_to_vault.pushKV("color", "green");
+        UniValue vault_to_cold(UniValue::VOBJ);
+        vault_to_cold.pushKV("hex", EncodeHexTx(CTransaction(tmpl.vault_to_cold), wallet.chain().rpcSerializationFlags()));
+        vault_to_cold.pushKV("label", "vault_to_cold");
+        vault_to_cold.pushKV("color", "blue");
         UniValue to_hot(UniValue::VOBJ);
         to_hot.pushKV("hex", EncodeHexTx(CTransaction(tmpl.hot_to_hot), wallet.chain().rpcSerializationFlags()));
         to_hot.pushKV("label", "to_hot");
@@ -1392,7 +1396,8 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
         to_cold.pushKV("label", "to_cold");
         to_cold.pushKV("color", "blue");
 
-        txns.push_back(main);
+        txns.push_back(vault_to_vault);
+        txns.push_back(vault_to_cold);
         txns.push_back(to_hot);
         txns.push_back(to_cold);
 
