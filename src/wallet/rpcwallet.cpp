@@ -1097,23 +1097,32 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
         if (!wallet.CreateTransaction(*locked_chain, rec, tx, fee_required, root_idx, fail_reason, coin_control))
             throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, fail_reason);
         root_idx = (root_idx +1)%2;
-        wallet.CommitTransaction(tx, mapValue, {} /* orderForm */);
     }
 
     // Fill out the templates for all the children transactions and Commit
     std::vector<std::pair<COutPoint, uint256>> stack {{{tx->GetHash(), (uint32_t)root_idx}, {}}};
     std::memmove(stack.back().second.begin(), tx->vout[root_idx].scriptPubKey.data()+1, 32);
-    UniValue ret(UniValue::VARR);
-    ret.push_back(tx->GetHash().GetHex());
+
+
+
+    UniValue txns(UniValue::VARR);
+    UniValue txn(UniValue::VOBJ);
+    txn.pushKV("hex", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
+    txn.pushKV("label", "create_tx");
+    txn.pushKV("color", "yellow");
+    txns.push_back(txn);
     while (!stack.empty()) {
         CMutableTransaction  mtx = std::move(templates[stack.back().second]);
         mtx.vin[0].prevout = stack.back().first;
         stack.pop_back();
         CTransactionRef tx = MakeTransactionRef(std::move(mtx));
         const uint256 txid = tx->GetHash();
-        ret.push_back(txid.GetHex());
+        UniValue txn(UniValue::VOBJ);
+        txn.pushKV("hex", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
+        txn.pushKV("label", "tree");
+        txn.pushKV("color", "green");
+        txns.push_back(txn);
 
-        wallet.CommitTransaction(tx, mapValue, {} /* orderForm */);
 
         uint32_t i = 0;
         for (auto& out : tx->vout) {
@@ -1125,6 +1134,15 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
         }
     }
 
+    UniValue metadata(UniValue::VOBJ);
+    UniValue outpoint(UniValue::VOBJ);
+    outpoint.pushKV("hash", tx->GetHash().ToString());
+    outpoint.pushKV("n", 0);
+    metadata.pushKV("radix", radix);
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("metadata", metadata);
+    ret.pushKV("program", txns);
     return ret;
 }
 
