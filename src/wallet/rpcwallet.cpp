@@ -1377,7 +1377,7 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
     parent.pushKV("label", "create_tx");
     parent.pushKV("color", "grey");
     txns.push_back(parent);
-    for (auto it = templates.begin(); it != templates.end(); ++it) {
+    for (auto it = templates.begin(); it != templates.end();) {
         auto& tmpl = *it;
         UniValue vault_to_vault(UniValue::VOBJ);
         vault_to_vault.pushKV("hex", EncodeHexTx(CTransaction(tmpl.vault_to_vault), wallet.chain().rpcSerializationFlags()));
@@ -1397,9 +1397,11 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
         to_cold.pushKV("color", "blue");
 
         txns.push_back(vault_to_vault);
-        txns.push_back(vault_to_cold);
         txns.push_back(to_hot);
         txns.push_back(to_cold);
+        if (++it != templates.end()) {
+            txns.push_back(vault_to_cold);
+        }
 
     }
     UniValue metadata(UniValue::VOBJ);
