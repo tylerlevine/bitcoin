@@ -291,12 +291,13 @@ class CheckTemplateVerifyTest(BitcoinTestFramework):
 
         self.log.info("Testing a congestion control tree using sendmanycompacted and large radix")
         addrs = {script_to_p2sh(CScript(bytes([0x20])+random_bytes(32))):0.00001 for x in range(1000)}
-        txns = set(self.nodes[0].sendmanycompacted(addrs, 45))
+        txns = self.nodes[0].sendmanycompacted(addrs, 45)
+        txids = set(self.nodes[0].sendrawtransaction(txn['hex']) for txn in txns['program'])
         mempool = set(self.nodes[0].getrawmempool())
-        assert(txns - mempool == set([]))
+        assert(txids - mempool == set([]))
         self.sync_mempools()
         mempool = set(self.nodes[1].getrawmempool())
-        assert(txns - mempool == set([]))
+        assert(txids - mempool == set([]))
 
 
 
