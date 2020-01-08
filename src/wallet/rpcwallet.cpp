@@ -961,6 +961,7 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
                         },
                     },
                     {"radix", RPCArg::Type::NUM, /* default */ "4", "Radix to use for the tree"},
+                    {"gas", RPCArg::Type::NUM, /* default */ "0", "Adds gas dust outputs if gas > 471 (satoshis)"},
                     {"node_fees", RPCArg::Type::STR, /* default */ "MIN", "The interior node fees. Must be one of:\n"
                     "       \"MIN\"\n"
                     "       \"ECONOMICAL\"\n"
@@ -995,11 +996,12 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     LOCK(wallet.cs_wallet);
     const size_t AMOUNTS = 0;
     const size_t RADIX = 1;
-    const size_t NODE_FEES = 2;
-    const size_t COMMENT = 3;
-    const size_t ROOT_REPLACEABLE = 4;
-    const size_t ROOT_CONF_TARGET = 5;
-    const size_t ROOT_ESTIMATE = 6;
+    const size_t GAS = 2;
+    const size_t NODE_FEES = 3;
+    const size_t COMMENT = 4;
+    const size_t ROOT_REPLACEABLE = 5;
+    const size_t ROOT_CONF_TARGET = 6;
+    const size_t ROOT_ESTIMATE = 7;
     UniValue sendTo = request.params[AMOUNTS].get_obj();
     size_t radix = 4;
     if (!request.params[RADIX].isNull()) {
@@ -1008,6 +1010,18 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Radix must be 2 or more");
         }
         radix = (size_t)radixIn;
+    }
+    CAmount gas = 0;
+    if (!request.params[GAS].isNull()) {
+        int64_t gasIn = request.params[GAS].get_int64();
+        if (gasIn < 472 && gasIn > 0) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Gas must be > 471");
+        } else if (gasIn < 0) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Gas must be >= 0");
+        } if (gasIn > 472*30) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Gas must be <= 14160");
+        }
+        gas = gasIn;
     }
     std::string node_fees = "MIN";
     if (!request.params[NODE_FEES].isNull()) {
@@ -1074,6 +1088,9 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
         auto start = vecSend.begin();
         auto end = start + std::min(radix, vecSend.size());
         tx.vout.insert(tx.vout.begin(), std::make_move_iterator(start), std::make_move_iterator(end));
+        if (gas) {
+            tx.vout.emplace_back(gas, CScript() << OP_TRUE);
+        }
         vecSend.erase(start, end);
         const uint256 hash = GetStandardTemplateHash(tx, 0);
         std::memmove(h_buff.data(), hash.begin(), 32);
@@ -4754,7 +4771,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "removeprunedfunds",                &removeprunedfunds,             {"txid"} },
     { "wallet",             "rescanblockchain",                 &rescanblockchain,              {"start_height", "stop_height"} },
     { "wallet",             "sendmany",                         &sendmany,                      {"dummy","amounts","minconf","comment","subtractfeefrom","replaceable","conf_target","estimate_mode"} },
-    { "wallet",             "sendmanycompacted",                &sendmanycompacted,             {"amounts","radix","node_fees","comment","root_replaceable","root_conf_target","root_estimate"} },
+    { "wallet",             "sendmanycompacted",                &sendmanycompacted,             {"amounts","radix","gas","node_fees","comment","root_replaceable","root_conf_target","root_estimate"} },
     { "wallet",             "sendtoaddress",                    &sendtoaddress,                 {"address","amount","comment","comment_to","subtractfeefromamount","replaceable","conf_target","estimate_mode","avoid_reuse"} },
     { "wallet",             "sethdseed",                        &sethdseed,                     {"newkeypool","seed"} },
     { "wallet",             "setlabel",                         &setlabel,                      {"address","label"} },
