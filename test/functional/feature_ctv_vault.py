@@ -12,40 +12,48 @@ from test_framework.util import (
         connect_nodes
         )
 
+from test_framework.messages import (FromHex, CTransaction)
+
+from collections import defaultdict
 
 
+BIP68_ERROR = 'non-BIP68-final (-26)'
+SPENT_ERROR = "bad-txns-inputs-missingorspent (-25)"
 
 class Vault:
     def __init__(self, data, node):
-        self.create_tx = data["metadata"]["create_tx"]
-        self.prevout = data["metadata"]["prevout"]
-        self.data = data
         self.node = node
-        self.walk = data
+        self.metadata = data['metadata']
+        self.txns = data['program']
+        self.utxo_spend_map = defaultdict(dict)
         self.withdrawals = []
-        self.withdrawn = []
+        for tx in self.txns:
+            tx['tx'] = FromHex(CTransaction(), tx['hex'])
+            inp = tx['tx'].vin[0].prevout
+            self.utxo_spend_map[inp][tx['label']] = tx
+        self.state = list(filter(lambda tx: tx['label'] == 'vault_to_vault', self.txns))
+
     def create(self):
-        txid = self.node.sendrawtransaction(self.create_tx)
-        assert_equal(txid, self.prevout["hash"])
+        txid = self.node.sendrawtransaction(self.txns[0]['hex'])
+        assert_equal(txid, self.metadata['prevout']['hash'])
 
     def withdraw_step(self):
-        step = self.walk["step"]
-        self.node.sendrawtransaction(step)
-        self.withdrawals.append(self.walk["children"]["withdrawal"])
-        self.freeze_tx = self.walk["children"]["sub_vault"]["to_cold"]
-        self.walk = self.walk["children"]["sub_vault"]["next"]
+        self.node.sendrawtransaction(self.state.pop(0)['hex'])
 
-    def freeze_vault(self):
-        for child in self.withdrawals:
-            self.node.sendrawtransaction(child["to_cold"])
-    def freeze_past_withdrawals(self):
-        self.node.sendrawtransaction(self.freeze_tx)
     def freeze(self):
-        self.freeze_vault()
-        self.freeze_past_withdrawals()
+        for tx in filter(lambda tx: tx['label'] in ["to_cold", "vault_to_cold"], self.txns):
+            try:
+                self.node.sendrawtransaction(tx['hex'])
+            except Exception as e:
+                assert_equal(e.args[0], SPENT_ERROR)
     def move_deposits_hot(self):
-        self.withdrawn.append(self.withdrawals.pop(0))
-        self.node.sendrawtransaction(self.withdrawn[-1]["to_hot"])
+        for tx in filter(lambda tx: tx['label'] in ["to_hot"], self.txns):
+            try:
+                self.node.sendrawtransaction(tx['hex'])
+            except Exception as e:
+                assert_equal(e.args[0], BIP68_ERROR)
+                break
+
 
 
 class CheckTemplateVerifyTest(BitcoinTestFramework):
