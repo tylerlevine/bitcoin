@@ -1141,7 +1141,23 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
         UniValue txn(UniValue::VOBJ);
         txn.pushKV("hex", EncodeHexTx(*tx, wallet.chain().rpcSerializationFlags()));
         txn.pushKV("label", "tree");
-        txn.pushKV("color", "green");
+        txn.pushKV("color", "brown");
+        UniValue utxo_metadata(UniValue::VARR);
+        for (const auto& out : tx->vout) {
+            UniValue meta(UniValue::VOBJ);
+            if (out.scriptPubKey.IsPayToBasicStandardTemplate()) {
+                meta.pushKV("label","interior node");
+                meta.pushKV("color","grey");
+            } else if (out.nValue == gas && out.scriptPubKey.size() == 1 && out.scriptPubKey[0] == OP_TRUE) {
+                meta.pushKV("label", "gas");
+                meta.pushKV("color","red");
+            } else {
+                meta.pushKV("label","payment");
+                meta.pushKV("color","green");
+            }
+            utxo_metadata.push_back(meta);
+        }
+        txn.pushKV("utxo_metadata", utxo_metadata);
         txns.push_back(txn);
 
 
