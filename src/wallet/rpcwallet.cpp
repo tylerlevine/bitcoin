@@ -1116,36 +1116,17 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     if (sort_keys.size() != keys.size()) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid probabilities parameter");
     }
-
-    // now sort by probability/weight
-    // if lexicographic or AS_IS, the sort will do nothing...
-    std::stable_sort(sort_keys.begin(), sort_keys.end());
-    // now re-order keys by the sort function, so that similar values are paired together
-    std::vector<std::string> sorted_keys;
-    sorted_keys.reserve(keys.size());
-    for (auto& sort_key : sort_keys) {
-        size_t idx = sort_key.second;
-        sorted_keys.emplace_back(std::move(keys[idx]));
-    }
-    std::swap(sorted_keys, keys);
-    // If we are in the balancing mode, we pair every "low" value with
-    // one high value
-    // TODO: More robust method? (e.g., huffman encoding)
-    if (pairing_mode.find("BALANCE_") != std::string::npos) {
-        for (auto it = keys.begin(); it < keys.end(); ++it) {
-            sorted_keys.emplace_back(std::move(*it));
-            // only if there's more than one key (otherwise we just moved it)
-            if (keys.size() > 1) {
-                sorted_keys.emplace_back(std::move(keys.back()));
-                keys.pop_back();
-            }
-        }
-        std::swap(sorted_keys, keys);
-    }
+    const bool balance_mode = pairing_mode.find("BALANCE_") != std::string::npos;
 
 
     std::set<CTxDestination> destinations;
-    std::deque<CTxOut> vecSend;
+
+    // The multiset keeps the items in vecSend sorted by weight
+    const auto cmp = [](const std::pair<double, CTxOut>& a, const std::pair<double, CTxOut>& b) bool {
+            return a.first < b.first;
+            };
+    std::multiset<std::pair<double, CTxOut>, decltype(cmp)> vecSend(cmp);
+    auto sort_keys_it = sort_keys.begin();
     for (const std::string& name_ : keys) {
         CTxDestination dest = DecodeDestination(name_);
         if (!IsValidDestination(dest)) {
@@ -1163,7 +1144,7 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
             throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount for send");
 
         CTxOut recipient = {nAmount, scriptPubKey};
-        vecSend.push_back(recipient);
+        vecSend.emplace((sort_keys_it++)->first, recipient);
     }
 
     // N.B. This map relies on the de-duplication above, otherwise you could
@@ -1175,9 +1156,9 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     if (radix == 1) {
 
         CMutableTransaction base{};
-        for (CTxOut& txo : vecSend) {
+        for (auto& txo : vecSend) {
             CMutableTransaction tx{};
-            tx.vout.emplace_back(std::move(txo));
+            tx.vout.emplace_back(std::move(txo.second));
             tx.vin.emplace_back();
             if (base.vin.size()) {
                 const uint256 hash = GetStandardTemplateHash(base, 0);
@@ -1200,21 +1181,55 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
 
         std::memmove(h_buff.data(), hash.begin(), 32);
         CScript script = CScript() << h_buff << OP_CHECKTEMPLATEVERIFY;
-        vecSend.emplace_back(base.vout[0].nValue + base.vout[1].nValue, script);
+        vecSend.emplace(0, CTxOut(base.vout[0].nValue + base.vout[1].nValue, script));
 
     } else {
+        std::vector<std::pair<double, CTxOut>> items;
+        items.reserve(radix);
         while (vecSend.size() > 1) {
             CMutableTransaction tx;
             // Add one input for proper Bag Hash computation
             // and fee computation
             tx.vin.emplace_back();
-            auto start = vecSend.begin();
-            auto end = start + std::min(radix, vecSend.size());
-            tx.vout.insert(tx.vout.begin(), std::make_move_iterator(start), std::make_move_iterator(end));
+            items.clear();
+            const size_t pieces = std::min(radix, vecSend.size());
+            if (balance_mode) {
+                // TODO: better greedy algorithm?
+                // take half from the back, half from the front of the set.
+                // the front are small, the back is large
+                size_t big_pieces = pieces/2;
+                // take more small peices than big pieces
+                size_t small_pieces = pieces - big_pieces;
+                if (small_pieces) {
+                    auto start = vecSend.begin();
+                    auto end = vecSend.begin();
+                    std::advance(end, small_pieces);
+                    items.insert(items.begin(), std::make_move_iterator(start), std::make_move_iterator(end));
+                    vecSend.erase(start, end);
+                }
+                if (big_pieces) {
+                    auto start = vecSend.rbegin();
+                    auto end = vecSend.rbegin();
+                    std::advance(end, big_pieces);
+                    items.insert(items.end(), std::make_move_iterator(start), std::make_move_iterator(end));
+                    vecSend.erase(std::prev(start.base()), vecSend.end());
+                }
+            } else { // unbalanced mode!
+                auto start = vecSend.begin();
+                auto end = vecSend.begin();
+                std::advance(end, pieces);
+                items.insert(items.end(), std::make_move_iterator(start), std::make_move_iterator(end));
+                vecSend.erase(start, end);
+            }
+            // Sum the weight for the new send by the children's weight
+            double new_weight = 0;
+            for (auto& item: items) {
+                new_weight += item.first;
+                tx.vout.push_back(item.second);
+            }
             if (gas) {
                 tx.vout.emplace_back(gas, CScript() << OP_TRUE);
             }
-            vecSend.erase(start, end);
             const uint256 hash = GetStandardTemplateHash(tx, 0);
             std::memmove(h_buff.data(), hash.begin(), 32);
             // TODO: compute fee from args?
@@ -1222,7 +1237,7 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
             for (const auto& out : tx.vout) amount += out.nValue;
             const bool inserted = templates.emplace(hash, std::move(tx)).second;
             CHECK_NONFATAL(inserted); // is guaranteed to be unique
-            vecSend.emplace_back(amount, CScript() << h_buff << OP_CHECKTEMPLATEVERIFY);
+            vecSend.emplace(new_weight, CTxOut(amount, CScript() << h_buff << OP_CHECKTEMPLATEVERIFY));
         }
     }
     EnsureWalletIsUnlocked(&wallet);
@@ -1232,7 +1247,7 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     int root_idx = -1;
     std::string fail_reason;
     {
-        std::vector<CRecipient> rec {{vecSend.back().scriptPubKey, vecSend.back().nValue, false}};
+        std::vector<CRecipient> rec {{vecSend.begin()->second.scriptPubKey, vecSend.begin()->second.nValue, false}};
         // Send
         CAmount fee_required = 0;
         if (!wallet.CreateTransaction(*locked_chain, rec, tx, fee_required, root_idx, fail_reason, coin_control))
