@@ -1010,10 +1010,15 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     size_t radix = 4;
     if (!request.params[RADIX].isNull()) {
         int radixIn = request.params[RADIX].get_int();
-        if (radixIn < 2) {
+        if (radixIn == 0) {
+            radix = sendTo.getKeys().size();
+        } else if (radixIn == 1) {
+            radix = 1;
+        } else if (radixIn < 2) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Radix must be 2 or more");
+        } else {
+            radix = (size_t)radixIn;
         }
-        radix = (size_t)radixIn;
     }
     CAmount gas = 0;
     if (!request.params[GAS].isNull()) {
@@ -1084,26 +1089,58 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     std::map<uint256, CMutableTransaction> templates;
     const CFeeRate calc_fee = wallet.chain().relayMinFee();
     std::vector<unsigned char> h_buff(32);
-    while (vecSend.size() > 1) {
-        CMutableTransaction tx;
-        // Add one input for proper Bag Hash computation
-        // and fee computation
-        tx.vin.emplace_back();
-        auto start = vecSend.begin();
-        auto end = start + std::min(radix, vecSend.size());
-        tx.vout.insert(tx.vout.begin(), std::make_move_iterator(start), std::make_move_iterator(end));
-        if (gas) {
-            tx.vout.emplace_back(gas, CScript() << OP_TRUE);
+    if (radix == 1) {
+
+        CMutableTransaction base{};
+        for (CTxOut& txo : vecSend) {
+            CMutableTransaction tx{};
+            tx.vout.emplace_back(std::move(txo));
+            tx.vin.emplace_back();
+            if (base.vin.size()) {
+                const uint256 hash = GetStandardTemplateHash(base, 0);
+                const bool inserted = templates.insert(std::make_pair(hash, std::move(base))).second;
+                CHECK_NONFATAL(inserted); // is guaranteed to be unique
+                std::memmove(h_buff.data(), hash.begin(), 32);
+                tx.vout.emplace_back(0, CScript() << h_buff << OP_CHECKTEMPLATEVERIFY);
+                CAmount amount = calc_fee.GetFee(GetSerializeSize(tx));
+                // TODO: compute fee from args?
+                for (const auto& out : tx.vout) amount += out.nValue;
+                tx.vout[0].nValue = amount;
+            }
+            base = std::move(tx);
         }
-        vecSend.erase(start, end);
-        const uint256 hash = GetStandardTemplateHash(tx, 0);
-        std::memmove(h_buff.data(), hash.begin(), 32);
-        // TODO: compute fee from args?
-        CAmount amount = calc_fee.GetFee(GetSerializeSize(tx));
-        for (const auto& out : tx.vout) amount += out.nValue;
-        const bool inserted = templates.emplace(hash, std::move(tx)).second;
+        vecSend.clear();
+
+        const uint256 hash = GetStandardTemplateHash(base, 0);
+        const bool inserted = templates.insert(std::make_pair(hash, base)).second;
         CHECK_NONFATAL(inserted); // is guaranteed to be unique
-        vecSend.emplace_back(amount, CScript() << h_buff << OP_CHECKTEMPLATEVERIFY);
+
+        std::memmove(h_buff.data(), hash.begin(), 32);
+        CScript script = CScript() << h_buff << OP_CHECKTEMPLATEVERIFY;
+        vecSend.emplace_back(base.vout[0].nValue + base.vout[1].nValue, script);
+
+    } else {
+        while (vecSend.size() > 1) {
+            CMutableTransaction tx;
+            // Add one input for proper Bag Hash computation
+            // and fee computation
+            tx.vin.emplace_back();
+            auto start = vecSend.begin();
+            auto end = start + std::min(radix, vecSend.size());
+            tx.vout.insert(tx.vout.begin(), std::make_move_iterator(start), std::make_move_iterator(end));
+            if (gas) {
+                tx.vout.emplace_back(gas, CScript() << OP_TRUE);
+            }
+            vecSend.erase(start, end);
+            const uint256 hash = GetStandardTemplateHash(tx, 0);
+            std::memmove(h_buff.data(), hash.begin(), 32);
+            // TODO: compute fee from args?
+            CAmount amount = calc_fee.GetFee(GetSerializeSize(tx));
+            for (const auto& out : tx.vout) amount += out.nValue;
+            const bool inserted = templates.emplace(hash, std::move(tx)).second;
+            CHECK_NONFATAL(inserted); // is guaranteed to be unique
+            vecSend.emplace_back(amount, CScript() << h_buff << OP_CHECKTEMPLATEVERIFY);
+        }
     }
     EnsureWalletIsUnlocked(&wallet);
 
