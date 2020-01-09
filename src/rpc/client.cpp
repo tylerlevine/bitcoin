@@ -78,6 +78,8 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "sendmanycompacted", 5 , "root_replaceable" },
     { "sendmanycompacted", 6 , "root_conf_target" },
     { "sendmanycompacted", 7 , "root_estimate" },
+    { "sendmanycompacted", 8 , "pairing_mode" },
+    { "sendmanycompacted", 9 , "probabilities" },
     { "create_ctv_vault", 0, "amount" },
     { "create_ctv_vault", 1, "steps" },
     { "create_ctv_vault", 2, "step_period" },

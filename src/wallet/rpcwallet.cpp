@@ -978,6 +978,18 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
                     "       \"UNSET\"\n"
                     "       \"ECONOMICAL\"\n"
                     "       \"CONSERVATIVE\""},
+                    {"pairing_mode", RPCArg::Type::STR, /* default */ "AS_IS", "Re-order the outputs by:\n"
+                    "       \"AS_IS\"\n"
+                    "       \"LEXICOGRAPHIC\"\n"
+                    "       \"PROBABILITY\"\n"
+                    "       \"BALANCE_PROBABILITY\"\n"
+                    "       \"BALANCE_VALUE\"\n"
+                    "       \"VALUE\""},
+                    {"probabilities", RPCArg::Type::ARR, RPCArg::Optional::OMITTED_NAMED_ARG, "A json array of redemption probabilities",
+                        {
+                            {"probability", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "floating point probability"},
+                        },
+                    },
                 },
                  RPCResult{
             "\"[txids]\"                   (string) The transaction ids for the send.\n"
@@ -1006,6 +1018,8 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     const size_t ROOT_REPLACEABLE = 5;
     const size_t ROOT_CONF_TARGET = 6;
     const size_t ROOT_ESTIMATE = 7;
+    const size_t PAIRING_MODE = 8;
+    const size_t PROBABILITIES = 9;
     UniValue sendTo = request.params[AMOUNTS].get_obj();
     size_t radix = 4;
     if (!request.params[RADIX].isNull()) {
@@ -1059,8 +1073,77 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
         }
     }
 
+    std::string pairing_mode = "AS_IS";
+    if (!request.params[PAIRING_MODE].isNull()) {
+        pairing_mode = request.params[PAIRING_MODE].get_str();
+    }
 
     std::vector<std::string> keys = sendTo.getKeys();
+    std::vector<std::pair<double, size_t>> sort_keys;
+    if (pairing_mode == "PROBABILITY" || pairing_mode == "BALANCE_PROBABILITY") {
+        if (!request.params[PROBABILITIES].isNull()) {
+            UniValue weights = request.params[PAIRING_MODE].get_array();
+            for (unsigned int idx = 0; idx < weights.size(); idx++) {
+                const double& weight = weights[idx].get_real();
+                sort_keys.emplace_back(weight, idx);
+            }
+        }
+    }
+    else if (pairing_mode == "VALUE" || pairing_mode == "BALANCE_VALUE"){
+        std::vector<UniValue> balances = sendTo.getValues();
+        size_t count = 0;
+        for (auto& balance : balances) {
+            sort_keys.emplace_back(AmountFromValue(balance), count++);
+        }
+    }
+    else if (pairing_mode == "LEXICOGRAPHIC") {
+        std::sort(keys.begin(), keys.end());
+        sort_keys.resize(keys.size());
+        size_t count = 0;
+        for (auto& sort_key : sort_keys) {
+            sort_key.second = count++;
+        }
+    }
+    else if (pairing_mode == "AS_IS") {
+        sort_keys.resize(keys.size());
+        size_t count = 0;
+        for (auto& sort_key : sort_keys) {
+            sort_key.second = count++;
+        }
+    } else {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid pairing_mode parameter");
+    }
+    if (sort_keys.size() != keys.size()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid probabilities parameter");
+    }
+
+    // now sort by probability/weight
+    // if lexicographic or AS_IS, the sort will do nothing...
+    std::stable_sort(sort_keys.begin(), sort_keys.end());
+    // now re-order keys by the sort function, so that similar values are paired together
+    std::vector<std::string> sorted_keys;
+    sorted_keys.reserve(keys.size());
+    for (auto& sort_key : sort_keys) {
+        size_t idx = sort_key.second;
+        sorted_keys.emplace_back(std::move(keys[idx]));
+    }
+    std::swap(sorted_keys, keys);
+    // If we are in the balancing mode, we pair every "low" value with
+    // one high value
+    // TODO: More robust method? (e.g., huffman encoding)
+    if (pairing_mode.find("BALANCE_") != std::string::npos) {
+        for (auto it = keys.begin(); it < keys.end(); ++it) {
+            sorted_keys.emplace_back(std::move(*it));
+            // only if there's more than one key (otherwise we just moved it)
+            if (keys.size() > 1) {
+                sorted_keys.emplace_back(std::move(keys.back()));
+                keys.pop_back();
+            }
+        }
+        std::swap(sorted_keys, keys);
+    }
+
+
     std::set<CTxDestination> destinations;
     std::deque<CTxOut> vecSend;
     for (const std::string& name_ : keys) {
@@ -4850,7 +4933,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "removeprunedfunds",                &removeprunedfunds,             {"txid"} },
     { "wallet",             "rescanblockchain",                 &rescanblockchain,              {"start_height", "stop_height"} },
     { "wallet",             "sendmany",                         &sendmany,                      {"dummy","amounts","minconf","comment","subtractfeefrom","replaceable","conf_target","estimate_mode"} },
-    { "wallet",             "sendmanycompacted",                &sendmanycompacted,             {"amounts","radix","gas","node_fees","comment","root_replaceable","root_conf_target","root_estimate"} },
+    { "wallet",             "sendmanycompacted",                &sendmanycompacted,             {"amounts","radix","gas","node_fees","comment","root_replaceable","root_conf_target","root_estimate","pairing_mode","probabilities"} },
     { "wallet",             "sendtoaddress",                    &sendtoaddress,                 {"address","amount","comment","comment_to","subtractfeefromamount","replaceable","conf_target","estimate_mode","avoid_reuse"} },
     { "wallet",             "sethdseed",                        &sethdseed,                     {"newkeypool","seed"} },
     { "wallet",             "setlabel",                         &setlabel,                      {"address","label"} },
