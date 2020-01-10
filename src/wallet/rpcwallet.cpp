@@ -1022,12 +1022,17 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     const size_t PROBABILITIES = 9;
     UniValue sendTo = request.params[AMOUNTS].get_obj();
     size_t radix = 4;
+    bool radix_is_child_limit = false;
     if (!request.params[RADIX].isNull()) {
         int radixIn = request.params[RADIX].get_int();
         if (radixIn == 0) {
             radix = sendTo.getKeys().size();
         } else if (radixIn == 1) {
             radix = 1;
+        } else if (radixIn < -1 ) {
+            radix =  -radixIn;
+            radix_is_child_limit = true;
+
         } else if (radixIn < 2) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Radix must be 2 or more");
         } else {
@@ -1079,6 +1084,15 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     }
 
     std::vector<std::string> keys = sendTo.getKeys();
+
+    if (radix_is_child_limit) {
+        // n/r + n/r**2 + n/r**3.... = limit
+        // n/r ( 1+1/r +1/r**2.... ) = limit
+        // r = n / limit + 1
+        radix = (keys.size()/radix) +1;
+        radix_is_child_limit = false;
+    }
+
     std::vector<std::pair<double, size_t>> sort_keys;
     if (pairing_mode == "PROBABILITY" || pairing_mode == "BALANCE_PROBABILITY") {
         if (!request.params[PROBABILITIES].isNull()) {
