@@ -1262,7 +1262,9 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
         CAmount fee_required = 0;
         if (!wallet.CreateTransaction(*locked_chain, rec, tx, fee_required, root_idx, fail_reason, coin_control))
             throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, fail_reason);
-        root_idx = (root_idx +1)%2;
+        // mod tx.vout.size() in case there is no change.
+        // expected to be 2, may be 1
+        root_idx = (root_idx +1)%tx->vout.size();
     }
 
     // Fill out the templates for all the children transactions and Commit
@@ -1501,9 +1503,9 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
             }
 
         }
-        void attach(const uint256& hashIn, int64_t n) {
+        void attach(const uint256& hashIn, Optional<uint32_t> n) {
             vault_to_vault.vin[0].prevout.hash = hashIn;
-            if (n > 0) vault_to_vault.vin[0].prevout.n = n;
+            if (n) vault_to_vault.vin[0].prevout.n = *n;
             uint256 hash = vault_to_vault.GetHash();
             hot_to_hot.vin[0].prevout.hash = hash;
             hot_to_cold.vin[0].prevout.hash = hash;
@@ -1512,7 +1514,7 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
         }
         void attach(VaultTemplate& sub_template) {
             uint256 hash = sub_template.vault_to_vault.GetHash();
-            attach(hash, -1);
+            attach(hash, nullopt);
         }
     };
     // TODO: Dynamic Fees.
@@ -1539,7 +1541,8 @@ static UniValue create_ctv_vault(const JSONRPCRequest& request)
         int change_at = 0;
         if (!wallet.CreateTransaction(*locked_chain, rec, tx, fee_required, change_at, fail_reason, coin_control))
             throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, fail_reason);
-        templates[0].attach(tx->GetHash(), 1);
+        // mod tx.vout.size() in case there is no change.
+        templates[0].attach(tx->GetHash(), Optional<uint32_t>(1 % tx->vout.size()));
     }
 
     for (auto i = 1; i < steps; ++i) {
