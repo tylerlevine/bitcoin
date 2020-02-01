@@ -4928,7 +4928,7 @@ static const CRPCCommand commands[] =
     { "wallet",             "backupwallet",                     &backupwallet,                  {"destination"} },
     { "wallet",             "bumpfee",                          &bumpfee,                       {"txid", "options"} },
     { "wallet",             "createwallet",                     &createwallet,                  {"wallet_name", "disable_private_keys", "blank", "passphrase", "avoid_reuse"} },
-    { "wallet",             "create_ctv_vault",                &create_ctv_vault,             {"amount", "steps", "hot_address", "cold_address"} },
+    { "wallet",             "create_ctv_vault",                 &create_ctv_vault,              {"amount", "steps", "step_period", "maturity", "hot_address", "cold_address"} },
     { "wallet",             "dumpprivkey",                      &dumpprivkey,                   {"address"}  },
     { "wallet",             "dumpwallet",                       &dumpwallet,                    {"filename"} },
     { "wallet",             "encryptwallet",                    &encryptwallet,                 {"passphrase"} },
