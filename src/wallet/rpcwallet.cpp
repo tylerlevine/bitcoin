@@ -1136,7 +1136,7 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     std::set<CTxDestination> destinations;
 
     // The multiset keeps the items in vecSend sorted by weight
-    const auto cmp = [](const std::pair<double, CTxOut>& a, const std::pair<double, CTxOut>& b) bool {
+    const auto cmp = [](const std::pair<double, CTxOut>& a, const std::pair<double, CTxOut>& b) -> bool {
             return a.first < b.first;
             };
     std::multiset<std::pair<double, CTxOut>, decltype(cmp)> vecSend(cmp);
@@ -1326,7 +1326,7 @@ static UniValue sendmanycompacted(const JSONRPCRequest& request)
     UniValue outpoint(UniValue::VOBJ);
     outpoint.pushKV("hash", tx->GetHash().ToString());
     outpoint.pushKV("n", 0);
-    metadata.pushKV("radix", radix);
+    metadata.pushKV("radix", int(radix));
 
     UniValue ret(UniValue::VOBJ);
     ret.pushKV("metadata", metadata);
