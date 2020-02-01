@@ -5,7 +5,7 @@
 """Test (CheckTemplateVerify)
 """
 
-from test_framework.blocktools import create_coinbase, create_block, create_transaction, add_witness_commitment
+from test_framework.blocktools import create_coinbase, create_block, add_witness_commitment
 from test_framework.messages import CTransaction, CTxOut, CTxIn, CTxInWitness, COutPoint, sha256
 from test_framework.mininode import P2PInterface
 from test_framework.script import CScript, OP_TRUE, OP_CHECKTEMPLATEVERIFY, OP_FALSE
